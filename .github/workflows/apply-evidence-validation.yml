@@ -6,6 +6,11 @@ on:
     paths:
       - '.agent-payload/**'
       - '.github/workflows/apply-evidence-validation.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.agent-payload/**'
+      - '.github/workflows/apply-evidence-validation.yml'
 
 permissions:
   contents: write
