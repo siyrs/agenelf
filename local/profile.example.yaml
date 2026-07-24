@@ -1,0 +1,11 @@
+# Copy/migrate to local/profile.yaml. Do not place passwords, tokens or keys here.
+owner:
+  name: "主人姓名"
+  preferred_name: "希望 Agenelf 如何称呼你"
+  timezone: "Asia/Shanghai"
+  language: "zh-CN"
+  role: "软件开发者"
+communication:
+  style: "直接、清楚、给出可执行结果"
+  detail_level: "medium"
+  confirmation_preference: "高风险操作必须明确批准"

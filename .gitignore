@@ -10,7 +10,15 @@ data/
 .env
 .ops-runner.env
 
-# Server inventory and credentials
+# Owner-specific local data (examples and docs are explicitly tracked)
+local/profile.yaml
+local/preferences.yaml
+local/servers.yaml
+local/context/
+local/memory/
+local/secrets/
+
+# Legacy private locations kept ignored for migration compatibility
 config/servers.yaml
 secrets/
 

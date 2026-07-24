@@ -1,6 +1,4 @@
-# Agenelf split-runtime deployment.
-# The Agent can propose operations but has no SSH key, Docker socket, or trusted
-# result write access.  ops-runner is deterministic and owns the remote creds.
+# Agenelf split-runtime deployment with a private root/local personalization layer.
 services:
   agenelf:
     build: .
@@ -8,21 +6,26 @@ services:
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
       AGENELF_ROOT: /agenelf
-      AGENELF_SERVERS_FILE: /agenelf/config/servers.yaml
+      AGENELF_LOCAL_DIR: /agenelf/local
+      AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./app-fork:/agenelf/app-fork:ro
       - ./app-tmp:/agenelf/app-tmp:rw
       - ./scripts:/agenelf/scripts:ro
-      - ./config:/agenelf/config:ro
       - ./data:/agenelf/data:rw
-      # Human decisions and runner results are trusted inputs, never Agent output.
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:ro
       - ./logs:/agenelf/logs:rw
       - ./workspace:/agenelf/workspace:rw
       - ./app-space:/agenelf/app-space:rw
+      # Safe personalization is mounted selectively. Agent never sees local/secrets.
+      - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
+      - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
+      - ./local/context:/agenelf/local/context:ro
+      - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+      - ./local/memory:/agenelf/local/memory:rw
     read_only: true
     tmpfs:
       - /tmp
@@ -38,13 +41,14 @@ services:
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
       AGENELF_ROOT: /agenelf
-      AGENELF_SERVERS_FILE: /agenelf/config/servers.yaml
-      AGENELF_SECRETS_DIR: /agenelf/secrets
+      AGENELF_LOCAL_DIR: /agenelf/local
+      AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
+      AGENELF_SECRETS_DIR: /agenelf/local/secrets
     volumes:
       - ./app-fork:/agenelf/app-fork:ro
       - ./scripts:/agenelf/scripts:ro
-      - ./config:/agenelf/config:ro
-      - ./secrets:/agenelf/secrets:ro
+      - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+      - ./local/secrets:/agenelf/local/secrets:ro
       - ./data/ops-requests:/agenelf/data/ops-requests:ro
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:rw

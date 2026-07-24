@@ -9,5 +9,10 @@ agent:
   history_max_messages: 12
   memory_prompt_limit: 50
   memory_prompt_max_chars: 8000
+  memory_max_entries: 1000
+local_context:
+  prompt_max_chars: 12000
+  file_max_chars: 20000
+  max_context_files: 20
 autonomy:
   allow_code_changes: true

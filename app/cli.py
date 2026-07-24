@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
-import yaml
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -15,32 +13,14 @@ from rich.table import Table
 
 from core import operations
 from core.agent import Agent
+from core.configuration import load_config as load_shared_config
 
 console = Console()
 _APP_DIR = Path(__file__).resolve().parent
 
 
 def load_config(path: str | None = None) -> dict:
-    config_path = Path(path).resolve() if path else _APP_DIR / "config.yaml"
-    if not config_path.exists():
-        console.print(f"[yellow]配置文件 {config_path} 不存在，使用默认配置[/yellow]")
-        config: dict = {}
-    else:
-        with config_path.open("r", encoding="utf-8") as handle:
-            config = yaml.safe_load(handle) or {}
-    llm = config.setdefault("llm", {})
-    if os.environ.get("OPENAI_API_KEY"):
-        llm["api_key"] = os.environ["OPENAI_API_KEY"]
-    if os.environ.get("OPENAI_BASE_URL"):
-        llm["base_url"] = os.environ["OPENAI_BASE_URL"]
-    if os.environ.get("AGENELF_MODEL"):
-        llm["model"] = os.environ["AGENELF_MODEL"]
-    if os.environ.get("AGENELF_MOCK") == "1":
-        config["mock"] = True
-    config.setdefault("skills_dir", str(_APP_DIR / "skills"))
-    config.setdefault("persona_path", str(_APP_DIR / "persona" / "persona.yaml"))
-    config.setdefault("memory_path", str(_APP_DIR / "memory_store" / "memory.json"))
-    return config
+    return load_shared_config(app_dir=_APP_DIR, config_path=path)
 
 
 def _json_panel(data, title: str) -> None:
@@ -59,7 +39,12 @@ def cmd_skills(agent: Agent) -> None:
             tool.get("function", {}).get("name", "?")
             for tool in getattr(module, "TOOLS", [])
         )
-        table.add_row(name, str(metadata.get("version", "?")), str(metadata.get("description", "")), tools)
+        table.add_row(
+            name,
+            str(metadata.get("version", "?")),
+            str(metadata.get("description", "")),
+            tools,
+        )
     console.print(table)
     if agent.registry.errors:
         console.print("[red]以下技能加载或运行时绑定失败：[/red]")
@@ -75,8 +60,16 @@ def cmd_capabilities(agent: Agent) -> None:
     table.add_column("操作与风险")
     table.add_column("可组合")
     for capability in agent.registry.capability_catalog():
-        operation_text = "\n".join(f"{item['name']} [{item['risk']}]" for item in capability["operations"])
-        table.add_row(capability["id"], capability["domain"], capability["version"], operation_text, ", ".join(capability["composes_with"]))
+        operation_text = "\n".join(
+            f"{item['name']} [{item['risk']}]" for item in capability["operations"]
+        )
+        table.add_row(
+            capability["id"],
+            capability["domain"],
+            capability["version"],
+            operation_text,
+            ", ".join(capability["composes_with"]),
+        )
     console.print(table)
 
 
@@ -91,7 +84,12 @@ def cmd_operations(operation_id: str) -> None:
         return
     paths = operations.queue_paths()
     rows = []
-    for request_path in sorted(paths["requests"].glob("op-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:10]:
+    request_paths = sorted(
+        paths["requests"].glob("op-*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:10]
+    for request_path in request_paths:
         try:
             rows.append(operations.get_operation(request_path.stem))
         except ValueError:
@@ -140,6 +138,14 @@ def cmd_autonomy(agent: Agent, arguments: str, *, force_apply: bool = False) -> 
     _json_panel(result, title)
 
 
+def cmd_remember(agent: Agent, arguments: str) -> None:
+    parts = arguments.split(maxsplit=1)
+    if len(parts) != 2 or parts[0] not in {"fact", "preference"}:
+        console.print("[red]用法：/remember <fact|preference> <内容>[/red]")
+        return
+    _json_panel(agent.remember_owner(parts[0], parts[1]), "主人记忆")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agenelf CLI")
     parser.add_argument("--mock", action="store_true", help="强制使用 MockLLM")
@@ -152,7 +158,7 @@ def main() -> int:
     console.print(
         Panel(
             f"模型：[cyan]{agent.llm.model}[/cyan] | 技能：[green]{len(agent.registry.skills)}[/green] | 能力域：[green]{len(agent.registry.capability_catalog())}[/green]\n"
-            "命令：/skills /capabilities /self /reflect /autonomy [--plan-only] [目标] /ops [ID] /reload /newskill /memory /evolve <目标> /quit",
+            "命令：/skills /capabilities /local /local-reload /remember /recall /self /reflect /autonomy /ops /reload /newskill /memory /evolve /quit",
             title="Agenelf",
         )
     )
@@ -176,6 +182,17 @@ def main() -> int:
                 cmd_skills(agent)
             elif command == "/capabilities":
                 cmd_capabilities(agent)
+            elif command == "/local":
+                _json_panel(agent.local_status(), "local 个性化配置")
+            elif command == "/local-reload":
+                _json_panel(agent.reload_local_context(), "local 重新加载")
+            elif command == "/remember":
+                cmd_remember(agent, rest)
+            elif command == "/recall":
+                _json_panel(
+                    {"query": rest, "results": agent.recall_owner(rest)},
+                    "主人记忆检索",
+                )
             elif command == "/self":
                 cmd_self(agent)
             elif command == "/reflect":
