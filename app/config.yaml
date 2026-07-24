@@ -9,3 +9,5 @@ agent:
   history_max_messages: 12
   memory_prompt_limit: 50
   memory_prompt_max_chars: 8000
+autonomy:
+  allow_code_changes: true

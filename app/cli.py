@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 from pathlib import Path
 
 import yaml
@@ -44,6 +43,10 @@ def load_config(path: str | None = None) -> dict:
     return config
 
 
+def _json_panel(data, title: str) -> None:
+    console.print(Panel(json.dumps(data, ensure_ascii=False, indent=2), title=title))
+
+
 def cmd_skills(agent: Agent) -> None:
     table = Table(title="已加载技能")
     table.add_column("技能", style="cyan")
@@ -56,15 +59,10 @@ def cmd_skills(agent: Agent) -> None:
             tool.get("function", {}).get("name", "?")
             for tool in getattr(module, "TOOLS", [])
         )
-        table.add_row(
-            name,
-            str(metadata.get("version", "?")),
-            str(metadata.get("description", "")),
-            tools,
-        )
+        table.add_row(name, str(metadata.get("version", "?")), str(metadata.get("description", "")), tools)
     console.print(table)
     if agent.registry.errors:
-        console.print("[red]以下技能加载失败：[/red]")
+        console.print("[red]以下技能加载或运行时绑定失败：[/red]")
         for name, error in agent.registry.errors.items():
             console.print(f"  - {name}: {error.splitlines()[-1] if error else '未知错误'}")
 
@@ -77,16 +75,8 @@ def cmd_capabilities(agent: Agent) -> None:
     table.add_column("操作与风险")
     table.add_column("可组合")
     for capability in agent.registry.capability_catalog():
-        operation_text = "\n".join(
-            f"{item['name']} [{item['risk']}]" for item in capability["operations"]
-        )
-        table.add_row(
-            capability["id"],
-            capability["domain"],
-            capability["version"],
-            operation_text,
-            ", ".join(capability["composes_with"]),
-        )
+        operation_text = "\n".join(f"{item['name']} [{item['risk']}]" for item in capability["operations"])
+        table.add_row(capability["id"], capability["domain"], capability["version"], operation_text, ", ".join(capability["composes_with"]))
     console.print(table)
 
 
@@ -97,18 +87,16 @@ def cmd_operations(operation_id: str) -> None:
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
             return
-        console.print(Panel(json.dumps(state, ensure_ascii=False, indent=2), title="运维请求"))
+        _json_panel(state, "运维请求")
         return
     paths = operations.queue_paths()
     rows = []
-    for request_path in sorted(
-        paths["requests"].glob("op-*.json"), key=lambda path: path.stat().st_mtime, reverse=True
-    )[:10]:
+    for request_path in sorted(paths["requests"].glob("op-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:10]:
         try:
             rows.append(operations.get_operation(request_path.stem))
         except ValueError:
             continue
-    console.print(Panel(json.dumps(rows, ensure_ascii=False, indent=2), title="最近运维请求"))
+    _json_panel(rows, "最近运维请求")
 
 
 def cmd_reload(agent: Agent, name: str) -> None:
@@ -116,6 +104,7 @@ def cmd_reload(agent: Agent, name: str) -> None:
         console.print("[red]用法：/reload <技能名>[/red]")
         return
     if agent.registry.reload(name):
+        agent.configure_skill_runtimes(name)
         agent._refresh_system_prompt()
         console.print(f"[green]技能 {name} 重载成功[/green]")
     else:
@@ -131,20 +120,24 @@ def cmd_newskill(agent: Agent, description: str) -> None:
     console.print(Panel(result, title="技能进化"))
 
 
-def cmd_evolve(agent: Agent, goal: str) -> None:
-    if not goal:
-        console.print("[red]用法：/evolve <进化目标>[/red]")
-        return
-    try:
-        from evolution.engine import EvolutionEngine
+def cmd_self(agent: Agent) -> None:
+    _json_panel(agent.self_snapshot(), "Agenelf 可观测自我模型")
 
-        with console.status("进化引擎运行中..."):
-            result = EvolutionEngine(agent).evolve(goal)
-        console.print(Panel(str(result), title="进化结果"))
-    except ImportError:
-        console.print("[yellow]进化引擎未就绪[/yellow]")
-    except Exception as exc:
-        console.print(f"[red]进化引擎执行出错：{exc}[/red]")
+
+def cmd_reflect(agent: Agent) -> None:
+    _json_panel(agent.self_assess(), "Agenelf 自我反思")
+
+
+def cmd_autonomy(agent: Agent, arguments: str, *, force_apply: bool = False) -> None:
+    text = arguments.strip()
+    plan_only = text.startswith("--plan-only")
+    if plan_only:
+        text = text[len("--plan-only") :].strip()
+    apply_changes = force_apply or not plan_only
+    title = "自主迭代结果" if apply_changes else "自主改进计划"
+    with console.status("Agenelf 正在观察、反思并生成受控改进..."):
+        result = agent.run_autonomy_cycle(goal=text, apply_changes=apply_changes)
+    _json_panel(result, title)
 
 
 def main() -> int:
@@ -158,10 +151,8 @@ def main() -> int:
     agent = Agent(config)
     console.print(
         Panel(
-            f"模型：[cyan]{agent.llm.model}[/cyan] | "
-            f"技能：[green]{len(agent.registry.skills)}[/green] | "
-            f"能力域：[green]{len(agent.registry.capability_catalog())}[/green]\n"
-            "命令：/skills /capabilities /ops [ID] /reload /newskill /memory /evolve /quit",
+            f"模型：[cyan]{agent.llm.model}[/cyan] | 技能：[green]{len(agent.registry.skills)}[/green] | 能力域：[green]{len(agent.registry.capability_catalog())}[/green]\n"
+            "命令：/skills /capabilities /self /reflect /autonomy [--plan-only] [目标] /ops [ID] /reload /newskill /memory /evolve <目标> /quit",
             title="Agenelf",
         )
     )
@@ -185,6 +176,12 @@ def main() -> int:
                 cmd_skills(agent)
             elif command == "/capabilities":
                 cmd_capabilities(agent)
+            elif command == "/self":
+                cmd_self(agent)
+            elif command == "/reflect":
+                cmd_reflect(agent)
+            elif command == "/autonomy":
+                cmd_autonomy(agent, rest)
             elif command == "/ops":
                 cmd_operations(rest)
             elif command == "/reload":
@@ -194,7 +191,10 @@ def main() -> int:
             elif command == "/memory":
                 console.print(Panel(agent.memory.as_prompt_block(), title="长期记忆"))
             elif command == "/evolve":
-                cmd_evolve(agent, rest)
+                if not rest.strip():
+                    console.print("[red]用法：/evolve <进化目标>[/red]")
+                else:
+                    cmd_autonomy(agent, rest, force_apply=True)
             else:
                 console.print(f"[red]未知命令 {command}[/red]")
             continue

@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for chat, capability discovery and operation status."""
+"""FastAPI entrypoint for chat, capabilities, operations and controlled autonomy."""
 
 from __future__ import annotations
 
@@ -58,14 +58,12 @@ def get_agent() -> Agent:
 
 
 def require_api_token(x_agenelf_token: str | None = Header(default=None)) -> None:
-    """Require a token when configured; localhost-only remains the safe default."""
-
     expected = os.environ.get("AGENELF_API_TOKEN", "")
     if expected and not hmac.compare_digest(x_agenelf_token or "", expected):
         raise HTTPException(status_code=401, detail="无效的 Agenelf API Token")
 
 
-app = FastAPI(title="Agenelf API", version="0.2.0")
+app = FastAPI(title="Agenelf API", version="0.3.0")
 
 
 class ChatRequest(BaseModel):
@@ -74,6 +72,11 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class AutonomyRequest(BaseModel):
+    goal: str = ""
+    apply_changes: bool = False
 
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_api_token)])
@@ -96,12 +99,46 @@ def health() -> dict:
         "capabilities": len(agent.registry.capability_catalog()),
         "model": agent.llm.model,
         "api_auth_enabled": bool(os.environ.get("AGENELF_API_TOKEN")),
+        "autonomy": "controlled-sandbox",
     }
 
 
 @app.get("/capabilities", dependencies=[Depends(require_api_token)])
 def capabilities() -> dict:
     return {"capabilities": get_agent().registry.capability_catalog()}
+
+
+@app.get("/self", dependencies=[Depends(require_api_token)])
+def self_snapshot() -> dict:
+    return get_agent().self_snapshot()
+
+
+@app.get("/self/assessment", dependencies=[Depends(require_api_token)])
+def self_assessment() -> dict:
+    return get_agent().self_assess()
+
+
+@app.post("/autonomy/cycles", dependencies=[Depends(require_api_token)])
+def create_autonomy_cycle(request: AutonomyRequest) -> dict:
+    try:
+        return get_agent().run_autonomy_cycle(goal=request.goal, apply_changes=request.apply_changes)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"自主循环执行失败：{exc}") from exc
+
+
+@app.get("/autonomy/cycles", dependencies=[Depends(require_api_token)])
+def list_autonomy_cycles() -> dict:
+    return {"cycles": get_agent().autonomy_status()}
+
+
+@app.get("/autonomy/cycles/{cycle_id}", dependencies=[Depends(require_api_token)])
+def autonomy_cycle_status(cycle_id: str) -> dict:
+    try:
+        result = get_agent().autonomy_status(cycle_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    assert isinstance(result, dict)
+    return result
 
 
 @app.get("/operations/{operation_id}", dependencies=[Depends(require_api_token)])
@@ -129,16 +166,10 @@ def evolution_status() -> dict:
         entries = [path for path in requests_dir.iterdir() if path.is_dir()]
         entries.sort(key=lambda path: path.stat().st_mtime, reverse=True)
         for entry in entries[:10]:
-            requests.append(
-                {
-                    "id": entry.name,
-                    "markers": sorted(path.name for path in entry.iterdir() if path.is_file()),
-                }
-            )
+            requests.append({"id": entry.name, "markers": sorted(path.name for path in entry.iterdir() if path.is_file())})
     return {"root": str(root), "session": session, "promotion_requests": requests}
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
