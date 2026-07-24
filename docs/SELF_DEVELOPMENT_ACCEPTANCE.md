@@ -31,3 +31,13 @@ bash -n ../scripts/gate_check.sh
 3. `/intend P1 <目标>` 只创建意向，不应直接修改代码。
 4. `/pursue <id>` 只生成计划；`/pursue <id> --apply` 才能进入受控沙盒。
 5. 任何自动触发逻辑默认不追求意向、不提交 Git、不部署服务器、不绕过人工晋升。
+
+## 软件验证与能力健康增量验收
+
+- Agent 提交的验证请求只含 allowlist 别名，不含 URL、Host 或 Port；
+- validation-runner 重新校验请求指纹、只读风险和配置别名；
+- HTTP/TCP 检查有超时、响应体和断言上限；
+- Agent 对 validation result 只读，Runner 看不到 SSH 密钥、主人画像、记忆或 `local/self`；
+- 能力健康评分来自可信结果，连续失败能形成反思和去重意向；
+- `/scorecard`、`/roadmap`、验证 API、CLI 与技能协议均有回归测试；
+- 自主候选修改验证队列、能力健康或验证技能边界时，宿主机 Gate 必须拒绝。

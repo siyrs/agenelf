@@ -258,3 +258,9 @@ CI 覆盖：
 - CLI/技能/API 契约；
 - Docker `local/self` 隔离；
 - Gate 对成长边界模块和 `local/self` 写入的拦截。
+
+## 能力健康与改进路线图
+
+`/scorecard` 和 `GET /self/capability-health` 从可信结果计算能力健康度；`/roadmap` 和 `GET /self/roadmap` 综合优先级、证据数量、主人对齐、尝试次数与生命周期，给出确定性下一步。
+
+软件验证失败会形成持久化反思和 P1 意向。相同标题的开放意向仍然去重；验证成功证据可以用于后续验收，但只有对应 Gate 与晋升证据齐全时，代码改进意向才能标记完成。

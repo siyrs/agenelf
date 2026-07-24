@@ -48,6 +48,7 @@ Agenelf 由四个彼此分离但可组合的层次构成：
 - [个性化数据与 local 目录](docs/PERSONALIZATION.md)
 - [总体能力架构](docs/ARCHITECTURE.md)
 - [服务器运维](docs/SERVER_OPERATIONS.md)
+- [软件验证](docs/VALIDATION.md)
 - [受控自主迭代](docs/AUTONOMY.md)
 
 ## 快速开始
@@ -61,7 +62,7 @@ make init
 `make init` 会：
 
 - 创建 `.env` 与 `.ops-runner.env`；
-- 创建 `local/profile.yaml`、`preferences.yaml`、`servers.yaml`；
+- 创建 `local/profile.yaml`、`preferences.yaml`、`servers.yaml`、`validation.yaml`；
 - 创建 `local/context/`、`memory/`、`self/`、`secrets/`；
 - 创建 `local/self/state.json`、`reflections.json`、`intentions.json`；
 - 自动迁移旧版 persona、服务器配置、secrets 和旧记忆；
@@ -76,6 +77,7 @@ make init
 local/profile.yaml
 local/preferences.yaml
 local/servers.yaml
+local/validation.yaml
 local/context/
 local/secrets/
 ```
@@ -102,6 +104,7 @@ local/
 ├── preferences.yaml
 ├── context/
 ├── servers.yaml
+├── validation.yaml
 ├── secrets/
 ├── memory/
 │   └── memory.json
@@ -117,7 +120,8 @@ Docker 使用选择性挂载：
 - Agent 可读写 `local/memory/` 和 `local/self/`；
 - Agent **看不到** `local/secrets/`；
 - `ops-runner` 只读取 `local/servers.yaml` 和 `local/secrets/`；
-- Runner 看不到主人画像、聊天记忆或自我反思。
+- `validation-runner` 只读取 `local/validation.yaml`，看不到 SSH 密钥、画像、记忆或成长状态；
+- 两个 Runner 都看不到主人画像、聊天记忆或自我反思。
 
 实际私有文件均被 Git 忽略，仓库只提交模板和说明。
 
@@ -204,6 +208,21 @@ curl -X POST http://127.0.0.1:8000/self/intentions   -H 'Content-Type: applicati
 - 保存在可写的 `local/`；
 - 不写入只读 `app-fork/`。
 
+## 软件验证与证据驱动能力健康
+
+`software.validation` 通过独立 `validation-runner` 运行主人 allowlist 中的 HTTP/TCP 检查和套件。模型只能选择别名，不能自由提供 URL、主机或端口。
+
+```text
+/validate
+/validate check agenelf-health
+/validate suite agenelf-smoke
+/validate result val-xxxxxxxxxxxxxxxx
+/scorecard
+/roadmap
+```
+
+验证结果进入 `data/validation-results/`，并用于计算 `healthy / watch / degraded / unknown` 能力健康度。连续失败会进入确定性反思并创建去重的 P1 改进意向，但不会自动修改代码或部署。详见 [docs/VALIDATION.md](docs/VALIDATION.md)。
+
 ## 服务器运维能力
 
 | 工具意图 | 风险 | 是否需批准 |
@@ -260,7 +279,7 @@ GitHub Actions 会执行：
 
 ## 后续能力方向
 
-- `software.validation`：HTTP/TCP 健康检查、日志断言、冒烟测试与证据归档；
+- `software.validation` 后续：认证检查、浏览器验证、日志断言与分布式验收；
 - `code.repair`：任务沙盒、补丁、测试和代码审查证据；
 - `software.release`：构建、版本、发布单、流量切换和回滚；
 - Workflow：把意向、修复、验证、运维和发布编排成 DAG；

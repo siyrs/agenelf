@@ -1,5 +1,5 @@
 # Agenelf operator commands
-.PHONY: help init local mind start stop restart build chat test backup promote watch logs status ops evolution autonomy approve clean
+.PHONY: help init local mind validation start stop restart build chat test backup promote watch logs status ops evolution autonomy approve clean
 
 help: ## Show commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -11,6 +11,7 @@ init: ## Create/migrate local personalization, continuity and runtime directorie
 	@mkdir -p logs workspace app-space app-tmp app-fork \
 		data/auth-requests data/auth-decisions data/auth-consumed \
 		data/ops-requests data/ops-results data/ops-locks \
+		data/validation-requests data/validation-results data/validation-locks \
 		data/promote-requests data/promotion-history data/autonomy-cycles
 	@echo "初始化完成。请编辑 local/ 配置；长期记忆在 local/memory，成长连续性在 local/self。"
 
@@ -26,6 +27,7 @@ start: ## Sync runtime fork and start Agent + deterministic ops runner
 	@test -f local/profile.yaml || (echo "缺少 local/profile.yaml，请先 make init"; exit 1)
 	@test -f local/preferences.yaml || (echo "缺少 local/preferences.yaml，请先 make init"; exit 1)
 	@test -f local/servers.yaml || (echo "缺少 local/servers.yaml，请先 make init"; exit 1)
+	@test -f local/validation.yaml || (echo "缺少 local/validation.yaml，请先 make init"; exit 1)
 	@test -d local/memory || (echo "缺少 local/memory，请先 make init"; exit 1)
 	@test -d local/self || (echo "缺少 local/self，请先 make init"; exit 1)
 	@test -d local/secrets || (echo "缺少 local/secrets，请先 make init"; exit 1)
@@ -73,17 +75,24 @@ ops: ## Show recent operation requests and results
 	@echo "== decisions =="; ls -lt data/auth-decisions 2>/dev/null | head -20 || true
 	@echo "== results =="; ls -lt data/ops-results 2>/dev/null | head -20 || true
 
-logs: ## Follow Agent and ops-runner logs
-	docker compose logs -f --tail=100 agenelf ops-runner
+validation: ## Show validation configuration and trusted queues
+	@echo "== validation config =="; python3 scripts/init_local.py --status | grep -E 'validation|local_dir' || true
+	@echo "== validation requests =="; ls -lt data/validation-requests 2>/dev/null | head -20 || true
+	@echo "== validation results =="; ls -lt data/validation-results 2>/dev/null | head -20 || true
+
+logs: ## Follow Agent and deterministic runners
+	docker compose logs -f --tail=100 agenelf ops-runner validation-runner
 
 status: ## Show containers, local state and all controlled queues
 	-docker compose ps
 	@$(MAKE) --no-print-directory local
 	@$(MAKE) --no-print-directory mind
 	@$(MAKE) --no-print-directory ops
+	@$(MAKE) --no-print-directory validation
 	@$(MAKE) --no-print-directory autonomy
 
 clean: ## Clear temporary task queues; never delete local owner or continuity data
 	@echo "将清空 app-tmp 和运行队列，5 秒内 Ctrl+C 取消..."; sleep 5
-	rm -rf app-tmp/* data/ops-requests/* data/ops-results/* data/ops-locks/*
+	rm -rf app-tmp/* data/ops-requests/* data/ops-results/* data/ops-locks/* \
+		data/validation-requests/* data/validation-locks/*
 	@echo "已清空；local/、自我沉淀、自主循环、裁决与晋升证据均保留。"

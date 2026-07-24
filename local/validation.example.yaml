@@ -1,0 +1,29 @@
+# Copy to local/validation.yaml. Do not put passwords, API keys or auth headers here.
+# The Agent can select only these aliases; validation-runner owns the actual network call.
+checks:
+  agenelf-health:
+    type: http
+    description: Agenelf API 健康检查
+    url: http://agenelf:8000/health
+    method: GET
+    expected_status: [200]
+    json_equals:
+      status: ok
+    max_latency_ms: 3000
+    timeout_seconds: 5
+    tags: [agenelf, smoke]
+
+  example-ssh-port:
+    type: tcp
+    description: 示例 TCP 端口检查，请按实际环境修改或删除
+    host: 192.0.2.10
+    port: 22
+    timeout_seconds: 5
+    max_latency_ms: 3000
+    tags: [example]
+
+suites:
+  agenelf-smoke:
+    description: Agenelf 基础冒烟套件
+    checks:
+      - agenelf-health

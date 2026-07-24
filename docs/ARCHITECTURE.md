@@ -9,7 +9,7 @@ Agenelf 不是一个不断堆工具的单体机器人。它由可组合的**能�
 - 持续沉淀与改进意向 `agent.self_development`
 - 服务器运维 `server.operations`
 - 代码修复 `code.repair`（后续）
-- 软件验证 `software.validation`（后续）
+- 软件验证 `software.validation`
 - 发布交付 `software.release`（后续）
 
 每个能力域可以包含多个技能和工具，但必须遵守同一份能力契约、风险模型、证据和审计协议。这样可以组合出“发现缺口 → 建立意向 → 修复代码 → 跑测试 → 部署服务器 → 验证服务 → 失败回滚”的完整工作流，而不是让 LLM 用一段任意 Shell 串起所有动作。
@@ -19,7 +19,7 @@ Agenelf 不是一个不断堆工具的单体机器人。它由可组合的**能�
 ```text
 ┌──────────────────────────────────────────────────────────────┐
 │ 1. owner-local continuity                                    │
-│ local/profile + preferences + context + memory + self         │
+│ local/profile + preferences + context + validation + memory + self │
 │ 主人上下文、长期记忆、反思沉淀、改进意向                      │
 └───────────────────────┬──────────────────────────────────────┘
                         │ selective / redacted
@@ -40,7 +40,7 @@ Agenelf 不是一个不断堆工具的单体机器人。它由可组合的**能�
             ▼                                ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ 4. host-controlled execution and evidence                    │
-│ promote.sh / human decision / deterministic ops-runner        │
+│ promote.sh / human decision / ops-runner / validation-runner   │
 │ promotion-history / trusted results / audit                   │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -166,3 +166,17 @@ CAPABILITY_META = {
 2. `code.repair`：仓库工作树、补丁、单元测试和审查证据；
 3. `software.release`：构建产物、版本、发布单和回滚点；
 4. Workflow：把意向、修复、验证、运维和发布编排成 DAG，支持失败停止、补偿动作和人工断点。
+
+## 软件验证与证据驱动能力健康
+
+新增正式能力域 `software.validation`。Agent 只能提交检查或套件别名，隔离的 `validation-runner` 从 `local/validation.yaml` 解析真实端点与断言，并将可信结果写入 `data/validation-results/`。
+
+`core/capability_health.py` 汇总 `server.operations`、`software.validation` 和自主循环结果，计算 `healthy / watch / degraded / unknown` 评分。评分进入可观测自我模型和反思系统，不能由模型自行宣称。
+
+```text
+server.operations ─┐
+software.validation ├─> trusted evidence ─> capability health ─> reflection/intention
+autonomy cycles ───┘
+```
+
+验证 Runner 不挂载 SSH 密钥、主人画像、记忆或 `local/self`；Ops Runner 也不读取验证策略。两个执行器权限继续相互隔离。

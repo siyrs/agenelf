@@ -10,6 +10,7 @@ local/
 ├── preferences.yaml      # 爱好、兴趣、工作偏好，Agent 只读
 ├── context/              # 补充 Markdown/TXT/YAML/JSON，Agent 只读
 ├── servers.yaml          # 服务器别名和允许操作，不含密钥
+├── validation.yaml       # HTTP/TCP 检查别名、断言和套件，不含凭据
 ├── secrets/              # SSH 私钥、known_hosts，仅 ops-runner 可见
 ├── memory/
 │   └── memory.json       # 脱敏长期记忆，Agent 可写
@@ -23,12 +24,13 @@ local/
 
 ## Docker 可见性
 
-| 内容 | Agent | ops-runner |
-|---|---:|---:|
-| profile/preferences/context | 只读 | 不挂载 |
-| servers.yaml | 只读、只返回脱敏摘要 | 只读、用于执行 |
-| secrets/ | **不可见** | 只读 |
-| memory/ | 读写 | 不挂载 |
-| self/ | 读写 | 不挂载 |
+| 内容 | Agent | ops-runner | validation-runner |
+|---|---:|---:|---:|
+| profile/preferences/context | 只读 | 不挂载 | 不挂载 |
+| servers.yaml | 只读、只返回脱敏摘要 | 只读、用于执行 | 不挂载 |
+| validation.yaml | 只读、只返回别名摘要 | 不挂载 | 只读、用于检查 |
+| secrets/ | **不可见** | 只读 | **不可见** |
+| memory/ | 读写 | 不挂载 | 不挂载 |
+| self/ | 读写 | 不挂载 | 不挂载 |
 
 所有实际个性化文件和成长记录都被 Git 忽略；仓库只跟踪本说明和 `*.example.*` 模板。

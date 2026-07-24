@@ -13,8 +13,8 @@ from typing import Any
 
 SKILL_META = {
     "name": "self_development",
-    "description": "在 local/self 中沉淀可审计反思、维护改进意向，并把选定意向送入受控自主迭代链。",
-    "version": "0.1.0",
+    "description": "在 local/self 中沉淀可审计反思、维护证据驱动改进意向，并把选定意向送入受控自主迭代链。",
+    "version": "0.2.0",
 }
 
 CAPABILITY_META = {
@@ -24,7 +24,7 @@ CAPABILITY_META = {
         "维护跨会话的操作性自我认知、反思日志和改进目标生命周期；"
         "所谓意愿是持久化的软件策略状态，不是情感或主观意识。"
     ),
-    "version": "0.1.0",
+    "version": "0.2.0",
     "domain": "agent-governance",
     "operations": [
         {
@@ -35,6 +35,16 @@ CAPABILITY_META = {
         {
             "name": "reflect_and_sediment",
             "description": "基于可观测证据记录一次反思并生成去重意向",
+            "risk": "read",
+        },
+        {
+            "name": "capability_health",
+            "description": "根据可信执行与验证结果计算能力健康度",
+            "risk": "read",
+        },
+        {
+            "name": "improvement_roadmap",
+            "description": "综合优先级、证据和生命周期排序开放意向",
             "risk": "read",
         },
         {
@@ -183,6 +193,28 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "capability_health_snapshot",
+            "description": "查看来自运维、软件验证和自主循环可信结果的能力健康评分。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "improvement_roadmap",
+            "description": "按优先级、证据、主人对齐和当前状态排序开放改进意向。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 _AGENT: Any | None = None
@@ -219,6 +251,10 @@ def execute(tool_name: str, args: dict) -> str:
                     deep=bool(data.get("deep", False)),
                 )
             )
+        if tool_name == "capability_health_snapshot":
+            return _dump(agent.capability_health())
+        if tool_name == "improvement_roadmap":
+            return _dump(agent.improvement_roadmap(limit=int(data.get("limit", 10) or 10)))
         if tool_name == "list_self_reflections":
             return _dump(
                 agent.self_reflections(limit=int(data.get("limit", 10) or 10))
