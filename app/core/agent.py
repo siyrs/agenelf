@@ -1,14 +1,16 @@
-"""Agenelf core: conversation, tool orchestration, memory and controlled evolution."""
+"""Agenelf core: conversation, local personalization and controlled evolution."""
 
 from __future__ import annotations
 
 import ast
 import json
 import os
+from pathlib import Path
 
 from .autonomy import AutonomyEngine
 from .context import build_system_prompt, load_persona
 from .llm import LLMClient, MockLLM
+from .local_context import LocalContextStore
 from .memory import MemoryStore
 from .registry import SkillRegistry
 
@@ -20,6 +22,7 @@ _SKILL_PROTOCOL_DOC = """\
 4. 模块级定义函数 def execute(tool_name: str, args: dict) -> str，任何情况下返回字符串。
 5. 生成的技能不得绕过 core 权限、操作队列、只读挂载或宿主机审批。
 6. 自我迭代只能修改 app-tmp，必须包含测试并通过 gate_check；不得直接操作 Git 主分支。
+7. 通用代码写入 app；主人画像、兴趣、服务器清单和记忆必须保存在 local，不得硬编码进技能。
 只输出 Python 源码本身，不要输出任何解释文字。"""
 
 
@@ -28,6 +31,10 @@ class Agent:
 
     def __init__(self, config: dict):
         self.config = config
+        if config.get("local_dir"):
+            os.environ["AGENELF_LOCAL_DIR"] = str(config["local_dir"])
+        if config.get("servers_path"):
+            os.environ["AGENELF_SERVERS_FILE"] = str(config["servers_path"])
         llm_cfg = config.get("llm", {})
         api_key = llm_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
         if config.get("mock") or not api_key:
@@ -38,17 +45,37 @@ class Agent:
         self.registry = SkillRegistry(config.get("skills_dir", "skills"))
         self.registry.discover()
 
-        memory_path = config.get("memory_path", os.path.join("memory_store", "memory.json"))
-        self.memory = MemoryStore(memory_path)
         agent_cfg = config.get("agent", {})
+        memory_path = config.get("memory_path", os.path.join("memory_store", "memory.json"))
+        self.memory = MemoryStore(
+            memory_path,
+            max_entries=int(agent_cfg.get("memory_max_entries", 1000)),
+        )
         self.memory_prompt_limit = int(agent_cfg.get("memory_prompt_limit", 50))
         self.memory_prompt_max_chars = int(agent_cfg.get("memory_prompt_max_chars", 8000))
         self.max_tool_rounds = int(agent_cfg.get("max_tool_rounds", 8))
         self.history_max_messages = max(0, int(agent_cfg.get("history_max_messages", 12)))
         self.history: list[dict] = []
 
+        local_cfg = config.get("local_context", {})
+        if not isinstance(local_cfg, dict):
+            local_cfg = {}
+        local_dir = config.get("local_dir") or os.environ.get("AGENELF_LOCAL_DIR")
+        if not local_dir:
+            local_dir = str(Path(memory_path).resolve().parent)
+        self.local_context = LocalContextStore(
+            local_dir,
+            profile_path=config.get("local_profile_path"),
+            preferences_path=config.get("local_preferences_path"),
+            context_dir=config.get("local_context_dir"),
+            servers_path=config.get("servers_path"),
+            prompt_max_chars=int(local_cfg.get("prompt_max_chars", 12_000)),
+            file_max_chars=int(local_cfg.get("file_max_chars", 20_000)),
+            max_context_files=int(local_cfg.get("max_context_files", 20)),
+        )
+
         persona_path = config.get("persona_path", os.path.join("persona", "persona.yaml"))
-        self.persona = load_persona(persona_path)
+        self.persona = {} if self.local_context.profile else load_persona(persona_path)
         self.system_prompt = ""
         self.configure_skill_runtimes()
         self._refresh_system_prompt()
@@ -74,6 +101,9 @@ class Agent:
                 )
 
     def _refresh_system_prompt(self) -> None:
+        self.local_context.reload()
+        if self.local_context.profile:
+            self.persona = {}
         self.system_prompt = build_system_prompt(
             self.persona,
             self.memory.as_prompt_block(
@@ -83,6 +113,7 @@ class Agent:
             self.registry.all_tool_schemas(),
             agent_name=self.config.get("agent", {}).get("name", "Agenelf"),
             capability_catalog=self.registry.capability_catalog(),
+            local_context_block=self.local_context.prompt_block(),
         )
 
     def _append_history(self, user_input: str, final_text: str) -> None:
@@ -160,6 +191,28 @@ class Agent:
         self.memory.add("episode", summary)
         self._refresh_system_prompt()
         return final_text
+
+    def local_status(self) -> dict:
+        return {
+            **self.local_context.status(),
+            "memory": self.memory.stats(),
+        }
+
+    def reload_local_context(self) -> dict:
+        status = self.local_context.reload()
+        self.persona = {} if self.local_context.profile else load_persona(
+            self.config.get("persona_path", os.path.join("persona", "persona.yaml"))
+        )
+        self._refresh_system_prompt()
+        return {**status, "memory": self.memory.stats()}
+
+    def remember_owner(self, kind: str, content: str) -> dict:
+        stored = self.memory.add(kind, content)
+        self._refresh_system_prompt()
+        return {"stored": stored, "kind": kind, "memory": self.memory.stats()}
+
+    def recall_owner(self, query: str, limit: int = 5) -> list[str]:
+        return self.memory.recall(query, limit=limit)
 
     def self_snapshot(self) -> dict:
         return AutonomyEngine(self).snapshot()

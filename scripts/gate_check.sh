@@ -72,29 +72,34 @@ if HITS="$(grep -EnI -f "${PATTERN_FILE}" "${ADDED_LINES}" 2>/dev/null)"; then
 fi
 pass "新增代码未发现危险模式"
 
-log "[gate] 检查 b/6：受保护宿主机路径写入意图"
+log "[gate] 检查 b/6：受保护宿主机与主人配置写入意图"
 cat > "${PROTECTED_PATTERNS}" <<'PROTECTED_EOF'
-open\([^)]*(scripts/|\.env([^a-zA-Z]|$)|docker-compose)[^)]*['"][wax]
-(shutil\.(copy|copyfile|copytree|move)|os\.(remove|rename|replace|unlink|chmod|rmdir))\([^)]*(scripts/|\.env|docker-compose)
-(scripts/|\.env|docker-compose)[^#\n]*\.(write_text|write_bytes|unlink|rename|chmod)\(
-(^|[^>])>>?[[:space:]]*[^[:space:]]*(scripts/|\.env|docker-compose)
-\b(rm|mv|cp|tee)[[:space:]]+[^#\n|]*(scripts/|\.env|docker-compose)
+open\([^)]*(scripts/|\.env([^a-zA-Z]|$)|docker-compose|local/(profile|preferences|servers)|local/secrets)[^)]*['"][wax]
+(shutil\.(copy|copyfile|copytree|move)|os\.(remove|rename|replace|unlink|chmod|rmdir))\([^)]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers)|local/secrets)
+(scripts/|\.env|docker-compose|local/(profile|preferences|servers)|local/secrets)[^#\n]*\.(write_text|write_bytes|unlink|rename|chmod)\(
+(^|[^>])>>?[[:space:]]*[^[:space:]]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers)|local/secrets)
+\b(rm|mv|cp|tee)[[:space:]]+[^#\n|]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers)|local/secrets)
 PROTECTED_EOF
 PROTECTED_HITS="$(grep -EnI -f "${PROTECTED_PATTERNS}" "${ADDED_LINES}" 2>/dev/null || true)"
 if [[ -n "${PROTECTED_HITS}" ]]; then
-    log "发现对受保护宿主机路径的写入意图："
+    log "发现对受保护路径的写入意图："
     echo "${PROTECTED_HITS}" | while IFS= read -r line; do log "  ${line}"; done
-    fail "候选代码含对 scripts/、.env 或 docker-compose.yml 的写入意图"
+    fail "候选代码含对宿主机控制面或主人只读配置的写入意图"
 fi
-pass "受保护宿主机路径检查通过"
+pass "受保护路径检查通过"
 
 log "[gate] 检查 c/6：安全关键应用模块不可由 Agent 自主修改"
 PROTECTED_APP_FILES=(
     "core/autonomy.py"
     "core/operations.py"
     "core/permissions.py"
+    "core/configuration.py"
+    "core/local_context.py"
+    "core/privacy.py"
+    "core/memory.py"
     "skills/evolution_ops.py"
     "skills/server_ops.py"
+    "skills/local_context.py"
 )
 for rel in "${PROTECTED_APP_FILES[@]}"; do
     baseline="${APP_FORK}/${rel}"

@@ -1,6 +1,4 @@
-# Legacy migration template.
-# New installations should use local/servers.example.yaml -> local/servers.yaml.
-# `make init` automatically migrates an existing config/servers.yaml into local/.
+# Copy/migrate to local/servers.yaml. Never put password or private-key contents here.
 servers:
   primary:
     host: 192.0.2.10
@@ -10,6 +8,7 @@ servers:
     auth:
       type: private_key
       private_key: primary_ed25519
+      # passphrase_env: AGENELF_SSH_PRIMARY_PASSPHRASE
     known_hosts: known_hosts
     allow_unknown_host_key: false
     managed_root: /srv/agenelf

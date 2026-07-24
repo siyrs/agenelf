@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for chat, capabilities, operations and controlled autonomy."""
+"""FastAPI entrypoint for chat, personalization, operations and autonomy."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-import yaml
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel
 
 _APP_DIR = Path(__file__).resolve().parent
@@ -18,6 +17,7 @@ if str(_APP_DIR) not in sys.path:
 
 from core import operations  # noqa: E402
 from core.agent import Agent  # noqa: E402
+from core.configuration import load_config as load_shared_config  # noqa: E402
 
 
 def _runtime_root() -> Path:
@@ -26,25 +26,7 @@ def _runtime_root() -> Path:
 
 
 def load_config() -> dict:
-    config_path = _APP_DIR / "config.yaml"
-    if config_path.exists():
-        with config_path.open("r", encoding="utf-8") as handle:
-            config: dict = yaml.safe_load(handle) or {}
-    else:
-        config = {}
-    llm = config.setdefault("llm", {})
-    if os.environ.get("OPENAI_API_KEY"):
-        llm["api_key"] = os.environ["OPENAI_API_KEY"]
-    if os.environ.get("OPENAI_BASE_URL"):
-        llm["base_url"] = os.environ["OPENAI_BASE_URL"]
-    if os.environ.get("AGENELF_MODEL"):
-        llm["model"] = os.environ["AGENELF_MODEL"]
-    if os.environ.get("AGENELF_MOCK") == "1":
-        config["mock"] = True
-    config.setdefault("skills_dir", str(_APP_DIR / "skills"))
-    config.setdefault("persona_path", str(_APP_DIR / "persona" / "persona.yaml"))
-    config.setdefault("memory_path", str(_APP_DIR / "memory_store" / "memory.json"))
-    return config
+    return load_shared_config(app_dir=_APP_DIR)
 
 
 _agent: Agent | None = None
@@ -63,7 +45,7 @@ def require_api_token(x_agenelf_token: str | None = Header(default=None)) -> Non
         raise HTTPException(status_code=401, detail="无效的 Agenelf API Token")
 
 
-app = FastAPI(title="Agenelf API", version="0.3.0")
+app = FastAPI(title="Agenelf API", version="0.4.0")
 
 
 class ChatRequest(BaseModel):
@@ -77,6 +59,11 @@ class ChatResponse(BaseModel):
 class AutonomyRequest(BaseModel):
     goal: str = ""
     apply_changes: bool = False
+
+
+class RememberRequest(BaseModel):
+    kind: str
+    content: str
 
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_api_token)])
@@ -93,6 +80,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 @app.get("/health")
 def health() -> dict:
     agent = get_agent()
+    local = agent.local_status()
     return {
         "status": "ok",
         "skills": len(agent.registry.skills),
@@ -100,12 +88,43 @@ def health() -> dict:
         "model": agent.llm.model,
         "api_auth_enabled": bool(os.environ.get("AGENELF_API_TOKEN")),
         "autonomy": "controlled-sandbox",
+        "local_context_ready": bool(
+            local.get("profile_loaded") or local.get("preferences_loaded")
+        ),
+        "local_context_warnings": len(local.get("warnings", [])),
     }
 
 
 @app.get("/capabilities", dependencies=[Depends(require_api_token)])
 def capabilities() -> dict:
     return {"capabilities": get_agent().registry.capability_catalog()}
+
+
+@app.get("/local/status", dependencies=[Depends(require_api_token)])
+def local_status() -> dict:
+    return get_agent().local_status()
+
+
+@app.post("/local/reload", dependencies=[Depends(require_api_token)])
+def local_reload() -> dict:
+    return get_agent().reload_local_context()
+
+
+@app.post("/memory", dependencies=[Depends(require_api_token)])
+def remember(request: RememberRequest) -> dict:
+    if request.kind not in {"fact", "preference"}:
+        raise HTTPException(status_code=400, detail="kind 只能是 fact 或 preference")
+    if not request.content.strip():
+        raise HTTPException(status_code=400, detail="content 不能为空")
+    return get_agent().remember_owner(request.kind, request.content)
+
+
+@app.get("/memory/search", dependencies=[Depends(require_api_token)])
+def search_memory(
+    q: str = Query(min_length=1),
+    limit: int = Query(default=5, ge=1, le=20),
+) -> dict:
+    return {"query": q, "results": get_agent().recall_owner(q, limit)}
 
 
 @app.get("/self", dependencies=[Depends(require_api_token)])
@@ -121,7 +140,9 @@ def self_assessment() -> dict:
 @app.post("/autonomy/cycles", dependencies=[Depends(require_api_token)])
 def create_autonomy_cycle(request: AutonomyRequest) -> dict:
     try:
-        return get_agent().run_autonomy_cycle(goal=request.goal, apply_changes=request.apply_changes)
+        return get_agent().run_autonomy_cycle(
+            goal=request.goal, apply_changes=request.apply_changes
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"自主循环执行失败：{exc}") from exc
 
@@ -166,10 +187,18 @@ def evolution_status() -> dict:
         entries = [path for path in requests_dir.iterdir() if path.is_dir()]
         entries.sort(key=lambda path: path.stat().st_mtime, reverse=True)
         for entry in entries[:10]:
-            requests.append({"id": entry.name, "markers": sorted(path.name for path in entry.iterdir() if path.is_file())})
+            requests.append(
+                {
+                    "id": entry.name,
+                    "markers": sorted(
+                        path.name for path in entry.iterdir() if path.is_file()
+                    ),
+                }
+            )
     return {"root": str(root), "session": session, "promotion_requests": requests}
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
