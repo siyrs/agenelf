@@ -68,7 +68,7 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
-validation-runner:
+  validation-runner:
     build: .
     command: ["python", "/agenelf/scripts/validation_runner.py", "--interval", "1"]
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
