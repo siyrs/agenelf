@@ -1,0 +1,16 @@
+# 运行时代码副本（由 scripts/sync_fork.sh 生成）
+app-fork/
+app-tmp/
+
+# 运行时数据
+data/
+logs/
+workspace/
+app-space/
+.env
+
+# Python
+__pycache__/
+*.pyc
+app/memory_store/
+app/evolution/evolution.log
