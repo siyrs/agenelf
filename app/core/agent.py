@@ -1,4 +1,4 @@
-"""Agenelf core: conversation, local personalization and controlled evolution."""
+"""Agenelf core: conversation, personalization and persistent self-development."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .llm import LLMClient, MockLLM
 from .local_context import LocalContextStore
 from .memory import MemoryStore
 from .registry import SkillRegistry
+from .self_development import SelfDevelopmentEngine
 
 _SKILL_PROTOCOL_DOC = """\
 技能协议（必须严格遵守）：
@@ -22,12 +23,13 @@ _SKILL_PROTOCOL_DOC = """\
 4. 模块级定义函数 def execute(tool_name: str, args: dict) -> str，任何情况下返回字符串。
 5. 生成的技能不得绕过 core 权限、操作队列、只读挂载或宿主机审批。
 6. 自我迭代只能修改 app-tmp，必须包含测试并通过 gate_check；不得直接操作 Git 主分支。
-7. 通用代码写入 app；主人画像、兴趣、服务器清单和记忆必须保存在 local，不得硬编码进技能。
+7. 通用代码写入 app；主人画像、兴趣、服务器清单、记忆和成长连续性必须保存在 local，不得硬编码进技能。
+8. “自我意识、意愿、意向”只能实现为可观测、持久化的软件状态，不得宣称主观意识或情感。
 只输出 Python 源码本身，不要输出任何解释文字。"""
 
 
 class Agent:
-    """Conversation loop plus composable capability-backed tools."""
+    """Conversation loop plus composable, owner-local continuity."""
 
     def __init__(self, config: dict):
         self.config = config
@@ -56,6 +58,8 @@ class Agent:
         self.max_tool_rounds = int(agent_cfg.get("max_tool_rounds", 8))
         self.history_max_messages = max(0, int(agent_cfg.get("history_max_messages", 12)))
         self.history: list[dict] = []
+        self.last_auto_reflection: dict | None = None
+        self.last_auto_reflection_error = ""
 
         local_cfg = config.get("local_context", {})
         if not isinstance(local_cfg, dict):
@@ -76,6 +80,7 @@ class Agent:
 
         persona_path = config.get("persona_path", os.path.join("persona", "persona.yaml"))
         self.persona = {} if self.local_context.profile else load_persona(persona_path)
+        self.development = SelfDevelopmentEngine(self)
         self.system_prompt = ""
         self.configure_skill_runtimes()
         self._refresh_system_prompt()
@@ -114,6 +119,7 @@ class Agent:
             agent_name=self.config.get("agent", {}).get("name", "Agenelf"),
             capability_catalog=self.registry.capability_catalog(),
             local_context_block=self.local_context.prompt_block(),
+            self_development_block=self.development.prompt_block(),
         )
 
     def _append_history(self, user_input: str, final_text: str) -> None:
@@ -130,8 +136,23 @@ class Agent:
             if self.history and self.history[0].get("role") == "assistant":
                 self.history = self.history[1:]
 
+    def _maybe_auto_reflect(self) -> None:
+        """Best-effort deterministic sedimentation; never break a completed chat."""
+
+        try:
+            result = self.development.maybe_reflect(trigger="conversation")
+            if result is not None:
+                self.last_auto_reflection = result
+            self.last_auto_reflection_error = ""
+            self.registry.errors.pop("runtime:self_development:auto", None)
+        except Exception as exc:
+            self.last_auto_reflection_error = f"{type(exc).__name__}: {exc}"
+            self.registry.errors["runtime:self_development:auto"] = (
+                f"自动沉淀失败：{self.last_auto_reflection_error}"
+            )
+
     def chat(self, user_input: str) -> str:
-        """Process one turn while preserving a bounded recent conversation."""
+        """Process one turn while preserving bounded conversation and continuity."""
 
         self._refresh_system_prompt()
         messages: list[dict] = [
@@ -160,7 +181,9 @@ class Agent:
                             "type": "function",
                             "function": {
                                 "name": call["name"],
-                                "arguments": json.dumps(call["arguments"], ensure_ascii=False),
+                                "arguments": json.dumps(
+                                    call["arguments"], ensure_ascii=False
+                                ),
                             },
                         }
                         for call in tool_calls
@@ -189,6 +212,7 @@ class Agent:
         if tool_used:
             summary = f"[含工具调用] {summary}"
         self.memory.add("episode", summary)
+        self._maybe_auto_reflect()
         self._refresh_system_prompt()
         return final_text
 
@@ -204,7 +228,11 @@ class Agent:
             self.config.get("persona_path", os.path.join("persona", "persona.yaml"))
         )
         self._refresh_system_prompt()
-        return {**status, "memory": self.memory.stats()}
+        return {
+            **status,
+            "memory": self.memory.stats(),
+            "self_development": self.development.summary_for_snapshot(),
+        }
 
     def remember_owner(self, kind: str, content: str) -> dict:
         stored = self.memory.add(kind, content)
@@ -215,13 +243,75 @@ class Agent:
         return self.memory.recall(query, limit=limit)
 
     def self_snapshot(self) -> dict:
-        return AutonomyEngine(self).snapshot()
+        snapshot = AutonomyEngine(self).snapshot()
+        snapshot["self_development"] = self.development.summary_for_snapshot()
+        return snapshot
 
     def self_assess(self) -> dict:
         return AutonomyEngine(self).assess()
 
-    def run_autonomy_cycle(self, goal: str = "", apply_changes: bool = False) -> dict:
-        return AutonomyEngine(self).run_cycle(goal=goal, apply_changes=apply_changes)
+    def self_development_status(self) -> dict:
+        return self.development.status()
+
+    def self_reflections(self, limit: int = 10) -> list[dict]:
+        return self.development.recent_reflections(limit)
+
+    def reflect_and_sediment(self, note: str = "", deep: bool = False) -> dict:
+        result = self.development.reflect(
+            trigger="manual",
+            note=note,
+            deep=deep,
+        )
+        self._refresh_system_prompt()
+        return result
+
+    def improvement_intentions(
+        self, status: str = "", limit: int = 20
+    ) -> list[dict]:
+        return self.development.list_intentions(status=status, limit=limit)
+
+    def get_improvement_intention(self, intention_id: str) -> dict:
+        return self.development.get_intention(intention_id)
+
+    def create_improvement_intention(
+        self,
+        *,
+        title: str,
+        rationale: str = "",
+        priority: str = "P2",
+        acceptance_criteria: list[str] | None = None,
+    ) -> dict:
+        result = self.development.create_intention(
+            title=title,
+            rationale=rationale,
+            priority=priority,
+            acceptance_criteria=acceptance_criteria,
+            source="owner_or_agent",
+            owner_aligned=True,
+        )
+        self._refresh_system_prompt()
+        return result
+
+    def pursue_improvement_intention(
+        self, intention_id: str, *, apply_changes: bool = False
+    ) -> dict:
+        result = self.development.pursue_intention(
+            intention_id,
+            apply_changes=apply_changes,
+        )
+        self._refresh_system_prompt()
+        return result
+
+    def run_autonomy_cycle(
+        self, goal: str = "", apply_changes: bool = False
+    ) -> dict:
+        result = AutonomyEngine(self).run_cycle(
+            goal=goal,
+            apply_changes=apply_changes,
+        )
+        self.development.observe_cycle(result)
+        self._refresh_system_prompt()
+        return result
 
     def autonomy_status(self, cycle_id: str = "") -> dict | list[dict]:
         engine = AutonomyEngine(self)
@@ -238,7 +328,10 @@ class Agent:
                 },
                 {
                     "role": "user",
-                    "content": f"请为以下需求生成一个新的技能文件源码：\n{description}\n\n{_SKILL_PROTOCOL_DOC}",
+                    "content": (
+                        f"请为以下需求生成一个新的技能文件源码：\n"
+                        f"{description}\n\n{_SKILL_PROTOCOL_DOC}"
+                    ),
                 },
             ]
         )

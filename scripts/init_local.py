@@ -34,9 +34,27 @@ def _copy_tree_files(source: Path, target: Path, actions: list[str]) -> None:
         actions.append(f"迁移 {path.relative_to(ROOT)} -> {destination.relative_to(ROOT)}")
 
 
+def _write_json_if_missing(path: Path, value, actions: list[str]) -> None:
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    actions.append(f"创建 {path.relative_to(ROOT)}")
+
+
 def initialize(migrate: bool = True) -> dict:
     actions: list[str] = []
-    for directory in (LOCAL, LOCAL / "context", LOCAL / "memory", LOCAL / "secrets"):
+    directories = (
+        LOCAL,
+        LOCAL / "context",
+        LOCAL / "memory",
+        LOCAL / "secrets",
+        LOCAL / "self",
+    )
+    for directory in directories:
         if not directory.exists():
             directory.mkdir(parents=True, exist_ok=True)
             actions.append(f"创建 {directory.relative_to(ROOT)}/")
@@ -63,9 +81,12 @@ def initialize(migrate: bool = True) -> dict:
     for source in memory_sources:
         if source.is_file():
             _copy_if_missing(source, memory_target, actions)
-    if not memory_target.exists():
-        memory_target.write_text("[]\n", encoding="utf-8")
-        actions.append("创建 local/memory/memory.json")
+    _write_json_if_missing(memory_target, [], actions)
+
+    self_dir = LOCAL / "self"
+    _write_json_if_missing(self_dir / "reflections.json", [], actions)
+    _write_json_if_missing(self_dir / "intentions.json", [], actions)
+    _write_json_if_missing(self_dir / "state.json", {}, actions)
 
     context_example = LOCAL / "context.example.md"
     context_target = LOCAL / "context" / "owner-notes.md"
@@ -75,7 +96,12 @@ def initialize(migrate: bool = True) -> dict:
         _copy_tree_files(ROOT / "secrets", LOCAL / "secrets", actions)
 
     # Best-effort permissions; Windows may ignore chmod semantics.
-    for directory in (LOCAL, LOCAL / "secrets", LOCAL / "memory"):
+    for directory in (
+        LOCAL,
+        LOCAL / "secrets",
+        LOCAL / "memory",
+        LOCAL / "self",
+    ):
         try:
             directory.chmod(0o700)
         except OSError:
@@ -85,6 +111,9 @@ def initialize(migrate: bool = True) -> dict:
         LOCAL / "preferences.yaml",
         LOCAL / "servers.yaml",
         memory_target,
+        self_dir / "reflections.json",
+        self_dir / "intentions.json",
+        self_dir / "state.json",
     )
     for path in files:
         if path.exists():
@@ -105,6 +134,7 @@ def initialize(migrate: bool = True) -> dict:
 
 
 def status() -> dict:
+    self_dir = LOCAL / "self"
     return {
         "root": str(ROOT),
         "local_dir": str(LOCAL),
@@ -113,6 +143,10 @@ def status() -> dict:
         "servers": (LOCAL / "servers.yaml").is_file(),
         "context_dir": (LOCAL / "context").is_dir(),
         "memory": (LOCAL / "memory" / "memory.json").is_file(),
+        "self_dir": self_dir.is_dir(),
+        "self_state": (self_dir / "state.json").is_file(),
+        "self_reflections": (self_dir / "reflections.json").is_file(),
+        "self_intentions": (self_dir / "intentions.json").is_file(),
         "secrets_dir": (LOCAL / "secrets").is_dir(),
         "secret_file_count": sum(
             1 for path in (LOCAL / "secrets").glob("*") if path.is_file()

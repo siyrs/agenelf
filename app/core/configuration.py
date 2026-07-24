@@ -60,6 +60,12 @@ def load_config(
     preferences_path = local_dir / "preferences.yaml"
     context_dir = local_dir / "context"
     memory_path = local_dir / "memory" / "memory.json"
+    self_dir_override = os.environ.get("AGENELF_SELF_DIR", "").strip()
+    self_dir = (
+        Path(self_dir_override).resolve()
+        if self_dir_override
+        else local_dir / "self"
+    )
     local_servers = local_dir / "servers.yaml"
     legacy_servers = root / "config" / "servers.yaml"
     servers_override = os.environ.get("AGENELF_SERVERS_FILE", "").strip()
@@ -71,6 +77,7 @@ def load_config(
 
     config["runtime_root"] = str(root)
     config["local_dir"] = str(local_dir)
+    config["self_dir"] = str(self_dir)
     config.setdefault("skills_dir", str(app_dir / "skills"))
     config.setdefault(
         "persona_path", str(profile_path if profile_path.is_file() else legacy_persona)
@@ -82,5 +89,6 @@ def load_config(
     config.setdefault("servers_path", str(servers_path))
 
     os.environ["AGENELF_LOCAL_DIR"] = str(local_dir)
+    os.environ["AGENELF_SELF_DIR"] = str(self_dir)
     os.environ["AGENELF_SERVERS_FILE"] = str(servers_path)
     return config

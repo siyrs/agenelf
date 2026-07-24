@@ -16,6 +16,7 @@ local/preferences.yaml
 local/servers.yaml
 local/context/
 local/memory/
+local/self/
 local/secrets/
 
 # Legacy private locations kept ignored for migration compatibility

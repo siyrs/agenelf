@@ -7,6 +7,7 @@ services:
     environment:
       AGENELF_ROOT: /agenelf
       AGENELF_LOCAL_DIR: /agenelf/local
+      AGENELF_SELF_DIR: /agenelf/local/self
       AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
     ports:
       - "127.0.0.1:8000:8000"
@@ -26,6 +27,8 @@ services:
       - ./local/context:/agenelf/local/context:ro
       - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
       - ./local/memory:/agenelf/local/memory:rw
+      # Persistent reflections and improvement intentions are Agent-writable.
+      - ./local/self:/agenelf/local/self:rw
     read_only: true
     tmpfs:
       - /tmp
