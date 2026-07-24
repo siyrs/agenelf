@@ -76,13 +76,24 @@ jobs:
           done < <(find scripts -maxdepth 1 -type f -name '*.sh' -print0)
 
       - name: Validate Docker topology and local initialization
+        id: docker
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          cp .env.example .env
-          cp .ops-runner.env.example .ops-runner.env
-          python scripts/init_local.py --no-migrate >/tmp/init-local.json
-          docker compose config >/dev/null
+          set -o pipefail
+          {
+            cp .env.example .env
+            cp .ops-runner.env.example .ops-runner.env
+            python scripts/init_local.py --no-migrate
+            docker compose config
+          } 2>&1 | tee /tmp/agenelf-docker-validation.log
+
+      - name: Preserve Docker validation failure evidence
+        if: steps.docker.outcome == 'failure'
+        shell: bash
+        run: |
+          cp /tmp/agenelf-docker-validation.log .agent-docker-failure.log
+          printf 'docker_validation=failed\n' > .agent-docker-status
 
       - name: Commit expanded implementation and evidence
         shell: bash
@@ -98,6 +109,6 @@ jobs:
           git commit -m 'feat: add evidence-driven software validation'
           git push origin HEAD:agent/evidence-driven-validation
 
-      - name: Fail when the expanded unit suite failed
-        if: steps.unit.outcome == 'failure'
+      - name: Fail when expanded validation failed
+        if: steps.unit.outcome == 'failure' || steps.docker.outcome == 'failure'
         run: exit 1
