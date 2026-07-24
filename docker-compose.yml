@@ -1,26 +1,59 @@
-# Agenelf 编排文件
-# 安全边界核心：
-#   - app/（代码真理之源）绝不挂载进容器，agent 无法直接触碰；
-#   - 容器内唯一可写代码区是 app-tmp/；
-#   - 绝不挂载 /var/run/docker.sock，防止 agent 逃逸控制宿主机。
+# Agenelf split-runtime deployment.
+# The Agent can propose operations but has no SSH key, Docker socket, or trusted
+# result write access.  ops-runner is deterministic and owns the remote creds.
 services:
   agenelf:
     build: .
     env_file: .env
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_SERVERS_FILE: /agenelf/config/servers.yaml
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
-      # 运行代码（sync_fork.sh 从 app/ 生成），只读，防止运行中被篡改
       - ./app-fork:/agenelf/app-fork:ro
-      # agent 自我迭代暂存区，容器内唯一可写代码区
       - ./app-tmp:/agenelf/app-tmp:rw
-      # 底线脚本与文档，只读挂载：agent 只能触发，不能修改
       - ./scripts:/agenelf/scripts:ro
-      # 运行时数据
+      - ./config:/agenelf/config:ro
       - ./data:/agenelf/data:rw
+      # Human decisions and runner results are trusted inputs, never Agent output.
+      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+      - ./data/ops-results:/agenelf/data/ops-results:ro
       - ./logs:/agenelf/logs:rw
-      # 给 agent 指派的任务保存目录
       - ./workspace:/agenelf/workspace:rw
-      # agent 的能力资产：skills / mcp / plugins
       - ./app-space:/agenelf/app-space:rw
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  ops-runner:
+    build: .
+    command: ["python", "/agenelf/scripts/ops_runner.py", "--interval", "1"]
+    env_file: .ops-runner.env
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_SERVERS_FILE: /agenelf/config/servers.yaml
+      AGENELF_SECRETS_DIR: /agenelf/secrets
+    volumes:
+      - ./app-fork:/agenelf/app-fork:ro
+      - ./scripts:/agenelf/scripts:ro
+      - ./config:/agenelf/config:ro
+      - ./secrets:/agenelf/secrets:ro
+      - ./data/ops-requests:/agenelf/data/ops-requests:ro
+      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+      - ./data/ops-results:/agenelf/data/ops-results:rw
+      - ./data/ops-locks:/agenelf/data/ops-locks:rw
+      - ./logs:/agenelf/logs:rw
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped

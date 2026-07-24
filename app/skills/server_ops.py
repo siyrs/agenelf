@@ -1,327 +1,519 @@
-"""server_ops 技能：运维服务器常用只读操作，安全第一。
+"""Composable server-operations capability.
 
-安全模型（三级）：
-- 白名单只读命令（ls/ps/df/free/uptime/cat/grep/tail/ss/curl -I/
-  systemctl status/uname/whoami/pwd）无需确认直接执行；
-- 高危命令（rm/dd/chmod/systemctl restart/装包/远程脚本管道等，见
-  core.permissions.classify_command）一律拦截：先创建授权请求，必须人类
-  在宿主机执行 ``scripts/approve.sh <请求ID> approve`` 批准后，携带
-  ``auth_id`` 重试方可执行（授权一次性核销，默认 300 秒有效）；
-- 其余命令必须 ``confirm=True`` 才会执行，否则返回需要确认的提示；
-- 所有命令经子进程运行，15 秒超时，stdout/stderr 全量返回；
-- 高危命令的拦截/批准/执行全程写 logs/audit.log 审计日志。
+The Agent never owns SSH keys and never executes remote shell directly.  Every
+request is written to the operation queue and a deterministic ``ops-runner``
+process performs the actual SSH work.  Read-only requests can run automatically;
+changes require a host-side approval bound to the exact request fingerprint.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import re
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
-import os
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 try:
-    from core import permissions
-except ImportError:  # 兼容 registry 以文件路径独立加载技能的场景
+    from core import operations, permissions
+except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from core import permissions
+    from core import operations, permissions
 
 SKILL_META = {
     "name": "server_ops",
-    "description": "运维服务器：白名单只读 shell 命令直接执行、高危命令需人类授权（auth_id）、其他命令需确认；服务端口连通检测；磁盘状态查看。",
-    "version": "0.3.0",
+    "description": "通过隔离的 SSH 运维执行器管理服务器、Docker、APT 与 systemd 服务。",
+    "version": "1.0.0",
 }
 
-TOOLS: list[dict] = [
+CAPABILITY_META = {
+    "id": "server.operations",
+    "name": "服务器运维",
+    "description": (
+        "服务器巡检、APT 元数据更新、Docker 安装与容器查看、Compose 部署、"
+        "systemd 服务查询/重启。可与验证、发布、代码修复能力组合。"
+    ),
+    "version": "1.0.0",
+    "domain": "operations",
+    "composes_with": ["software.validation", "software.release", "code.repair"],
+    "operations": [
+        {"name": "inspect", "description": "服务器健康巡检", "risk": "read"},
+        {"name": "docker_ps", "description": "查看 Docker 容器", "risk": "read"},
+        {"name": "service_status", "description": "查看 systemd 服务", "risk": "read"},
+        {"name": "apt_update", "description": "更新 APT 软件索引", "risk": "change"},
+        {"name": "compose_deploy", "description": "受管目录内部署 Compose 项目", "risk": "change"},
+        {"name": "service_restart", "description": "重启允许清单中的服务", "risk": "change"},
+        {"name": "docker_install", "description": "安装并启动 Docker", "risk": "privileged"},
+    ],
+}
+
+_OPERATION_RISKS = {
+    "inspect": operations.RISK_READ,
+    "docker_ps": operations.RISK_READ,
+    "service_status": operations.RISK_READ,
+    "apt_update": operations.RISK_CHANGE,
+    "compose_deploy": operations.RISK_CHANGE,
+    "service_restart": operations.RISK_CHANGE,
+    "docker_install": operations.RISK_PRIVILEGED,
+}
+_PROJECT_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}")
+_SERVICE_RE = re.compile(r"[a-zA-Z0-9@_.-]{1,128}")
+
+TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "run_shell",
+            "name": "list_managed_servers",
+            "description": "列出已配置的服务器别名和允许的运维操作，不返回密码或私钥。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_server",
+            "description": "巡检服务器 CPU/内存/磁盘/系统与 Docker 状态。只读，可自动执行。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "servers.yaml 中的服务器别名"},
+                    "wait_seconds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 8,
+                        "description": "等待执行器返回结果的秒数，默认 3",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_docker_containers",
+            "description": "查看目标服务器上的 Docker 容器。只读，可自动执行。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string"},
+                    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 8},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_apt_index",
+            "description": "在目标服务器执行 apt-get update。会改变系统缓存，提交后需人类批准。",
+            "parameters": {
+                "type": "object",
+                "properties": {"target": {"type": "string"}},
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "install_docker",
+            "description": "通过 Ubuntu/Debian 官方仓库安装 docker.io 与 compose 插件。高权限操作，必须人类批准。",
+            "parameters": {
+                "type": "object",
+                "properties": {"target": {"type": "string"}},
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "deploy_compose_project",
             "description": (
-                "执行 shell 命令。白名单只读命令（ls, ps, df, free, uptime, cat, grep, tail, "
-                "ss, curl -I, systemctl status, uname, whoami, pwd）直接执行；"
-                "高危命令（rm、dd、chmod、chown、kill、shutdown、systemctl stop/restart、"
-                "装包、curl|sh 等）会被拦截并生成授权请求 ID——必须通知人类在宿主机执行 "
-                "scripts/approve.sh <请求ID> approve 批准后，携带 auth_id=<请求ID> 重试 "
-                "（授权一次性、限时有效，不可重复使用）；"
-                "其余命令必须 confirm=True 才会执行，否则仅返回需要确认的提示。"
+                "将 Compose YAML 部署到服务器受管目录。禁止 privileged、host namespace、"
+                "Docker Socket、设备映射和未授权绝对路径挂载；需人类批准。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "要执行的 shell 命令行。",
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "非白名单、非高危命令的执行确认，默认 false。",
-                    },
-                    "auth_id": {
-                        "type": "string",
-                        "description": (
-                            "高危命令的人类授权请求 ID（auth- 开头）。首次调用高危命令时留空，"
-                            "从拦截提示中获得请求 ID 并等待人类批准后，带此参数重试。"
-                        ),
-                    },
+                    "target": {"type": "string"},
+                    "project": {"type": "string", "description": "项目名"},
+                    "compose_yaml": {"type": "string", "description": "完整 Compose YAML"},
+                    "pull": {"type": "boolean", "description": "部署前是否拉取镜像，默认 true"},
+                    "plan_only": {"type": "boolean", "description": "仅校验并展示计划，不提交"},
                 },
-                "required": ["command"],
+                "required": ["target", "project", "compose_yaml"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "check_service",
-            "description": "用 socket 检测指定主机端口的 TCP 连通性，返回通/不通。",
+            "name": "manage_system_service",
+            "description": "查询或重启允许清单中的 systemd 服务；status 只读，restart 需批准。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "host": {
-                        "type": "string",
-                        "description": "目标主机名或 IP。",
-                    },
-                    "port": {
-                        "type": "integer",
-                        "description": "目标端口（1-65535）。",
-                    },
+                    "target": {"type": "string"},
+                    "service": {"type": "string"},
+                    "action": {"type": "string", "enum": ["status", "restart"]},
+                    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 8},
                 },
-                "required": ["host", "port"],
+                "required": ["target", "service", "action"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "disk_status",
-            "description": "返回 df -h 的磁盘使用结果。",
+            "name": "get_server_operation",
+            "description": "查询运维请求的排队、待批准、执行成功或失败状态。",
             "parameters": {
                 "type": "object",
-                "properties": {},
-                "required": [],
+                "properties": {
+                    "operation_id": {"type": "string"},
+                    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 8},
+                },
+                "required": ["operation_id"],
             },
         },
     },
 ]
 
-# 直接放行的只读命令（按可执行文件名匹配）
-_WHITELIST = {
-    "ls", "ps", "df", "free", "uptime", "cat", "grep", "tail",
-    "ss", "uname", "whoami", "pwd",
-}
+
+def _root() -> Path:
+    configured = os.environ.get("AGENELF_ROOT", "").strip()
+    return Path(configured).resolve() if configured else Path(__file__).resolve().parents[2]
 
 
-def _split_command(command: str) -> list[str]:
-    """按当前平台拆分命令行，保留 Windows 路径中的反斜杠。"""
-    if os.name != "nt":
-        return shlex.split(command)
-    lexer = shlex.shlex(command, posix=False)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    return [
-        token[1:-1] if len(token) >= 2 and token[0] == token[-1] in "\"'" else token
-        for token in lexer
-    ]
+def _servers_path() -> Path:
+    configured = os.environ.get("AGENELF_SERVERS_FILE", "").strip()
+    return Path(configured).resolve() if configured else _root() / "config" / "servers.yaml"
 
 
-def _git_bash() -> str | None:
-    """返回 Windows 上可执行 Linux 运维命令的 Git Bash，其他平台返回 bash。"""
-    if os.name != "nt":
-        return shutil.which("bash")
-    for candidate in (
-        Path(os.environ.get("PROGRAMFILES", r"C:\\Program Files")) / "Git" / "bin" / "bash.exe",
-        Path(r"C:\\Program Files\\Git\\bin\\bash.exe"),
-    ):
-        if candidate.is_file():
-            return str(candidate)
-    return None
+def load_servers() -> dict[str, dict[str, Any]]:
+    path = _servers_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    raw = data.get("servers", {}) if isinstance(data, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(name): cfg for name, cfg in raw.items() if isinstance(cfg, dict)}
 
 
-def _to_bash_token(token: str) -> str:
-    """把绝对 Windows 路径转换为 Git Bash 可识别的 /c/... 形式。"""
-    drive, tail = os.path.splitdrive(token)
-    if os.name == "nt" and drive and tail:
-        normalized_tail = tail.lstrip("\\\\/").replace("\\\\", "/")
-        return f"/{drive[0].lower()}/{normalized_tail}"
-    return token
+def _profile(target: str) -> dict[str, Any]:
+    target = str(target or "").strip()
+    profiles = load_servers()
+    if target not in profiles:
+        raise ValueError(f"未配置服务器 {target!r}；请先复制 config/servers.example.yaml 为 config/servers.yaml")
+    return profiles[target]
 
 
-def _can_execute(argv: list[str]) -> bool:
-    """判断命令能否在当前平台执行，不把 Windows 开发机误判为 Linux 服务器。"""
-    return bool(argv and (shutil.which(argv[0]) or _git_bash()))
+def _allowed_operation(profile: dict[str, Any], operation: str) -> None:
+    allowed = profile.get("allowed_operations")
+    if allowed is None:
+        return
+    if not isinstance(allowed, list) or operation not in {str(item) for item in allowed}:
+        raise PermissionError(f"服务器策略未允许操作：{operation}")
 
 
-def _run_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    """以 argv 语义执行命令；Windows 缺少 Linux 工具时经 Git Bash 兼容运行。
-
-    先将 argv 重新安全引用，再交给 ``bash -lc``，避免 shell 元字符被重新解释。
-    """
-    run_kwargs = {
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": 15,
-    }
-    if shutil.which(argv[0]):
-        return subprocess.run(argv, **run_kwargs)
-    bash = _git_bash()
-    if bash is None:
-        raise FileNotFoundError(argv[0])
-    bash_command = shlex.join([_to_bash_token(token) for token in argv])
-    return subprocess.run([bash, "-lc", bash_command], **run_kwargs)
+def _allowed_service(profile: dict[str, Any], service: str) -> None:
+    if not _SERVICE_RE.fullmatch(service):
+        raise ValueError("service 名称非法")
+    allowed = profile.get("allowed_services", [])
+    if not isinstance(allowed, list) or service not in {str(item) for item in allowed}:
+        raise PermissionError(f"服务 {service!r} 不在 allowed_services 清单中")
 
 
-def _is_whitelisted(argv: list[str]) -> bool:
-    """判断命令是否属于白名单只读命令。"""
-    if not argv:
+def _is_under(path: str, roots: list[str]) -> bool:
+    try:
+        candidate = Path(path)
+    except TypeError:
         return False
-    prog = argv[0]
-    if prog in _WHITELIST:
+    if not candidate.is_absolute():
         return True
-    # curl 仅允许 -I（HEAD 请求，只取响应头）
-    if prog == "curl":
-        return "-I" in argv[1:] or "--head" in argv[1:]
-    # systemctl 仅允许 status 子命令
-    if prog == "systemctl":
-        return len(argv) >= 2 and argv[1] == "status"
+    normalized = candidate.as_posix().rstrip("/") or "/"
+    for root in roots:
+        root_value = Path(str(root)).as_posix().rstrip("/") or "/"
+        if normalized == root_value or normalized.startswith(root_value + "/"):
+            return True
     return False
 
 
-def _handle_dangerous(command: str, auth_id: str) -> str | None:
-    """高危命令授权流程。
+def validate_compose(compose_yaml: str, profile: dict[str, Any]) -> dict[str, Any]:
+    """Validate the non-negotiable Compose red lines before queueing."""
 
-    返回 None 表示授权通过且已核销，可继续执行；否则返回给调用者的提示文本。
-    所有拦截/批准/拒绝事件均写审计日志。
-    """
-    if not auth_id:
-        # 未带授权 ID：创建授权请求，等待人类在宿主机裁决
-        ok, result = permissions.request_auth(
-            skill=SKILL_META["name"],
-            action="run_shell",
-            detail=command,
-            reason="高危命令需人类授权后方可执行",
+    if not isinstance(compose_yaml, str) or not compose_yaml.strip():
+        raise ValueError("compose_yaml 不能为空")
+    try:
+        document = yaml.safe_load(compose_yaml)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Compose YAML 解析失败：{exc}") from exc
+    if not isinstance(document, dict) or not isinstance(document.get("services"), dict):
+        raise ValueError("Compose 必须包含 services 对象")
+    if not document["services"]:
+        raise ValueError("Compose services 不能为空")
+
+    allowed_bind_roots = [str(item) for item in profile.get("allowed_bind_roots", [])]
+    forbidden_socket = "/var/run/docker.sock"
+    for service_name, service in document["services"].items():
+        if not isinstance(service, dict):
+            raise ValueError(f"service {service_name!r} 配置必须是对象")
+        if service.get("privileged") is True:
+            raise PermissionError(f"service {service_name!r} 禁止 privileged=true")
+        for field in ("network_mode", "pid", "ipc", "userns_mode"):
+            if str(service.get(field, "")).lower() == "host":
+                raise PermissionError(f"service {service_name!r} 禁止 {field}: host")
+        caps = service.get("cap_add", [])
+        if isinstance(caps, list) and any(str(item).upper() == "ALL" for item in caps):
+            raise PermissionError(f"service {service_name!r} 禁止 cap_add: ALL")
+        if service.get("devices"):
+            raise PermissionError(f"service {service_name!r} 禁止 devices 映射")
+
+        volumes = service.get("volumes", [])
+        if not isinstance(volumes, list):
+            continue
+        for volume in volumes:
+            source = ""
+            target = ""
+            if isinstance(volume, str):
+                parts = volume.split(":", 2)
+                if len(parts) >= 2:
+                    source, target = parts[0], parts[1]
+            elif isinstance(volume, dict) and volume.get("type", "volume") == "bind":
+                source = str(volume.get("source", ""))
+                target = str(volume.get("target", ""))
+            if forbidden_socket in {source, target}:
+                raise PermissionError("安全红线：禁止挂载 Docker Socket")
+            if source == "/":
+                raise PermissionError("安全红线：禁止挂载宿主机根目录")
+            if source.startswith("/") and not _is_under(source, allowed_bind_roots):
+                raise PermissionError(f"绝对路径挂载未获允许：{source}")
+    return document
+
+
+def list_managed_servers() -> str:
+    profiles = load_servers()
+    if not profiles:
+        return "尚未配置服务器。请复制 config/servers.example.yaml 为 config/servers.yaml 并填写连接信息。"
+    safe: list[dict[str, Any]] = []
+    for name, profile in sorted(profiles.items()):
+        safe.append(
+            {
+                "name": name,
+                "host": profile.get("host"),
+                "port": profile.get("port", 22),
+                "username": profile.get("username"),
+                "managed_root": profile.get("managed_root", "/srv/agenelf"),
+                "allowed_operations": profile.get("allowed_operations", sorted(_OPERATION_RISKS)),
+                "allowed_services": profile.get("allowed_services", []),
+            }
         )
-        if not ok:
-            permissions.audit("dangerous_blocked", f"授权请求创建失败：{command!r}（{result}）")
-            return f"⚠️ 高危命令已拦截：{result}"
-        permissions.audit("dangerous_blocked", f"高危命令拦截：{command!r}，授权请求 {result}")
-        return (
-            f"⚠️ 高危命令已拦截，授权请求ID：{result}，"
-            f"请通知人类在宿主机执行 scripts/approve.sh {result} approve，"
-            "批准后带 auth_id 重试"
-        )
-    # 带了授权 ID：核验状态
-    status = permissions.check_auth(auth_id)
-    if status == permissions.STATUS_APPROVED:
-        if not permissions.consume_auth(auth_id):
-            permissions.audit(
-                "dangerous_denied", f"授权核销失败：{command!r} auth_id={auth_id}"
-            )
-            return f"高危命令未获授权：授权 {auth_id} 核销失败（可能已过期或被使用）"
-        permissions.audit("dangerous_approved", f"高危命令批准执行：{command!r} auth_id={auth_id}")
-        return None  # 授权通过，放行
-    # 其余状态一律拒绝执行
-    status_text = {
-        permissions.STATUS_PENDING: "仍在等待人类裁决，请稍候重试或通知人类处理",
-        permissions.STATUS_DENIED: "已被人类拒绝，不得执行",
-        permissions.STATUS_EXPIRED: "授权已过期，请重新发起（留空 auth_id 再调用一次）",
-        permissions.STATUS_USED: "授权已被使用（一次性），如需再执行请重新申请",
-        permissions.STATUS_NOT_FOUND: "授权请求不存在，请检查 auth_id 是否正确",
-    }.get(status, f"授权状态异常：{status}")
-    permissions.audit(
-        "dangerous_denied", f"高危命令拒绝执行：{command!r} auth_id={auth_id} 状态={status}"
+    return json.dumps(safe, ensure_ascii=False, indent=2)
+
+
+def _submit(
+    target: str,
+    operation: str,
+    parameters: dict[str, Any] | None,
+    summary: str,
+    wait_seconds: int = 0,
+) -> str:
+    profile = _profile(target)
+    _allowed_operation(profile, operation)
+    request = operations.submit_operation(
+        capability="server.operations",
+        operation=operation,
+        target=target,
+        parameters=parameters or {},
+        risk=_OPERATION_RISKS[operation],
+        summary=summary,
     )
-    return f"高危命令未获授权（{status}）：{status_text}"
-
-
-def run_shell(command: str, confirm: bool = False, auth_id: str = "") -> str:
-    """执行 shell 命令；白名单直放，高危命令需人类授权，其余需 confirm=True。"""
-    if not isinstance(command, str) or not command.strip():
-        return "执行失败：command 不能为空"
-    try:
-        argv = _split_command(command)
-    except ValueError as exc:
-        return f"执行失败：命令解析错误：{exc}"
-    if not argv:
-        return "执行失败：command 不能为空"
-    # 高危判定必须先于可执行性探测。否则在缺少 rm 等 Linux 工具的开发机上，
-    # 高危指令会绕过授权审计，直接以“命令不存在”结束。
-    is_dangerous = permissions.classify_command(command) == "dangerous"
-    if is_dangerous:
-        blocked = _handle_dangerous(command, (auth_id or "").strip())
-        if blocked is not None:
-            return blocked
-        permissions.audit("dangerous_exec", f"高危命令已执行：{command!r}")
-
-    if not _can_execute(argv):
-        return f"执行失败：命令 {argv[0]!r} 不存在"
-    if not is_dangerous and not _is_whitelisted(argv) and not confirm:
-        return (
-            f"命令 {command!r} 不在只读白名单内，存在风险。"
-            "如确认执行，请以 confirm=True 重新调用。"
+    risk = request["risk"]
+    if risk == operations.RISK_READ:
+        state = operations.wait_for_result(
+            request["id"],
+            timeout_seconds=max(0, min(int(wait_seconds), 8)),
         )
+        return json.dumps(state, ensure_ascii=False, indent=2)
+    return (
+        f"运维请求已创建：{request['id']}\n"
+        f"风险级别：{risk}\n"
+        f"目标：{target}\n"
+        f"操作：{operation}\n"
+        f"摘要：{summary}\n"
+        f"批准命令：bash scripts/approve.sh {request['id']} approve\n"
+        "批准仅绑定本请求的目标、操作和参数；修改任何内容都必须重新申请。"
+    )
+
+
+def inspect_server(target: str, wait_seconds: int = 3) -> str:
+    return _submit(target, "inspect", {}, f"巡检服务器 {target}", wait_seconds)
+
+
+def list_docker_containers(target: str, wait_seconds: int = 3) -> str:
+    return _submit(target, "docker_ps", {}, f"查看 {target} 的 Docker 容器", wait_seconds)
+
+
+def update_apt_index(target: str) -> str:
+    return _submit(target, "apt_update", {}, f"在 {target} 执行 apt-get update")
+
+
+def install_docker(target: str) -> str:
+    return _submit(target, "docker_install", {}, f"在 {target} 安装并启动 Docker")
+
+
+def deploy_compose_project(
+    target: str,
+    project: str,
+    compose_yaml: str,
+    pull: bool = True,
+    plan_only: bool = False,
+) -> str:
+    profile = _profile(target)
+    _allowed_operation(profile, "compose_deploy")
+    project = str(project or "").strip()
+    if not _PROJECT_RE.fullmatch(project):
+        return "提交失败：project 只能包含字母、数字、点、下划线和短横线，最长 64 字符"
     try:
-        proc = _run_command(argv)
-    except subprocess.TimeoutExpired:
-        return "执行超时（15 秒限制），进程已被终止"
-    except OSError as exc:
+        document = validate_compose(compose_yaml, profile)
+    except (ValueError, PermissionError) as exc:
+        return f"Compose 安全校验失败：{exc}"
+    services = sorted(str(item) for item in document["services"])
+    preview = {
+        "target": target,
+        "project": project,
+        "services": services,
+        "managed_root": profile.get("managed_root", "/srv/agenelf"),
+        "pull": bool(pull),
+        "risk": operations.RISK_CHANGE,
+    }
+    if plan_only:
+        return "Compose 计划校验通过：\n" + json.dumps(preview, ensure_ascii=False, indent=2)
+    return _submit(
+        target,
+        "compose_deploy",
+        {"project": project, "compose_yaml": compose_yaml, "pull": bool(pull)},
+        f"部署 Compose 项目 {project}（服务：{', '.join(services)}）",
+    )
+
+
+def manage_system_service(
+    target: str,
+    service: str,
+    action: str,
+    wait_seconds: int = 3,
+) -> str:
+    try:
+        profile = _profile(target)
+        service = str(service or "").strip()
+        _allowed_service(profile, service)
+    except (ValueError, PermissionError) as exc:
+        return f"操作失败：{exc}"
+    action = str(action or "").strip().lower()
+    if action == "status":
+        return _submit(
+            target,
+            "service_status",
+            {"service": service},
+            f"查看 {target} 的 {service} 服务",
+            wait_seconds,
+        )
+    if action == "restart":
+        return _submit(
+            target,
+            "service_restart",
+            {"service": service},
+            f"重启 {target} 的 {service} 服务",
+        )
+    return "操作失败：action 只能是 status 或 restart"
+
+
+def get_server_operation(operation_id: str, wait_seconds: int = 0) -> str:
+    try:
+        state = operations.wait_for_result(
+            operation_id,
+            timeout_seconds=max(0, min(int(wait_seconds), 8)),
+        )
+    except (TypeError, ValueError) as exc:
+        return f"查询失败：{exc}"
+    return json.dumps(state, ensure_ascii=False, indent=2)
+
+
+# Kept as a compatibility helper, but deliberately not exposed to the LLM.
+# It now permits read-only local diagnostics only. ``confirm=True`` can no
+# longer make an arbitrary command executable.
+def run_shell(command: str, confirm: bool = False, auth_id: str = "") -> str:
+    del confirm, auth_id
+    if permissions.classify_command(command) != "whitelist":
+        return "已拒绝：通用 shell 执行已关闭；请使用结构化服务器运维工具。"
+    try:
+        argv = shlex.split(command)
+        if not argv or not shutil.which(argv[0]):
+            return f"执行失败：命令 {argv[0] if argv else ''!r} 不存在"
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return f"执行失败：{exc}"
-    parts = [f"退出码：{proc.returncode}"]
-    parts.append(f"stdout:\n{proc.stdout}" if proc.stdout else "stdout:（空）")
-    parts.append(f"stderr:\n{proc.stderr}" if proc.stderr else "stderr:（空）")
-    return "\n".join(parts)
-
-
-def check_service(host: str, port: int) -> str:
-    """socket 检测 TCP 连通性，返回通/不通。"""
-    if not isinstance(host, str) or not host.strip():
-        return "检测失败：host 不能为空"
-    try:
-        port = int(port)
-    except (TypeError, ValueError):
-        return f"检测失败：port 无效：{port!r}"
-    if not 1 <= port <= 65535:
-        return f"检测失败：port 超出范围（1-65535）：{port}"
-    try:
-        with socket.create_connection((host, port), timeout=5):
-            return f"{host}:{port} 连通（TCP 可达）"
-    except (OSError, socket.timeout) as exc:
-        return f"{host}:{port} 不通：{exc}"
-
-
-def disk_status() -> str:
-    """返回 df -h 结果。"""
-    try:
-        proc = _run_command(["df", "-h"])
-    except subprocess.TimeoutExpired:
-        return "执行超时（15 秒限制）"
-    except OSError as exc:
-        return f"执行失败：{exc}"
-    if proc.returncode != 0:
-        return f"df -h 执行失败（退出码 {proc.returncode}）：\n{proc.stderr}"
-    return proc.stdout
+    return (
+        f"退出码：{proc.returncode}\n"
+        f"stdout:\n{proc.stdout or '（空）'}\n"
+        f"stderr:\n{proc.stderr or '（空）'}"
+    )
 
 
 _DISPATCH = {
-    "run_shell": lambda a: run_shell(
-        a.get("command", ""),
-        bool(a.get("confirm", False)),
-        str(a.get("auth_id", "") or ""),
+    "list_managed_servers": lambda args: list_managed_servers(),
+    "inspect_server": lambda args: inspect_server(
+        args.get("target", ""), args.get("wait_seconds", 3)
     ),
-    "check_service": lambda a: check_service(a.get("host", ""), a.get("port", 0)),
-    "disk_status": lambda a: disk_status(),
+    "list_docker_containers": lambda args: list_docker_containers(
+        args.get("target", ""), args.get("wait_seconds", 3)
+    ),
+    "update_apt_index": lambda args: update_apt_index(args.get("target", "")),
+    "install_docker": lambda args: install_docker(args.get("target", "")),
+    "deploy_compose_project": lambda args: deploy_compose_project(
+        args.get("target", ""),
+        args.get("project", ""),
+        args.get("compose_yaml", ""),
+        bool(args.get("pull", True)),
+        bool(args.get("plan_only", False)),
+    ),
+    "manage_system_service": lambda args: manage_system_service(
+        args.get("target", ""),
+        args.get("service", ""),
+        args.get("action", ""),
+        args.get("wait_seconds", 3),
+    ),
+    "get_server_operation": lambda args: get_server_operation(
+        args.get("operation_id", ""), args.get("wait_seconds", 0)
+    ),
 }
 
 
-def execute(tool_name: str, args: dict) -> str:
-    """按协议路由工具调用；内部捕获所有异常并返回字符串。"""
+def execute(tool_name: str, args: dict[str, Any]) -> str:
     handler = _DISPATCH.get(tool_name)
     if handler is None:
-        return f"未知工具：{tool_name}，可用工具：{', '.join(sorted(_DISPATCH))}"
+        return f"未知工具：{tool_name}"
     try:
-        return handler(args or {})
-    except Exception as exc:  # 兜底：协议要求永不抛异常
+        return str(handler(args or {}))
+    except Exception as exc:
         return f"执行失败：{type(exc).__name__}: {exc}"

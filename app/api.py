@@ -1,148 +1,121 @@
-"""Agenelf HTTP 交互入口（第二个入口，第一个为 cli.py）。
-
-基于 FastAPI + uvicorn 提供 HTTP 接口：
-- POST /chat              对话：{"message": str} -> {"reply": str}
-- GET  /health            健康检查：{"status": "ok", "skills": n, "model": ...}
-- GET  /evolution/status  自我迭代晋升管道状态（会话 + promote-requests）
-
-配置来源：app/config.yaml + 环境变量覆盖
-- OPENAI_API_KEY   覆盖 llm.api_key
-- OPENAI_BASE_URL  覆盖 llm.base_url
-- AGENELF_MODEL    覆盖 llm.model
-- AGENELF_MOCK=1   强制使用 MockLLM（无需真实 API Key）
-
-运行方式：
-    cd app && uvicorn api:app --host 0.0.0.0 --port 8000
-    或  python app/api.py
-"""
+"""FastAPI entrypoint for chat, capability discovery and operation status."""
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import sys
 from pathlib import Path
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-# 保证无论从哪个目录启动（uvicorn api:app / python app/api.py / 测试导入）
-# 都能以 app/ 为基准导入 core 包
 _APP_DIR = Path(__file__).resolve().parent
 if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
+from core import operations  # noqa: E402
 from core.agent import Agent  # noqa: E402
 
 
-# ----------------------------------------------------------------------
-# 配置加载
-# ----------------------------------------------------------------------
 def _runtime_root() -> Path:
-    """获取运行时根目录：AGENELF_ROOT 优先，否则取 app/ 的上一级。"""
-    env_root = os.environ.get("AGENELF_ROOT", "").strip()
-    if env_root:
-        return Path(env_root).resolve()
-    return _APP_DIR.parent
+    configured = os.environ.get("AGENELF_ROOT", "").strip()
+    return Path(configured).resolve() if configured else _APP_DIR.parent
 
 
 def load_config() -> dict:
-    """加载 app/config.yaml 并应用环境变量覆盖，返回完整配置。"""
     config_path = _APP_DIR / "config.yaml"
     if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            config: dict = yaml.safe_load(f) or {}
+        with config_path.open("r", encoding="utf-8") as handle:
+            config: dict = yaml.safe_load(handle) or {}
     else:
         config = {}
-
-    # 环境变量覆盖 LLM 配置
-    llm_cfg = config.setdefault("llm", {})
+    llm = config.setdefault("llm", {})
     if os.environ.get("OPENAI_API_KEY"):
-        llm_cfg["api_key"] = os.environ["OPENAI_API_KEY"]
+        llm["api_key"] = os.environ["OPENAI_API_KEY"]
     if os.environ.get("OPENAI_BASE_URL"):
-        llm_cfg["base_url"] = os.environ["OPENAI_BASE_URL"]
+        llm["base_url"] = os.environ["OPENAI_BASE_URL"]
     if os.environ.get("AGENELF_MODEL"):
-        llm_cfg["model"] = os.environ["AGENELF_MODEL"]
+        llm["model"] = os.environ["AGENELF_MODEL"]
     if os.environ.get("AGENELF_MOCK") == "1":
-        # 强制 mock：无需真实 API Key，用于本地开发与测试
         config["mock"] = True
-
-    # 路径类配置锚定到 app/ 目录，避免依赖启动时的工作目录
     config.setdefault("skills_dir", str(_APP_DIR / "skills"))
     config.setdefault("persona_path", str(_APP_DIR / "persona" / "persona.yaml"))
-    config.setdefault(
-        "memory_path", str(_APP_DIR / "memory_store" / "memory.json")
-    )
+    config.setdefault("memory_path", str(_APP_DIR / "memory_store" / "memory.json"))
     return config
 
 
-# ----------------------------------------------------------------------
-# Agent 单例（懒加载）
-# ----------------------------------------------------------------------
 _agent: Agent | None = None
 
 
 def get_agent() -> Agent:
-    """获取 Agent 单例；首次调用时按当前配置懒加载。"""
     global _agent
     if _agent is None:
         _agent = Agent(load_config())
     return _agent
 
 
-# ----------------------------------------------------------------------
-# HTTP 接口
-# ----------------------------------------------------------------------
-app = FastAPI(title="Agenelf API", version="0.1.0")
+def require_api_token(x_agenelf_token: str | None = Header(default=None)) -> None:
+    """Require a token when configured; localhost-only remains the safe default."""
+
+    expected = os.environ.get("AGENELF_API_TOKEN", "")
+    if expected and not hmac.compare_digest(x_agenelf_token or "", expected):
+        raise HTTPException(status_code=401, detail="无效的 Agenelf API Token")
+
+
+app = FastAPI(title="Agenelf API", version="0.2.0")
 
 
 class ChatRequest(BaseModel):
-    """POST /chat 的请求体。"""
-
     message: str
 
 
 class ChatResponse(BaseModel):
-    """POST /chat 的响应体。"""
-
     reply: str
 
 
-@app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
-    """处理一轮对话，返回助手回复文本。"""
-    if not req.message.strip():
+@app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_api_token)])
+def chat(request: ChatRequest) -> ChatResponse:
+    if not request.message.strip():
         raise HTTPException(status_code=400, detail="message 不能为空")
     try:
-        reply = get_agent().chat(req.message)
-    except Exception as exc:  # Agent 内部错误不应使服务崩溃
+        reply = get_agent().chat(request.message)
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=f"对话处理失败：{exc}") from exc
     return ChatResponse(reply=reply)
 
 
 @app.get("/health")
 def health() -> dict:
-    """健康检查：返回状态、已加载技能数与当前模型名。"""
     agent = get_agent()
     return {
         "status": "ok",
         "skills": len(agent.registry.skills),
+        "capabilities": len(agent.registry.capability_catalog()),
         "model": agent.llm.model,
+        "api_auth_enabled": bool(os.environ.get("AGENELF_API_TOKEN")),
     }
 
 
-@app.get("/evolution/status")
-def evolution_status() -> dict:
-    """返回自我迭代晋升管道状态。
+@app.get("/capabilities", dependencies=[Depends(require_api_token)])
+def capabilities() -> dict:
+    return {"capabilities": get_agent().registry.capability_catalog()}
 
-    读取运行时根目录下 data/evolution-session.json（当前会话）
-    与 data/promote-requests/（最近的晋升请求及其标记文件）。
-    """
+
+@app.get("/operations/{operation_id}", dependencies=[Depends(require_api_token)])
+def operation_status(operation_id: str) -> dict:
+    try:
+        return operations.get_operation(operation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/evolution/status", dependencies=[Depends(require_api_token)])
+def evolution_status() -> dict:
     root = _runtime_root()
     data_dir = root / "data"
-
-    # 当前会话记录（不存在或损坏时为 None）
     session: dict | None = None
     session_path = data_dir / "evolution-session.json"
     if session_path.exists():
@@ -150,26 +123,19 @@ def evolution_status() -> dict:
             session = json.loads(session_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             session = None
-
-    # 最近的晋升请求（按目录修改时间倒序，最多 10 条）
     requests: list[dict] = []
     requests_dir = data_dir / "promote-requests"
     if requests_dir.is_dir():
-        entries = [p for p in requests_dir.iterdir() if p.is_dir()]
-        entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        entries = [path for path in requests_dir.iterdir() if path.is_dir()]
+        entries.sort(key=lambda path: path.stat().st_mtime, reverse=True)
         for entry in entries[:10]:
             requests.append(
                 {
                     "id": entry.name,
-                    "markers": sorted(f.name for f in entry.iterdir() if f.is_file()),
+                    "markers": sorted(path.name for path in entry.iterdir() if path.is_file()),
                 }
             )
-
-    return {
-        "root": str(root),
-        "session": session,
-        "promotion_requests": requests,
-    }
+    return {"root": str(root), "session": session, "promotion_requests": requests}
 
 
 if __name__ == "__main__":

@@ -1,0 +1,39 @@
+# Copy to config/servers.yaml.  Never put passwords or private-key contents here.
+servers:
+  primary:
+    host: 192.0.2.10
+    port: 22
+    username: agenelf
+    connect_timeout: 10
+
+    # Runner-only authentication. Relative paths resolve below ./secrets/.
+    auth:
+      type: private_key
+      private_key: primary_ed25519
+      # passphrase_env: AGENELF_SSH_PRIMARY_PASSPHRASE
+    known_hosts: known_hosts
+    allow_unknown_host_key: false
+
+    # This directory must be writable by the SSH user. Compose projects are
+    # deployed only beneath <managed_root>/<project>/.
+    managed_root: /srv/agenelf
+    docker_command: docker
+
+    allowed_operations:
+      - inspect
+      - docker_ps
+      - service_status
+      - apt_update
+      - compose_deploy
+      - service_restart
+      - docker_install
+
+    # Only these systemd services can be queried/restarted.
+    allowed_services:
+      - docker
+      - nginx
+
+    # Absolute Compose bind mounts are blocked unless they are beneath one of
+    # these roots. Named volumes and relative paths remain allowed.
+    allowed_bind_roots:
+      - /srv/agenelf-data

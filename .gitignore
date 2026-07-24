@@ -1,16 +1,22 @@
-# 运行时代码副本（由 scripts/sync_fork.sh 生成）
+# Runtime code copies
 app-fork/
 app-tmp/
 
-# 运行时数据
-data/
+# Runtime state
 logs/
 workspace/
 app-space/
+data/
 .env
+.ops-runner.env
+
+# Server inventory and credentials
+config/servers.yaml
+secrets/
 
 # Python
 __pycache__/
 *.pyc
+.pytest_cache/
 app/memory_store/
 app/evolution/evolution.log

@@ -1,114 +1,124 @@
 #!/usr/bin/env bash
-# approve.sh — 高危命令人类裁决闸门（人类专属，宿主机执行）
+# approve.sh — host-only decision gate for exact Agenelf operation requests.
 #
-# ⚠️ 本脚本是"agent 提议，人类裁决"安全模型的最后一道闸门：
-#   - 容器内 scripts/ 为只读挂载，agent 无法修改本脚本；
-#   - agent 只能在 data/auth-requests/ 下创建 pending 请求并读取裁决结果，
-#     永远不能把请求改成 approved/denied——那是人类通过本脚本才有的权力；
-#   - 裁决动作本身也会写入 logs/audit.log，全程可追溯。
+# Usage:
+#   bash scripts/approve.sh <op-or-auth-id> [approve|deny] [reason]
 #
-# 用法：
-#   bash scripts/approve.sh <request_id> [approve|deny] [拒绝理由]
-#     request_id   授权请求 ID（agent 拦截提示中给出的 auth-xxxxxxxxxxxx）
-#     approve|deny 裁决动作，缺省为 approve
-#     拒绝理由     仅在 deny 时可填，记入请求文件与审计日志
-#
-# approve 时会刷新 expires_at 为当前时间 +300 秒（一次性授权，核销后作废）。
+# The script never edits the Agent-writable request.  It creates a separate
+# decision document in data/auth-decisions/.  That directory must be mounted
+# read-only into the Agent container and read-only into the ops runner.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-REQ_ID="${1:-}"
+REQUEST_ID="${1:-}"
 ACTION="${2:-approve}"
-DENY_REASON="${3:-}"
-REQ_DIR="${ROOT_DIR}/data/auth-requests"
+REASON="${3:-}"
+DECISIONS_DIR="${ROOT_DIR}/data/auth-decisions"
 LOG_FILE="${ROOT_DIR}/logs/audit.log"
 
 usage() {
-    echo "用法：bash scripts/approve.sh <request_id> [approve|deny] [拒绝理由]" >&2
-    exit 2
+  echo "用法：bash scripts/approve.sh <op-or-auth-id> [approve|deny] [reason]" >&2
+  exit 2
 }
 
-# 参数校验
-[[ -n "${REQ_ID}" ]] || usage
-if [[ ! "${REQ_ID}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-    echo "[approve] 错误：请求ID含有非法字符：${REQ_ID}" >&2
-    exit 1
-fi
-if [[ "${ACTION}" != "approve" && "${ACTION}" != "deny" ]]; then
-    echo "[approve] 错误：动作只能是 approve 或 deny，收到：${ACTION}" >&2
-    usage
-fi
+[[ -n "${REQUEST_ID}" ]] || usage
+[[ "${REQUEST_ID}" =~ ^(op-[0-9a-f]{16}|auth-[0-9a-f]{12})$ ]] || {
+  echo "[approve] 非法请求 ID：${REQUEST_ID}" >&2
+  exit 1
+}
+[[ "${ACTION}" == "approve" || "${ACTION}" == "deny" ]] || usage
 
-REQ_FILE="${REQ_DIR}/${REQ_ID}.json"
-if [[ ! -f "${REQ_FILE}" ]]; then
-    echo "[approve] 错误：授权请求不存在：${REQ_FILE}" >&2
-    exit 1
+if [[ "${REQUEST_ID}" == op-* ]]; then
+  REQUEST_FILE="${ROOT_DIR}/data/ops-requests/${REQUEST_ID}.json"
+else
+  REQUEST_FILE="${ROOT_DIR}/data/auth-requests/${REQUEST_ID}.json"
 fi
-
-mkdir -p "${ROOT_DIR}/logs"
-
-# 同时输出到控制台与审计日志
-log() {
-    local m="[$(date '+%F %T')] $*"
-    echo "${m}"
-    echo "${m}" >> "${LOG_FILE}"
+[[ -f "${REQUEST_FILE}" ]] || {
+  echo "[approve] 请求不存在：${REQUEST_FILE}" >&2
+  exit 1
 }
 
-# 先读取当前状态，只允许对 pending 请求裁决
-CURRENT_STATUS="$(python3 - "${REQ_FILE}" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as f:
-    print(json.load(f).get("status", ""))
-PY
-)"
-if [[ "${CURRENT_STATUS}" != "pending" ]]; then
-    echo "[approve] 拒绝裁决：请求 ${REQ_ID} 当前状态为 ${CURRENT_STATUS}，仅 pending 可裁决" >&2
-    exit 1
-fi
+mkdir -p "${DECISIONS_DIR}" "${ROOT_DIR}/logs"
+DECISION_FILE="${DECISIONS_DIR}/${REQUEST_ID}.json"
+[[ ! -e "${DECISION_FILE}" ]] || {
+  echo "[approve] 请求已裁决，不允许覆盖：${DECISION_FILE}" >&2
+  exit 1
+}
 
-# 内联 python3 更新 JSON：status / decided_at / decided_by($USER) /
-# （deny 时）拒绝理由 /（approve 时）刷新 expires_at = 现在 +300s
 DECIDED_BY="${USER:-unknown}" \
-DENY_REASON="${DENY_REASON}" \
-python3 - "${REQ_FILE}" "${ACTION}" <<'PY'
+REQUEST_ID="${REQUEST_ID}" \
+ACTION="${ACTION}" \
+REASON="${REASON}" \
+python3 - "${REQUEST_FILE}" "${DECISION_FILE}" <<'PY'
+import hashlib
 import json
 import os
 import sys
 from datetime import datetime, timedelta
 
-path, action = sys.argv[1], sys.argv[2]
-with open(path, encoding="utf-8") as f:
-    data = json.load(f)
+request_path, decision_path = sys.argv[1], sys.argv[2]
+with open(request_path, encoding="utf-8") as handle:
+    request = json.load(handle)
+
+request_id = os.environ["REQUEST_ID"]
+action = os.environ["ACTION"]
+if request.get("id") != request_id:
+    raise SystemExit("请求文件中的 id 与文件名不一致")
+
+if request_id.startswith("op-"):
+    payload = {
+        "capability": str(request.get("capability", "")).strip(),
+        "operation": str(request.get("operation", "")).strip(),
+        "target": str(request.get("target", "")).strip(),
+        "parameters": request.get("parameters", {}),
+    }
+else:
+    payload = request.get("binding") or {
+        "skill": request.get("skill", ""),
+        "action": request.get("action", ""),
+        "detail": request.get("detail", ""),
+    }
+
+encoded = json.dumps(
+    payload,
+    ensure_ascii=False,
+    sort_keys=True,
+    separators=(",", ":"),
+).encode("utf-8")
+fingerprint = hashlib.sha256(encoded).hexdigest()
+if request.get("fingerprint") and request.get("fingerprint") != fingerprint:
+    raise SystemExit("请求指纹不匹配，拒绝裁决")
 
 now = datetime.now().astimezone()
-data["status"] = "approved" if action == "approve" else "denied"
-data["decided_at"] = now.isoformat(timespec="seconds")
-data["decided_by"] = os.environ.get("DECIDED_BY", "unknown")
-if action == "approve":
-    # 批准后重新给 300 秒窗口，agent 需在窗口内核销执行
-    data["expires_at"] = (now + timedelta(seconds=300)).isoformat(timespec="seconds")
-else:
-    reason = os.environ.get("DENY_REASON", "").strip()
-    if reason:
-        data["deny_reason"] = reason
+decision = {
+    "schema_version": 1,
+    "request_id": request_id,
+    "decision": action,
+    "fingerprint": fingerprint,
+    "decided_at": now.isoformat(timespec="seconds"),
+    "decided_by": os.environ.get("DECIDED_BY", "unknown"),
+    "expires_at": (now + timedelta(seconds=300)).isoformat(timespec="seconds"),
+}
+reason = os.environ.get("REASON", "").strip()
+if reason:
+    decision["reason"] = reason
 
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-    f.write("\n")
+with open(decision_path, "x", encoding="utf-8") as handle:
+    json.dump(decision, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.chmod(decision_path, 0o600)
 
-print(data["status"])
+print(json.dumps({
+    "id": request_id,
+    "decision": action,
+    "fingerprint": fingerprint,
+    "summary": request.get("summary") or request.get("detail"),
+    "target": request.get("target"),
+    "operation": request.get("operation") or request.get("action"),
+}, ensure_ascii=False, indent=2))
 PY
 
-# 打印裁决结果并写审计日志
-if [[ "${ACTION}" == "approve" ]]; then
-    log "[approve] 请求 ${REQ_ID} 已批准（裁决人：${USER:-unknown}，300 秒内有效，一次性核销）"
-    echo "[approve] 授权详情：$(python3 -c "import json;d=json.load(open('${REQ_FILE}',encoding='utf-8'));print(d.get('skill',''),d.get('action',''),repr(d.get('detail','')))")"
-else
-    if [[ -n "${DENY_REASON}" ]]; then
-        log "[deny] 请求 ${REQ_ID} 已拒绝（裁决人：${USER:-unknown}，理由：${DENY_REASON}）"
-    else
-        log "[deny] 请求 ${REQ_ID} 已拒绝（裁决人：${USER:-unknown}）"
-    fi
-fi
+printf '[%s] [%s] request=%s by=%s reason=%s\n' \
+  "$(date '+%F %T')" "${ACTION}" "${REQUEST_ID}" "${USER:-unknown}" "${REASON}" \
+  | tee -a "${LOG_FILE}"
