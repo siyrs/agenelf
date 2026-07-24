@@ -95,7 +95,8 @@ jobs:
           cp /tmp/agenelf-docker-validation.log .agent-docker-failure.log
           printf 'docker_validation=failed\n' > .agent-docker-status
 
-      - name: Commit expanded implementation and evidence
+      - name: Stage and commit expanded implementation
+        id: expanded
         shell: bash
         run: |
           set -euo pipefail
@@ -103,12 +104,41 @@ jobs:
           git config user.email 'agenelf-ci@users.noreply.github.com'
           git add -A
           if git diff --cached --quiet; then
-            echo 'No expanded changes to commit.'
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git commit -m 'feat: add evidence-driven software validation'
-          git push origin HEAD:agent/evidence-driven-validation
+          git format-patch -1 --stdout > /tmp/evidence-validation.patch
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Fail when expanded validation failed
-        if: steps.unit.outcome == 'failure' || steps.docker.outcome == 'failure'
+      - name: Upload expanded patch evidence
+        if: steps.expanded.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-validation-expanded-patch
+          path: /tmp/evidence-validation.patch
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Push expanded implementation
+        id: push
+        if: steps.expanded.outputs.changed == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          git push origin HEAD:agent/evidence-driven-validation 2>&1 | tee /tmp/agenelf-push.log
+
+      - name: Upload push diagnostics
+        if: steps.push.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-validation-push-diagnostics
+          path: /tmp/agenelf-push.log
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Fail when expanded validation or push failed
+        if: steps.unit.outcome == 'failure' || steps.docker.outcome == 'failure' || steps.push.outcome == 'failure'
         run: exit 1
