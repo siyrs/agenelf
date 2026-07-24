@@ -1,4 +1,4 @@
-"""Agenelf core: conversation, tool orchestration, memory and skill evolution."""
+"""Agenelf core: conversation, tool orchestration, memory and controlled evolution."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import ast
 import json
 import os
 
+from .autonomy import AutonomyEngine
 from .context import build_system_prompt, load_persona
 from .llm import LLMClient, MockLLM
 from .memory import MemoryStore
@@ -18,6 +19,7 @@ _SKILL_PROTOCOL_DOC = """\
 3. 模块级定义 TOOLS: list[dict]，为 OpenAI function-calling schema 列表。
 4. 模块级定义函数 def execute(tool_name: str, args: dict) -> str，任何情况下返回字符串。
 5. 生成的技能不得绕过 core 权限、操作队列、只读挂载或宿主机审批。
+6. 自我迭代只能修改 app-tmp，必须包含测试并通过 gate_check；不得直接操作 Git 主分支。
 只输出 Python 源码本身，不要输出任何解释文字。"""
 
 
@@ -48,7 +50,28 @@ class Agent:
         persona_path = config.get("persona_path", os.path.join("persona", "persona.yaml"))
         self.persona = load_persona(persona_path)
         self.system_prompt = ""
+        self.configure_skill_runtimes()
         self._refresh_system_prompt()
+
+    def configure_skill_runtimes(self, name: str | None = None) -> None:
+        """Inject the owning Agent into skills that explicitly request runtime context."""
+
+        items = (
+            [(name, self.registry.skills[name])]
+            if name and name in self.registry.skills
+            else list(self.registry.skills.items())
+        )
+        for skill_name, module in items:
+            configure = getattr(module, "configure_runtime", None)
+            if not callable(configure):
+                continue
+            try:
+                configure(agent=self, registry=self.registry, config=self.config)
+                self.registry.errors.pop(f"runtime:{skill_name}", None)
+            except Exception as exc:
+                self.registry.errors[f"runtime:{skill_name}"] = (
+                    f"运行时绑定失败：{type(exc).__name__}: {exc}"
+                )
 
     def _refresh_system_prompt(self) -> None:
         self.system_prompt = build_system_prompt(
@@ -106,9 +129,7 @@ class Agent:
                             "type": "function",
                             "function": {
                                 "name": call["name"],
-                                "arguments": json.dumps(
-                                    call["arguments"], ensure_ascii=False
-                                ),
+                                "arguments": json.dumps(call["arguments"], ensure_ascii=False),
                             },
                         }
                         for call in tool_calls
@@ -140,8 +161,21 @@ class Agent:
         self._refresh_system_prompt()
         return final_text
 
+    def self_snapshot(self) -> dict:
+        return AutonomyEngine(self).snapshot()
+
+    def self_assess(self) -> dict:
+        return AutonomyEngine(self).assess()
+
+    def run_autonomy_cycle(self, goal: str = "", apply_changes: bool = False) -> dict:
+        return AutonomyEngine(self).run_cycle(goal=goal, apply_changes=apply_changes)
+
+    def autonomy_status(self, cycle_id: str = "") -> dict | list[dict]:
+        engine = AutonomyEngine(self)
+        return engine.get_cycle(cycle_id) if cycle_id else engine.latest_cycles()
+
     def evolve_skill(self, description: str) -> str:
-        """Generate and register a skill while retaining the existing protocol."""
+        """Generate a skill in writable development mode; production uses autonomy."""
 
         response = self.llm.chat(
             [
@@ -151,10 +185,7 @@ class Agent:
                 },
                 {
                     "role": "user",
-                    "content": (
-                        f"请为以下需求生成一个新的技能文件源码：\n{description}\n\n"
-                        f"{_SKILL_PROTOCOL_DOC}"
-                    ),
+                    "content": f"请为以下需求生成一个新的技能文件源码：\n{description}\n\n{_SKILL_PROTOCOL_DOC}",
                 },
             ]
         )
@@ -186,6 +217,8 @@ class Agent:
 
         ok, message = self.registry.register_new_skill(filename, source)
         if ok:
+            skill_name = os.path.splitext(os.path.basename(filename))[0]
+            self.configure_skill_runtimes(skill_name)
             self._refresh_system_prompt()
             return f"技能进化成功：{message}"
         return f"技能进化失败：{message}"

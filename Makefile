@@ -1,5 +1,5 @@
 # Agenelf operator commands
-.PHONY: help init start stop restart build chat test backup promote watch logs status ops approve clean
+.PHONY: help init start stop restart build chat test backup promote watch logs status ops evolution autonomy approve clean
 
 help: ## Show commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -10,7 +10,8 @@ init: ## Create local config skeleton and runtime directories
 	@test -f config/servers.yaml || cp config/servers.example.yaml config/servers.yaml
 	@mkdir -p secrets logs workspace app-space app-tmp app-fork \
 		data/auth-requests data/auth-decisions data/auth-consumed \
-		data/ops-requests data/ops-results data/ops-locks data/promote-requests
+		data/ops-requests data/ops-results data/ops-locks \
+		data/promote-requests data/promotion-history data/autonomy-cycles
 	@echo "初始化完成。请编辑 .env、.ops-runner.env、config/servers.yaml，并放入 secrets/。"
 
 start: ## Sync runtime fork and start Agent + deterministic ops runner
@@ -38,13 +39,21 @@ test: ## Run the complete unit test suite
 backup: ## Back up source state to GitHub
 	bash scripts/github_backup.sh
 
-promote: ## Promote an evolution request: make promote REQ=<id>
+promote: ## Promote an exact evolution request: make promote REQ=<evo-id>
+	@test -n "$(REQ)" || (echo "用法：make promote REQ=evo-..."; exit 2)
 	bash scripts/promote.sh $(REQ)
 
-watch: ## Start the evolution promotion watcher
+watch: ## Start watcher; notification-only unless explicitly enabled in .env
 	nohup bash scripts/watcher.sh > logs/watcher.out 2>&1 &
 
-approve: ## Approve an exact operation: make approve REQ=<op-id>
+evolution: ## Show evolution requests and immutable promotion evidence
+	@echo "== promotion requests =="; find data/promote-requests -maxdepth 2 -type f 2>/dev/null | sort || true
+	@echo "== promotion history =="; find data/promotion-history -maxdepth 2 -type f 2>/dev/null | sort | tail -40 || true
+
+autonomy: ## Show recent controlled autonomy-cycle records
+	@ls -lt data/autonomy-cycles 2>/dev/null | head -20 || echo "暂无自主循环记录"
+
+approve: ## Approve an exact server operation: make approve REQ=<op-id>
 	@test -n "$(REQ)" || (echo "用法：make approve REQ=op-..."; exit 2)
 	bash scripts/approve.sh $(REQ) approve
 
@@ -56,11 +65,12 @@ ops: ## Show recent operation requests and results
 logs: ## Follow Agent and ops-runner logs
 	docker compose logs -f --tail=100 agenelf ops-runner
 
-status: ## Show containers and queues
+status: ## Show containers and all controlled queues
 	-docker compose ps
 	@$(MAKE) --no-print-directory ops
+	@$(MAKE) --no-print-directory autonomy
 
-clean: ## Clear temporary/runtime queues after a five-second grace period
+clean: ## Clear temporary task queues after a five-second grace period
 	@echo "将清空 app-tmp 和运行队列，5 秒内 Ctrl+C 取消..."; sleep 5
 	rm -rf app-tmp/* data/ops-requests/* data/ops-results/* data/ops-locks/*
-	@echo "已清空；人类裁决文件未自动删除。"
+	@echo "已清空；自主循环、裁决与晋升证据均保留。"

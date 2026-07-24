@@ -1,50 +1,44 @@
 #!/usr/bin/env bash
-# watcher.sh — 宿主机守护进程：自动执行通过底线检查的晋升请求
-#
-# 每 10 秒扫描 data/promote-requests/*/READY，发现即调用 promote.sh。
-#
-# 启动（宿主机，二选一）：
-#   1) nohup：
-#        nohup bash scripts/watcher.sh >> logs/watcher.log 2>&1 &
-#        echo $! > data/watcher.pid
-#   2) systemd 单元示例：
-#        [Service]
-#        ExecStart=/usr/bin/bash /path/to/project/scripts/watcher.sh
-#        Restart=always
-#
-# 停止：
-#   kill $(cat data/watcher.pid)    # 或：pkill -f 'watcher.sh'
-#
-# 注意：本脚本只运行在宿主机；容器内 agent 无法触碰（scripts/ 只读挂载，
-# 且 agent 没有宿主机执行权限），从而形成“人类/守护进程掌握执行权”的制衡。
+# watcher.sh — host-side observer for READY evolution requests.
+# Safe default: notification only. Set AGENELF_AUTO_PROMOTE_EVOLUTION=1 in .env
+# only when the operator intentionally accepts automatic promotion.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REQUESTS_DIR="${ROOT_DIR}/data/promote-requests"
 LOG_FILE="${ROOT_DIR}/logs/evolution.log"
-INTERVAL=10
+INTERVAL="${AGENELF_WATCH_INTERVAL:-10}"
+AUTO_PROMOTE="0"
+
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+    VALUE="$(grep -E '^\s*AGENELF_AUTO_PROMOTE_EVOLUTION\s*=' "${ROOT_DIR}/.env" | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+    [[ "${VALUE}" == "1" ]] && AUTO_PROMOTE="1"
+fi
 
 mkdir -p "${REQUESTS_DIR}" "${ROOT_DIR}/logs"
-
 log() {
     local m="[$(date '+%F %T')] $*"
     echo "${m}"
     echo "${m}" >> "${LOG_FILE}"
 }
 
-log "[watcher] 启动，扫描目录：${REQUESTS_DIR}，间隔 ${INTERVAL}s"
-
+log "[watcher] 启动：auto_promote=${AUTO_PROMOTE}，间隔 ${INTERVAL}s"
 while true; do
-    # 遍历所有 READY 标记（nullglob 避免无匹配时字面量展开）
     shopt -s nullglob
     for ready in "${REQUESTS_DIR}"/*/READY; do
-        req_id="$(basename "$(dirname "${ready}")")"
-        log "[watcher] 发现就绪请求：${req_id}，调用 promote.sh"
-        if bash "${SCRIPT_DIR}/promote.sh" "${req_id}"; then
-            log "[watcher] 请求 ${req_id} 晋升成功"
-        else
-            log "[watcher] 请求 ${req_id} 晋升失败（详见上方日志），保留请求目录待人工处理"
+        req_dir="$(dirname "${ready}")"
+        req_id="$(basename "${req_dir}")"
+        if [[ "${AUTO_PROMOTE}" == "1" ]]; then
+            log "[watcher] 自动晋升已显式启用，处理 ${req_id}"
+            if bash "${SCRIPT_DIR}/promote.sh" "${req_id}"; then
+                log "[watcher] 请求 ${req_id} 晋升成功"
+            else
+                log "[watcher] 请求 ${req_id} 晋升失败"
+            fi
+        elif [[ ! -f "${req_dir}/NOTIFIED" ]]; then
+            log "[watcher] 请求 ${req_id} 已 READY，等待人工执行：make promote REQ=${req_id}"
+            printf '%s\n' "$(date --iso-8601=seconds)" > "${req_dir}/NOTIFIED"
         fi
     done
     shopt -u nullglob
