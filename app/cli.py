@@ -122,8 +122,78 @@ def cmd_self(agent: Agent) -> None:
     _json_panel(agent.self_snapshot(), "Agenelf 可观测自我模型")
 
 
-def cmd_reflect(agent: Agent) -> None:
-    _json_panel(agent.self_assess(), "Agenelf 自我反思")
+def cmd_assess(agent: Agent) -> None:
+    _json_panel(agent.self_assess(), "Agenelf 当前能力评估")
+
+
+def cmd_mind(agent: Agent) -> None:
+    _json_panel(agent.self_development_status(), "Agenelf 持续成长状态")
+
+
+def cmd_reflect(agent: Agent, arguments: str = "") -> None:
+    text = arguments.strip()
+    deep = False
+    if text.startswith("--deep"):
+        deep = True
+        text = text[len("--deep") :].strip()
+    with console.status("Agenelf 正在基于证据复盘并沉淀..."):
+        result = agent.reflect_and_sediment(note=text, deep=deep)
+    _json_panel(result, "自我反思与沉淀")
+
+
+def cmd_intentions(agent: Agent, arguments: str = "") -> None:
+    status = arguments.strip()
+    _json_panel(
+        agent.improvement_intentions(status=status, limit=50),
+        "改进意向",
+    )
+
+
+def cmd_intend(agent: Agent, arguments: str) -> None:
+    text = arguments.strip()
+    if not text:
+        console.print("[red]用法：/intend [P0|P1|P2|P3] <改进目标>[/red]")
+        return
+    parts = text.split(maxsplit=1)
+    priority = "P2"
+    title = text
+    if parts[0].upper() in {"P0", "P1", "P2", "P3"}:
+        priority = parts[0].upper()
+        title = parts[1] if len(parts) == 2 else ""
+    if not title.strip():
+        console.print("[red]改进目标不能为空[/red]")
+        return
+    _json_panel(
+        agent.create_improvement_intention(
+            title=title,
+            rationale="由主人或对话显式建立",
+            priority=priority,
+            acceptance_criteria=[
+                "结果有自动化测试或其他可复现证据",
+                "不绕过安全门、审批与主人私有数据边界",
+            ],
+        ),
+        "新建改进意向",
+    )
+
+
+def cmd_pursue(agent: Agent, arguments: str) -> None:
+    parts = arguments.split()
+    if not parts:
+        console.print("[red]用法：/pursue <intent-id> [--apply][/red]")
+        return
+    intention_id = next((item for item in parts if item.startswith("intent-")), "")
+    if not intention_id:
+        console.print("[red]必须提供 intent- 开头的意向 ID[/red]")
+        return
+    apply_changes = "--apply" in parts
+    title = "意向沙盒推进结果" if apply_changes else "意向推进计划"
+    with console.status("Agenelf 正在推进选定意向..."):
+        result = agent.pursue_improvement_intention(
+            intention_id,
+            apply_changes=apply_changes,
+        )
+    _json_panel(result, title)
 
 
 def cmd_autonomy(agent: Agent, arguments: str, *, force_apply: bool = False) -> None:
@@ -158,7 +228,7 @@ def main() -> int:
     console.print(
         Panel(
             f"模型：[cyan]{agent.llm.model}[/cyan] | 技能：[green]{len(agent.registry.skills)}[/green] | 能力域：[green]{len(agent.registry.capability_catalog())}[/green]\n"
-            "命令：/skills /capabilities /local /local-reload /remember /recall /self /reflect /autonomy /ops /reload /newskill /memory /evolve /quit",
+            "命令：/self /assess /mind /reflect [--deep] /intentions /intend /pursue /autonomy /local /remember /recall /ops /skills /capabilities /quit",
             title="Agenelf",
         )
     )
@@ -195,8 +265,18 @@ def main() -> int:
                 )
             elif command == "/self":
                 cmd_self(agent)
+            elif command == "/assess":
+                cmd_assess(agent)
+            elif command == "/mind":
+                cmd_mind(agent)
             elif command == "/reflect":
-                cmd_reflect(agent)
+                cmd_reflect(agent, rest)
+            elif command == "/intentions":
+                cmd_intentions(agent, rest)
+            elif command == "/intend":
+                cmd_intend(agent, rest)
+            elif command == "/pursue":
+                cmd_pursue(agent, rest)
             elif command == "/autonomy":
                 cmd_autonomy(agent, rest)
             elif command == "/ops":

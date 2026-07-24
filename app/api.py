@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for chat, personalization, operations and autonomy."""
+"""FastAPI entrypoint for chat, personalization, operations and growth."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 _APP_DIR = Path(__file__).resolve().parent
 if str(_APP_DIR) not in sys.path:
@@ -18,6 +18,7 @@ if str(_APP_DIR) not in sys.path:
 from core import operations  # noqa: E402
 from core.agent import Agent  # noqa: E402
 from core.configuration import load_config as load_shared_config  # noqa: E402
+from core.self_development import SelfDevelopmentError  # noqa: E402
 
 
 def _runtime_root() -> Path:
@@ -45,7 +46,7 @@ def require_api_token(x_agenelf_token: str | None = Header(default=None)) -> Non
         raise HTTPException(status_code=401, detail="无效的 Agenelf API Token")
 
 
-app = FastAPI(title="Agenelf API", version="0.4.0")
+app = FastAPI(title="Agenelf API", version="0.5.0")
 
 
 class ChatRequest(BaseModel):
@@ -66,6 +67,22 @@ class RememberRequest(BaseModel):
     content: str
 
 
+class ReflectionRequest(BaseModel):
+    note: str = ""
+    deep: bool = False
+
+
+class IntentionRequest(BaseModel):
+    title: str
+    rationale: str = ""
+    priority: str = "P2"
+    acceptance_criteria: list[str] = Field(default_factory=list)
+
+
+class PursueIntentionRequest(BaseModel):
+    apply_changes: bool = False
+
+
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_api_token)])
 def chat(request: ChatRequest) -> ChatResponse:
     if not request.message.strip():
@@ -81,6 +98,18 @@ def chat(request: ChatRequest) -> ChatResponse:
 def health() -> dict:
     agent = get_agent()
     local = agent.local_status()
+    development = agent.self_development_status()
+    counts = development.get("intention_status_counts", {})
+    open_count = sum(
+        int(counts.get(status, 0))
+        for status in (
+            "proposed",
+            "planned",
+            "active",
+            "awaiting_promotion",
+            "blocked",
+        )
+    )
     return {
         "status": "ok",
         "skills": len(agent.registry.skills),
@@ -88,6 +117,9 @@ def health() -> dict:
         "model": agent.llm.model,
         "api_auth_enabled": bool(os.environ.get("AGENELF_API_TOKEN")),
         "autonomy": "controlled-sandbox",
+        "self_development": "persistent-operational",
+        "open_improvement_intentions": open_count,
+        "last_reflection_at": development.get("last_reflection_at"),
         "local_context_ready": bool(
             local.get("profile_loaded") or local.get("preferences_loaded")
         ),
@@ -135,6 +167,85 @@ def self_snapshot() -> dict:
 @app.get("/self/assessment", dependencies=[Depends(require_api_token)])
 def self_assessment() -> dict:
     return get_agent().self_assess()
+
+
+@app.get("/self/development", dependencies=[Depends(require_api_token)])
+def self_development() -> dict:
+    return get_agent().self_development_status()
+
+
+@app.post("/self/reflections", dependencies=[Depends(require_api_token)])
+def create_reflection(request: ReflectionRequest) -> dict:
+    try:
+        return get_agent().reflect_and_sediment(
+            note=request.note,
+            deep=request.deep,
+        )
+    except SelfDevelopmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"反思沉淀失败：{exc}") from exc
+
+
+@app.get("/self/reflections", dependencies=[Depends(require_api_token)])
+def list_reflections(
+    limit: int = Query(default=10, ge=1, le=50),
+) -> dict:
+    return {"reflections": get_agent().self_reflections(limit=limit)}
+
+
+@app.get("/self/intentions", dependencies=[Depends(require_api_token)])
+def list_intentions(
+    status: str = Query(default=""),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    try:
+        values = get_agent().improvement_intentions(status=status, limit=limit)
+    except SelfDevelopmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"intentions": values}
+
+
+@app.post("/self/intentions", dependencies=[Depends(require_api_token)])
+def create_intention(request: IntentionRequest) -> dict:
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail="title 不能为空")
+    try:
+        return get_agent().create_improvement_intention(
+            title=request.title,
+            rationale=request.rationale,
+            priority=request.priority,
+            acceptance_criteria=request.acceptance_criteria,
+        )
+    except SelfDevelopmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/self/intentions/{intention_id}", dependencies=[Depends(require_api_token)])
+def get_intention(intention_id: str) -> dict:
+    try:
+        return get_agent().get_improvement_intention(intention_id)
+    except SelfDevelopmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/self/intentions/{intention_id}/pursue",
+    dependencies=[Depends(require_api_token)],
+)
+def pursue_intention(
+    intention_id: str,
+    request: PursueIntentionRequest,
+) -> dict:
+    try:
+        return get_agent().pursue_improvement_intention(
+            intention_id,
+            apply_changes=request.apply_changes,
+        )
+    except SelfDevelopmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"推进改进意向失败：{exc}") from exc
 
 
 @app.post("/autonomy/cycles", dependencies=[Depends(require_api_token)])
