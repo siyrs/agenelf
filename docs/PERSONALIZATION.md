@@ -23,7 +23,8 @@ scripts/    = 宿主机可信控制面
 | `profile.yaml` | 姓名、称呼、时区、角色、沟通风格 | 只读 | 不可见 | 是，脱敏后 |
 | `preferences.yaml` | 爱好、兴趣、工作和交付偏好 | 只读 | 不可见 | 是，脱敏后 |
 | `context/` | 补充资料 | 只读 | 不可见 | 是，限量脱敏后 |
-| `servers.yaml` | 服务器连接元数据与允许操作 | 只读 | 只读 | 仅别名与允许清单 |
+| `servers.yaml` | 服务器连接元数据与允许操作 | 只读 | Ops Runner 只读 | 仅别名与允许清单 |
+| `validation.yaml` | HTTP/TCP 检查、断言与套件 | 只读别名摘要 | Validation Runner 只读 | 仅别名、类型与说明 |
 | `secrets/` | SSH 私钥、known_hosts | **不可见** | 只读 | 否 |
 | `memory/memory.json` | 对话事实、偏好、片段 | 读写 | 不可见 | 是，限量脱敏后 |
 | `self/state.json` | 连续性 ID、原则和沉淀游标 | 读写 | 不可见 | 是，摘要 |
@@ -40,6 +41,7 @@ Agent 不会递归读取整个 `local/`。它只通过受保护模块访问：
 - `preferences.yaml`
 - `context/` 下允许的文本/YAML/JSON 文件
 - `servers.yaml` 的服务器别名和允许操作摘要
+- `validation.yaml` 的检查与套件别名摘要
 - `memory/memory.json`
 - `self/state.json`
 - `self/reflections.json`
@@ -184,3 +186,9 @@ skills/self_development.py
 ```
 
 宿主机 `gate_check.sh` 会将这些文件与 `app-fork` 基线逐字节比较，并拒绝候选代码新增对 `local/profile`、`preferences`、`servers`、`memory`、`self` 或 `secrets` 的直接写入逻辑。
+
+## 主人验证策略
+
+`local/validation.yaml` 保存当前主人的检查别名、HTTP/TCP 端点、断言和套件。它不进入 Git，也不会被 `app/` 升级覆盖。Agent 只通过 `software_validation` 技能读取脱敏别名摘要；独立 `validation-runner` 读取完整配置。
+
+不要在该文件中保存 Token、密码或认证 Header。当前版本的认证验证尚未开放，后续必须通过 Runner 专属凭据引用实现。

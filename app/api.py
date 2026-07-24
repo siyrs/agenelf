@@ -15,7 +15,7 @@ _APP_DIR = Path(__file__).resolve().parent
 if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
-from core import operations  # noqa: E402
+from core import operations, validation  # noqa: E402
 from core.agent import Agent  # noqa: E402
 from core.configuration import load_config as load_shared_config  # noqa: E402
 from core.self_development import SelfDevelopmentError  # noqa: E402
@@ -46,7 +46,7 @@ def require_api_token(x_agenelf_token: str | None = Header(default=None)) -> Non
         raise HTTPException(status_code=401, detail="无效的 Agenelf API Token")
 
 
-app = FastAPI(title="Agenelf API", version="0.5.0")
+app = FastAPI(title="Agenelf API", version="0.6.0")
 
 
 class ChatRequest(BaseModel):
@@ -83,6 +83,21 @@ class PursueIntentionRequest(BaseModel):
     apply_changes: bool = False
 
 
+class ValidationRunRequest(BaseModel):
+    wait_seconds: int = Field(default=3, ge=0, le=12)
+
+
+def _dispatch_json(tool_name: str, args: dict | None = None) -> dict:
+    text = get_agent().registry.dispatch(tool_name, args or {})
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=text) from exc
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=500, detail=f"工具 {tool_name} 未返回对象")
+    return value
+
+
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_api_token)])
 def chat(request: ChatRequest) -> ChatResponse:
     if not request.message.strip():
@@ -99,6 +114,7 @@ def health() -> dict:
     agent = get_agent()
     local = agent.local_status()
     development = agent.self_development_status()
+    capability_health = agent.capability_health()
     counts = development.get("intention_status_counts", {})
     open_count = sum(
         int(counts.get(status, 0))
@@ -120,6 +136,15 @@ def health() -> dict:
         "self_development": "persistent-operational",
         "open_improvement_intentions": open_count,
         "last_reflection_at": development.get("last_reflection_at"),
+        "capability_health": {
+            name: card.get("health")
+            for name, card in capability_health.get("scorecards", {}).items()
+        },
+        "validation_evidence": sum(
+            1
+            for item in capability_health.get("recent_evidence", [])
+            if item.get("capability") == "software.validation"
+        ),
         "local_context_ready": bool(
             local.get("profile_loaded") or local.get("preferences_loaded")
         ),
@@ -130,6 +155,38 @@ def health() -> dict:
 @app.get("/capabilities", dependencies=[Depends(require_api_token)])
 def capabilities() -> dict:
     return {"capabilities": get_agent().registry.capability_catalog()}
+
+
+@app.get("/validation/catalog", dependencies=[Depends(require_api_token)])
+def validation_catalog() -> dict:
+    return _dispatch_json("list_validation_checks")
+
+
+@app.post("/validation/checks/{check}", dependencies=[Depends(require_api_token)])
+def run_validation_check(check: str, request: ValidationRunRequest) -> dict:
+    return _dispatch_json(
+        "run_validation_check",
+        {"check": check, "wait_seconds": min(request.wait_seconds, 8)},
+    )
+
+
+@app.post("/validation/suites/{suite}", dependencies=[Depends(require_api_token)])
+def run_validation_suite(suite: str, request: ValidationRunRequest) -> dict:
+    return _dispatch_json(
+        "run_validation_suite",
+        {"suite": suite, "wait_seconds": request.wait_seconds},
+    )
+
+
+@app.get("/validation/results/{validation_id}", dependencies=[Depends(require_api_token)])
+def validation_result(
+    validation_id: str,
+    wait_seconds: int = Query(default=0, ge=0, le=8),
+) -> dict:
+    return _dispatch_json(
+        "get_validation_result",
+        {"validation_id": validation_id, "wait_seconds": wait_seconds},
+    )
 
 
 @app.get("/local/status", dependencies=[Depends(require_api_token)])
@@ -167,6 +224,16 @@ def self_snapshot() -> dict:
 @app.get("/self/assessment", dependencies=[Depends(require_api_token)])
 def self_assessment() -> dict:
     return get_agent().self_assess()
+
+
+@app.get("/self/capability-health", dependencies=[Depends(require_api_token)])
+def self_capability_health() -> dict:
+    return get_agent().capability_health()
+
+
+@app.get("/self/roadmap", dependencies=[Depends(require_api_token)])
+def self_roadmap(limit: int = Query(default=10, ge=1, le=50)) -> dict:
+    return get_agent().improvement_roadmap(limit=limit)
 
 
 @app.get("/self/development", dependencies=[Depends(require_api_token)])

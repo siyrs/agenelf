@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .capability_health import CapabilityHealth
+
 
 class AutonomyError(RuntimeError):
     """Expected failure in a controlled autonomy cycle."""
@@ -35,8 +37,18 @@ _PROTECTED_PATHS = frozenset(
         "core/autonomy.py",
         "core/operations.py",
         "core/permissions.py",
+        "core/configuration.py",
+        "core/local_context.py",
+        "core/privacy.py",
+        "core/memory.py",
+        "core/self_development.py",
+        "core/validation.py",
+        "core/capability_health.py",
         "skills/evolution_ops.py",
         "skills/server_ops.py",
+        "skills/local_context.py",
+        "skills/self_development.py",
+        "skills/software_validation.py",
     }
 )
 _SAFETY_INVARIANTS = (
@@ -46,6 +58,7 @@ _SAFETY_INVARIANTS = (
     "安全关键模块受自主补丁保护，只能由人类主导的仓库变更修改",
     "晋升必须通过只读安全脚本生成的完整性摘要，候选代码变化后旧 READY 自动失效",
     "自主循环只能申请晋升，不能直接合并 Git、重启宿主机或绕过人类控制面",
+    "能力健康必须来自可信 Runner 结果，不能用模型自评替代验证证据",
 )
 
 
@@ -143,6 +156,7 @@ class AutonomyEngine:
     def snapshot(self) -> dict[str, Any]:
         catalog = self.registry.capability_catalog()
         session = _read_json(self.root / "data" / "evolution-session.json")
+        capability_health = CapabilityHealth(self.root).snapshot()
         return {
             "schema_version": _SCHEMA_VERSION,
             "observed_at": _now_iso(),
@@ -168,6 +182,15 @@ class AutonomyEngine:
                 "requests": _queue_count(self.root / "data" / "ops-requests", "op-*.json"),
                 "results": _queue_count(self.root / "data" / "ops-results", "op-*.json"),
             },
+            "validation": {
+                "requests": _queue_count(
+                    self.root / "data" / "validation-requests", "val-*.json"
+                ),
+                "results": _queue_count(
+                    self.root / "data" / "validation-results", "val-*.json"
+                ),
+            },
+            "capability_health": capability_health,
         }
 
     def assess(self, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -203,6 +226,15 @@ class AutonomyEngine:
                     "recommendation": "建立自我快照、反思记录和受控改进循环",
                 }
             )
+        if "software.validation" not in capability_ids:
+            findings.append(
+                {
+                    "priority": "P1",
+                    "code": "software_validation_missing",
+                    "finding": "缺少独立的软件验证能力，部署和修复结果无法形成统一可信证据",
+                    "recommendation": "建立 allowlist 软件验证能力并将失败证据接入自我沉淀",
+                }
+            )
         legacy = [
             item.get("id")
             for item in snapshot.get("capabilities", [])
@@ -230,6 +262,7 @@ class AutonomyEngine:
                     "recommendation": "分析失败证据、缩小改动范围并补充测试后重试",
                 }
             )
+        findings.extend(CapabilityHealth(self.root).findings())
         if not findings:
             findings.append(
                 {
@@ -239,7 +272,7 @@ class AutonomyEngine:
                     "recommendation": "选择一个小而可验证的能力缺口，补测试后进行沙盒迭代",
                 }
             )
-        priority_rank = {"P0": 0, "P1": 1, "P2": 2}
+        priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
         findings.sort(key=lambda item: (priority_rank.get(item["priority"], 9), item["code"]))
         return {
             "observed_at": snapshot["observed_at"],

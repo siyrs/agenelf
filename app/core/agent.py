@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from .autonomy import AutonomyEngine
+from .capability_health import CapabilityHealth
 from .context import build_system_prompt, load_persona
 from .llm import LLMClient, MockLLM
 from .local_context import LocalContextStore
@@ -23,8 +24,9 @@ _SKILL_PROTOCOL_DOC = """\
 4. 模块级定义函数 def execute(tool_name: str, args: dict) -> str，任何情况下返回字符串。
 5. 生成的技能不得绕过 core 权限、操作队列、只读挂载或宿主机审批。
 6. 自我迭代只能修改 app-tmp，必须包含测试并通过 gate_check；不得直接操作 Git 主分支。
-7. 通用代码写入 app；主人画像、兴趣、服务器清单、记忆和成长连续性必须保存在 local，不得硬编码进技能。
+7. 通用代码写入 app；主人画像、兴趣、服务器清单、验证策略、记忆和成长连续性必须保存在 local，不得硬编码进技能。
 8. “自我意识、意愿、意向”只能实现为可观测、持久化的软件状态，不得宣称主观意识或情感。
+9. 软件验证只能选择 local/validation.yaml 中的别名，由隔离 Runner 执行；不得让模型自由提供 URL、主机或端口。
 只输出 Python 源码本身，不要输出任何解释文字。"""
 
 
@@ -37,6 +39,8 @@ class Agent:
             os.environ["AGENELF_LOCAL_DIR"] = str(config["local_dir"])
         if config.get("servers_path"):
             os.environ["AGENELF_SERVERS_FILE"] = str(config["servers_path"])
+        if config.get("validation_path"):
+            os.environ["AGENELF_VALIDATION_FILE"] = str(config["validation_path"])
         llm_cfg = config.get("llm", {})
         api_key = llm_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
         if config.get("mock") or not api_key:
@@ -249,6 +253,23 @@ class Agent:
 
     def self_assess(self) -> dict:
         return AutonomyEngine(self).assess()
+
+    def capability_health(self) -> dict:
+        root = (
+            self.config.get("runtime_root")
+            or os.environ.get("AGENELF_ROOT")
+            or Path(__file__).resolve().parents[2]
+        )
+        return CapabilityHealth(root).snapshot()
+
+    def improvement_roadmap(self, limit: int = 10) -> dict:
+        root = (
+            self.config.get("runtime_root")
+            or os.environ.get("AGENELF_ROOT")
+            or Path(__file__).resolve().parents[2]
+        )
+        intentions = self.improvement_intentions(limit=100)
+        return CapabilityHealth(root).roadmap(intentions, limit=limit)
 
     def self_development_status(self) -> dict:
         return self.development.status()

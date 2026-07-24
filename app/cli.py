@@ -27,6 +27,14 @@ def _json_panel(data, title: str) -> None:
     console.print(Panel(json.dumps(data, ensure_ascii=False, indent=2), title=title))
 
 
+def _dispatch_json(agent: Agent, tool_name: str, args: dict | None = None):
+    text = agent.registry.dispatch(tool_name, args or {})
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"error": text}
+
+
 def cmd_skills(agent: Agent) -> None:
     table = Table(title="已加载技能")
     table.add_column("技能", style="cyan")
@@ -71,6 +79,38 @@ def cmd_capabilities(agent: Agent) -> None:
             ", ".join(capability["composes_with"]),
         )
     console.print(table)
+
+
+def cmd_validation(agent: Agent, arguments: str = "") -> None:
+    parts = arguments.split()
+    if not parts:
+        _json_panel(_dispatch_json(agent, "list_validation_checks"), "验证检查与套件")
+        return
+    action = parts[0].lower()
+    if action == "check" and len(parts) >= 2:
+        value = _dispatch_json(
+            agent,
+            "run_validation_check",
+            {"check": parts[1], "wait_seconds": 3},
+        )
+    elif action == "suite" and len(parts) >= 2:
+        value = _dispatch_json(
+            agent,
+            "run_validation_suite",
+            {"suite": parts[1], "wait_seconds": 5},
+        )
+    elif action == "result" and len(parts) >= 2:
+        value = _dispatch_json(
+            agent,
+            "get_validation_result",
+            {"validation_id": parts[1], "wait_seconds": 0},
+        )
+    else:
+        value = {
+            "error": "用法：/validate | /validate check <alias> | "
+            "/validate suite <alias> | /validate result <val-id>"
+        }
+    _json_panel(value, "软件验证")
 
 
 def cmd_operations(operation_id: str) -> None:
@@ -228,7 +268,7 @@ def main() -> int:
     console.print(
         Panel(
             f"模型：[cyan]{agent.llm.model}[/cyan] | 技能：[green]{len(agent.registry.skills)}[/green] | 能力域：[green]{len(agent.registry.capability_catalog())}[/green]\n"
-            "命令：/self /assess /mind /reflect [--deep] /intentions /intend /pursue /autonomy /local /remember /recall /ops /skills /capabilities /quit",
+            "命令：/self /assess /scorecard /roadmap /mind /reflect [--deep] /intentions /intend /pursue /validate /autonomy /local /remember /recall /ops /skills /capabilities /quit",
             title="Agenelf",
         )
     )
@@ -269,6 +309,10 @@ def main() -> int:
                 cmd_assess(agent)
             elif command == "/mind":
                 cmd_mind(agent)
+            elif command == "/scorecard":
+                _json_panel(agent.capability_health(), "可信能力健康评分")
+            elif command == "/roadmap":
+                _json_panel(agent.improvement_roadmap(limit=20), "证据驱动改进路线图")
             elif command == "/reflect":
                 cmd_reflect(agent, rest)
             elif command == "/intentions":
@@ -279,6 +323,8 @@ def main() -> int:
                 cmd_pursue(agent, rest)
             elif command == "/autonomy":
                 cmd_autonomy(agent, rest)
+            elif command == "/validate":
+                cmd_validation(agent, rest)
             elif command == "/ops":
                 cmd_operations(rest)
             elif command == "/reload":

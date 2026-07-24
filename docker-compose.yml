@@ -9,6 +9,7 @@ services:
       AGENELF_LOCAL_DIR: /agenelf/local
       AGENELF_SELF_DIR: /agenelf/local/self
       AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
+      AGENELF_VALIDATION_FILE: /agenelf/local/validation.yaml
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -18,6 +19,7 @@ services:
       - ./data:/agenelf/data:rw
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:ro
+      - ./data/validation-results:/agenelf/data/validation-results:ro
       - ./logs:/agenelf/logs:rw
       - ./workspace:/agenelf/workspace:rw
       - ./app-space:/agenelf/app-space:rw
@@ -26,6 +28,7 @@ services:
       - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
       - ./local/context:/agenelf/local/context:ro
       - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+      - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
       - ./local/memory:/agenelf/local/memory:rw
       # Persistent reflections and improvement intentions are Agent-writable.
       - ./local/self:/agenelf/local/self:rw
@@ -56,6 +59,30 @@ services:
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:rw
       - ./data/ops-locks:/agenelf/data/ops-locks:rw
+      - ./logs:/agenelf/logs:rw
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+validation-runner:
+    build: .
+    command: ["python", "/agenelf/scripts/validation_runner.py", "--interval", "1"]
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_LOCAL_DIR: /agenelf/local
+      AGENELF_VALIDATION_FILE: /agenelf/local/validation.yaml
+    volumes:
+      - ./app-fork:/agenelf/app-fork:ro
+      - ./scripts:/agenelf/scripts:ro
+      - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
+      - ./data/validation-requests:/agenelf/data/validation-requests:ro
+      - ./data/validation-results:/agenelf/data/validation-results:rw
+      - ./data/validation-locks:/agenelf/data/validation-locks:rw
       - ./logs:/agenelf/logs:rw
     read_only: true
     tmpfs:

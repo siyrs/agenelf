@@ -74,6 +74,12 @@ def load_config(
         if servers_override
         else (local_servers if local_servers.is_file() else legacy_servers)
     )
+    validation_override = os.environ.get("AGENELF_VALIDATION_FILE", "").strip()
+    validation_path = (
+        Path(validation_override).resolve()
+        if validation_override
+        else local_dir / "validation.yaml"
+    )
 
     config["runtime_root"] = str(root)
     config["local_dir"] = str(local_dir)
@@ -87,8 +93,10 @@ def load_config(
     config.setdefault("local_context_dir", str(context_dir))
     config.setdefault("memory_path", str(memory_path))
     config.setdefault("servers_path", str(servers_path))
+    config.setdefault("validation_path", str(validation_path))
 
     os.environ["AGENELF_LOCAL_DIR"] = str(local_dir)
     os.environ["AGENELF_SELF_DIR"] = str(self_dir)
     os.environ["AGENELF_SERVERS_FILE"] = str(servers_path)
+    os.environ["AGENELF_VALIDATION_FILE"] = str(validation_path)
     return config

@@ -76,6 +76,9 @@ def initialize(migrate: bool = True) -> dict:
     )
     for source in servers_sources:
         _copy_if_missing(source, LOCAL / "servers.yaml", actions)
+    _copy_if_missing(
+        LOCAL / "validation.example.yaml", LOCAL / "validation.yaml", actions
+    )
 
     memory_target = LOCAL / "memory" / "memory.json"
     for source in memory_sources:
@@ -110,6 +113,7 @@ def initialize(migrate: bool = True) -> dict:
         LOCAL / "profile.yaml",
         LOCAL / "preferences.yaml",
         LOCAL / "servers.yaml",
+        LOCAL / "validation.yaml",
         memory_target,
         self_dir / "reflections.json",
         self_dir / "intentions.json",
@@ -141,6 +145,7 @@ def status() -> dict:
         "profile": (LOCAL / "profile.yaml").is_file(),
         "preferences": (LOCAL / "preferences.yaml").is_file(),
         "servers": (LOCAL / "servers.yaml").is_file(),
+        "validation": (LOCAL / "validation.yaml").is_file(),
         "context_dir": (LOCAL / "context").is_dir(),
         "memory": (LOCAL / "memory" / "memory.json").is_file(),
         "self_dir": self_dir.is_dir(),

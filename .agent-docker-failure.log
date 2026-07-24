@@ -1,0 +1,32 @@
+{
+  "root": "/home/runner/work/agenelf/agenelf",
+  "local_dir": "/home/runner/work/agenelf/agenelf/local",
+  "profile": true,
+  "preferences": true,
+  "servers": true,
+  "validation": true,
+  "context_dir": true,
+  "memory": true,
+  "self_dir": true,
+  "self_state": true,
+  "self_reflections": true,
+  "self_intentions": true,
+  "secrets_dir": true,
+  "secret_file_count": 0,
+  "actions": [
+    "创建 local/context/",
+    "创建 local/memory/",
+    "创建 local/secrets/",
+    "创建 local/self/",
+    "复制 local/profile.example.yaml -> local/profile.yaml",
+    "复制 local/preferences.example.yaml -> local/preferences.yaml",
+    "复制 local/servers.example.yaml -> local/servers.yaml",
+    "复制 local/validation.example.yaml -> local/validation.yaml",
+    "创建 local/memory/memory.json",
+    "创建 local/self/reflections.json",
+    "创建 local/self/intentions.json",
+    "创建 local/self/state.json",
+    "复制 local/context.example.md -> local/context/owner-notes.md"
+  ]
+}
+validating /home/runner/work/agenelf/agenelf/docker-compose.yml:  additional properties 'validation-runner' not allowed
