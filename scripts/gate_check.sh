@@ -74,11 +74,11 @@ pass "新增代码未发现危险模式"
 
 log "[gate] 检查 b/6：受保护宿主机与主人配置写入意图"
 cat > "${PROTECTED_PATTERNS}" <<'PROTECTED_EOF'
-open\([^)]*(scripts/|\.env([^a-zA-Z]|$)|docker-compose|local/(profile|preferences|servers|validation|memory|self)|local/secrets)[^)]*['"][wax]
-(shutil\.(copy|copyfile|copytree|move)|os\.(remove|rename|replace|unlink|chmod|rmdir))\([^)]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|validation|memory|self)|local/secrets)
-(scripts/|\.env|docker-compose|local/(profile|preferences|servers|validation|memory|self)|local/secrets)[^#\n]*\.(write_text|write_bytes|unlink|rename|chmod)\(
-(^|[^>])>>?[[:space:]]*[^[:space:]]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|validation|memory|self)|local/secrets)
-\b(rm|mv|cp|tee)[[:space:]]+[^#\n|]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|validation|memory|self)|local/secrets)
+open\([^)]*(scripts/|\.env([^a-zA-Z]|$)|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)[^)]*['"][wax]
+(shutil\.(copy|copyfile|copytree|move)|os\.(remove|rename|replace|unlink|chmod|rmdir))\([^)]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)
+(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)[^#\n]*\.(write_text|write_bytes|unlink|rename|chmod)\(
+(^|[^>])>>?[[:space:]]*[^[:space:]]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)
+\b(rm|mv|cp|tee)[[:space:]]+[^#\n|]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)
 PROTECTED_EOF
 PROTECTED_HITS="$(grep -EnI -f "${PROTECTED_PATTERNS}" "${ADDED_LINES}" 2>/dev/null || true)"
 if [[ -n "${PROTECTED_HITS}" ]]; then
