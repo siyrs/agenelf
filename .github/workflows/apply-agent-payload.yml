@@ -49,6 +49,7 @@ jobs:
                       raise SystemExit(f'links are not allowed: {member.name}')
               tf.extractall('.')
           PY
+          sed -i 's/[[:space:]]\+$//' docs/SELF_DEVELOPMENT.md
           rm -rf .agent-payload .github/workflows/apply-agent-payload.yml
       - name: Commit expanded implementation
         shell: bash
