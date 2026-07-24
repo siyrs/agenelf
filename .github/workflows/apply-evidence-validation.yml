@@ -52,8 +52,20 @@ jobs:
         run: python -m compileall -q app scripts
 
       - name: Run full unit suite
+        id: unit
+        continue-on-error: true
         working-directory: app
-        run: python -m unittest discover -s tests -v
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/agenelf-unit-tests.log
+
+      - name: Preserve unit-test failure evidence
+        if: steps.unit.outcome == 'failure'
+        shell: bash
+        run: |
+          cp /tmp/agenelf-unit-tests.log .agent-test-failure.log
+          printf 'unit_tests=failed\n' > .agent-test-status
 
       - name: Validate shell control-plane scripts
         shell: bash
@@ -72,7 +84,7 @@ jobs:
           python scripts/init_local.py --no-migrate >/tmp/init-local.json
           docker compose config >/dev/null
 
-      - name: Commit expanded implementation
+      - name: Commit expanded implementation and evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -85,3 +97,7 @@ jobs:
           fi
           git commit -m 'feat: add evidence-driven software validation'
           git push origin HEAD:agent/evidence-driven-validation
+
+      - name: Fail when the expanded unit suite failed
+        if: steps.unit.outcome == 'failure'
+        run: exit 1
