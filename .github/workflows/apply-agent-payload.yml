@@ -6,16 +6,22 @@ on:
     paths:
       - '.agent-payload/**'
       - '.github/workflows/apply-agent-payload.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.agent-payload/**'
+      - '.github/workflows/apply-agent-payload.yml'
 
 permissions:
   contents: write
 
 concurrency:
-  group: apply-agent-payload-${{ github.ref }}
+  group: apply-agent-payload-${{ github.head_ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
   apply:
+    if: github.event_name == 'push' || github.head_ref == 'agent/persistent-self-development'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
