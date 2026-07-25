@@ -1,6 +1,6 @@
 # Agenelf 分阶段路线图
 
-> 版本：1.0
+> 版本：1.1
 > 日期：2026-07-25
 > 定位：按深度研究报告（`docs/research/AGENTELF_EVOLUTION_RESEARCH.md`）框架落地的分阶段计划。能力细分路线图见 `docs/roadmap/ROADMAP.md`，实施状态台账见 `docs/roadmap/RESEARCH_IMPLEMENTATION_STATUS.md`。原则不变：能力增长必须慢于或等于治理、测试、身份和证据体系的增长。
 
@@ -12,16 +12,18 @@
 
 | 交付物 | 状态 | 证据 |
 |---|---|---|
-| 机器可读策略 `policy/*.yaml`（五级风险、精确授权、永久红线、自进化保护） | ✅ | `policy/safety-constraints.v1.yaml` 等 5 份策略 |
+| 机器可读策略 `policy/*.yaml`（五级风险、精确授权、永久红线、自进化保护） | ✅ | `policy/safety-constraints.v1.yaml`、`policy/execution-modes.v1.yaml` 等策略 |
 | 静态校验器 | ✅ | `scripts/validate_governance.py`，CI 强制执行 |
-| 运行时策略引擎（PDP：运行时风险分类、授权签发/校验/撤销） | 🚧 | 现有指纹授权与 Runner 隔离，统一引擎未完成 |
-| 双签与二次确认协议（`owner_elevated` 180s、`owner_irreversible` 120s + 二次确认） | 🚧 | 策略已定义要求项，超时数值与运行时签发流程待落地 |
-| CI 供应链门禁（依赖审计、密钥扫描、SBOM、shellcheck、CodeQL） | 🚧 | `.github/workflows/security.yml`、`codeql.yml` 已建立；Action 尚为标签引用，待固定完整 commit SHA |
+| 运行时策略引擎（PDP：运行时风险分类、授权签发/校验/撤销） | ✅ | `app/core/policy.py`、`app/core/execution_policy.py`、Registry 执行中间件与无参数审计 |
+| 双签与二次确认协议（`owner_elevated` 180s、`owner_irreversible` 120s + 二次确认） | ✅ | `app/core/permissions.py`、`scripts/approve.sh`、双签与移动端确认回归测试 |
+| CI 供应链门禁（依赖审计、密钥扫描、SBOM、shellcheck、CodeQL） | 🚧 | `.github/workflows/security.yml`、`codeql.yml` 已建立；第三方 Action 固定完整 commit SHA 与例外到期机制仍需完善 |
 
 **完成定义（DoD）**：
 
-- 全部风险操作在运行时经过统一策略引擎裁决，而非散落各模块；
+- 全部模型/API/CLI 工具调用在 Registry 边界经过统一 execution contract 与 Policy Engine 裁决；
+- `pure/local_state/queued_runner/controlled_sandbox/host_controlled/forbidden` 执行方式与风险等级分离；
 - 双签/二次确认的超时与流程写入机器策略并有测试覆盖；
+- `policy/` 以只读方式挂载到 Agent 与全部确定性 Runner，容器运行时不再隐式降级；
 - security.yml 全部门禁转为阻断模式，第三方 Action 固定到完整 commit SHA；
 - `python scripts/validate_governance.py` 与全量单测在 CI 全绿。
 
