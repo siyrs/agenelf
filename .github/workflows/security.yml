@@ -24,6 +24,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install governance validator dependency
+        run: python -m pip install --disable-pip-version-check 'pyyaml>=6.0'
       - name: Validate governance policy
         run: python scripts/validate_governance.py
       - name: Compile governance validator
@@ -33,9 +35,6 @@ jobs:
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # 首次引入供应链门禁：历史依赖基线尚未清理，先告警不阻断；
-    # 待漏洞基线清零后移除 continue-on-error 转为阻断门禁。
-    continue-on-error: true
     steps:
       # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
       - uses: actions/checkout@v4
@@ -48,8 +47,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install pip-audit
           pip install -r app/requirements.txt
-      - name: Audit dependencies for known vulnerabilities
-        run: pip-audit --progress-spinner off
+      - name: Generate dependency vulnerability report
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          pip-audit --progress-spinner off --format json --output pip-audit.json
+          audit_status=$?
+          set -e
+          echo "pip-audit exit status: ${audit_status}"
+          test -s pip-audit.json
+      - name: Enforce fixable-vulnerability policy
+        run: python scripts/evaluate_pip_audit.py pip-audit.json
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - name: Upload dependency audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit.json
+          retention-days: 30
 
   secret-scan:
     name: Secret scan (gitleaks)
@@ -70,7 +87,11 @@ jobs:
       - name: Run gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_VERSION: "8.18.4"
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
 
   sbom:
     name: SBOM (CycloneDX)
@@ -89,7 +110,7 @@ jobs:
           pip install cyclonedx-bom
           pip install -r app/requirements.txt
       - name: Generate SBOM
-        run: cyclonedx-py environment --of JSON --outfile sbom.json
+        run: cyclonedx-py environment --of JSON --output-file sbom.json
       # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
@@ -108,9 +129,23 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Lint shell scripts
+        id: shellcheck
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
+          : > shellcheck.log
           while IFS= read -r -d '' script; do
-            shellcheck --severity=warning "$script"
+            shellcheck --severity=warning "$script" 2>&1 | tee -a shellcheck.log
           done < <(find scripts -maxdepth 1 -type f -name '*.sh' -print0)
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - name: Upload ShellCheck diagnostics
+        if: steps.shellcheck.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shellcheck-diagnostics
+          path: shellcheck.log
+          retention-days: 30
+      - name: Stop after ShellCheck failure
+        if: steps.shellcheck.outcome == 'failure'
+        run: exit 1
