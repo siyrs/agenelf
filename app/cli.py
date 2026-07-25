@@ -28,7 +28,7 @@ def _json_panel(data, title: str) -> None:
 
 
 def _dispatch_json(agent: Agent, tool_name: str, args: dict | None = None):
-    text = agent.registry.dispatch(tool_name, args or {})
+    text = agent.registry.dispatch(tool_name, args or {}, subject="cli")
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -342,7 +342,7 @@ def main() -> int:
                 console.print(f"[red]未知命令 {command}[/red]")
             continue
         with console.status("Agenelf 思考中..."):
-            reply = agent.chat(user_input)
+            reply = agent.chat(user_input, subject="cli")
         console.print(Panel(Markdown(reply), title="Agenelf", border_style="green"))
     return 0
 

@@ -90,12 +90,17 @@ def load_config(
     )
 
     config["runtime_root"] = str(root)
+    runtime_policy_dir = root / "policy"
+    source_policy_dir = app_dir.parent / "policy"
+    config["policy_dir"] = str(
+        runtime_policy_dir if runtime_policy_dir.is_dir() else source_policy_dir
+    )
     config["local_dir"] = str(local_dir)
-    # 策略引擎注入：agent 侧可按 policy_dir 重建 PolicyEngine。
+    # 策略版本探测必须复用上方已经选择且实际存在的 policy_dir，
+    # 不能再次根据临时 AGENELF_ROOT 覆盖回一个不存在的目录。
     try:
-        engine = PolicyEngine()
+        engine = PolicyEngine(config["policy_dir"])
         config["policy_version"] = engine.policy_version
-        config["policy_dir"] = str(engine.policy_dir)
     except Exception:  # 策略加载失败绝不影响配置主流程
         config["policy_version"] = "0.0.0-empty"
     config["self_dir"] = str(self_dir)

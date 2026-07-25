@@ -67,6 +67,7 @@ def _contract(
 _EXPLICIT: dict[str, ToolExecutionContract] = {
     # Server operations.
     "list_managed_servers": _contract("list_managed_servers", "server.operations", "catalog", "read", "pure"),
+    "get_server_operation": _contract("get_server_operation", "server.operations", "get_result", "read", "pure"),
     "inspect_server": _contract("inspect_server", "server.operations", "inspect", "read", "queued_runner"),
     "list_docker_containers": _contract("list_docker_containers", "server.operations", "docker_ps", "read", "queued_runner"),
     "update_apt_index": _contract("update_apt_index", "server.operations", "apt_update", "change", "queued_runner"),
@@ -132,7 +133,7 @@ _EXPLICIT: dict[str, ToolExecutionContract] = {
     "evolution_status": _contract("evolution_status", "agent.evolution", "status", "read", "pure"),
 }
 
-_LEGACY_PURE_TOOLS = {"ask_llm", "growth_pulse"}
+_LEGACY_PURE_TOOLS = {"ask_llm", "growth_pulse", "summarize"}
 
 
 def resolve_contract(tool_name: str, args: dict[str, Any], module: Any) -> ToolExecutionContract | None:
@@ -152,6 +153,11 @@ def resolve_contract(tool_name: str, args: dict[str, Any], module: Any) -> ToolE
             return _contract(tool_name, "server.operations", "service_status", "read", "queued_runner")
         if action == "restart":
             return _contract(tool_name, "server.operations", "service_restart", "change", "queued_runner")
+        if not action:
+            return ToolExecutionContract(
+                tool_name, "server.operations", "dynamic:action", "read",
+                "queued_runner", source="dynamic-placeholder"
+            )
         return None
 
     if tool_name == "pursue_improvement_intention":

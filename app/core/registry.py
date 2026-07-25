@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .capabilities import normalize_capability_meta
+from .execution_policy import audit_dispatch, evaluate_contract, resolve_contract
 
 _REQUIRED_ATTRS = ("SKILL_META", "TOOLS", "execute")
 
@@ -56,7 +57,13 @@ _DANGEROUS_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 class SkillRegistry:
     """Discover, validate, reload and dispatch skill modules."""
 
-    def __init__(self, skills_dir: str, extra_skills_dirs: list[str] | None = None):
+    def __init__(
+        self,
+        skills_dir: str,
+        extra_skills_dirs: list[str] | None = None,
+        *,
+        policy_engine: Any | None = None,
+    ):
         self.skills_dir = os.path.abspath(skills_dir)
         # 额外技能目录（快车道），约定第一个为 app-space/skills 可写目录
         self.extra_skills_dirs: list[str] = [
@@ -67,6 +74,8 @@ class SkillRegistry:
         self._tool_index: dict[str, str] = {}
         # 技能名 -> 来源（app / app-space），用于清单标注与越权保护
         self._origins: dict[str, str] = {}
+        self.policy_engine = policy_engine
+        self._contracts: dict[str, Any | None] = {}
 
     @staticmethod
     def _skill_name_from_file(filename: str) -> str:
@@ -128,6 +137,7 @@ class SkillRegistry:
 
     def _rebuild_tool_index(self) -> None:
         index: dict[str, str] = {}
+        contracts: dict[str, Any | None] = {}
         for skill_name, module in self.skills.items():
             for tool in getattr(module, "TOOLS", []):
                 function = tool.get("function", {}) if isinstance(tool, dict) else {}
@@ -140,7 +150,9 @@ class SkillRegistry:
                         f"工具名冲突：{tool_name} 同时由 {previous} 与 {skill_name} 提供"
                     )
                 index[tool_name] = skill_name
+                contracts[tool_name] = resolve_contract(str(tool_name), {}, module)
         self._tool_index = index
+        self._contracts = contracts
 
     def _descriptor_for(self, name: str, module) -> dict[str, Any]:
         tool_names = [
@@ -242,15 +254,42 @@ class SkillRegistry:
         for name, module in sorted(self.skills.items()):
             descriptor = self._descriptor_for(name, module)
             descriptor["origin"] = self._origins.get(name, ORIGIN_APP)
+            tool_names = [
+                str(tool.get("function", {}).get("name"))
+                for tool in getattr(module, "TOOLS", [])
+                if tool.get("function", {}).get("name")
+            ]
+            descriptor["tool_contracts"] = [
+                self._contracts[tool_name].as_dict()
+                for tool_name in tool_names
+                if self._contracts.get(tool_name) is not None
+            ]
+            descriptor["unclassified_tools"] = [
+                tool_name for tool_name in tool_names if self._contracts.get(tool_name) is None
+            ]
             catalog.append(descriptor)
         catalog.sort(key=lambda item: (item["domain"], item["id"]))
         return catalog
 
-    def dispatch(self, tool_name: str, args: dict) -> str:
+    def contract_for(self, tool_name: str, args: dict | None = None):
+        skill_name = self._tool_index.get(tool_name)
+        if skill_name is None:
+            return None
+        return resolve_contract(tool_name, args or {}, self.skills[skill_name])
+
+    def unclassified_tools(self) -> list[str]:
+        return sorted(name for name, contract in self._contracts.items() if contract is None)
+
+    def dispatch(self, tool_name: str, args: dict, *, subject: str = "agent") -> str:
         skill_name = self._tool_index.get(tool_name)
         if skill_name is None:
             return f"错误：未知工具 {tool_name}"
         module = self.skills[skill_name]
+        contract = resolve_contract(tool_name, args or {}, module)
+        decision = evaluate_contract(self.policy_engine, contract, subject)
+        audit_dispatch(tool_name, contract, subject, decision)
+        if not decision.get("allowed", False):
+            return f"错误：策略拒绝工具 {tool_name}：{decision.get('reason', '未说明原因')}"
         try:
             return str(module.execute(tool_name, args or {}))
         except Exception:

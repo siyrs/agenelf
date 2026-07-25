@@ -118,6 +118,9 @@ protected_paths:
   - code-workspaces/
   - repair-space/
   - app/core/registry.py
+  - app/core/policy.py
+  - app/core/execution_policy.py
+  - app/core/capabilities.py
   - app/core/code_repair.py
   - app/core/permissions.py
   - app/core/operations.py

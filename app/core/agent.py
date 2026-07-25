@@ -13,6 +13,7 @@ from .context import build_system_prompt, load_persona
 from .llm import LLMClient, MockLLM
 from .local_context import LocalContextStore
 from .memory import MemoryStore
+from .policy import PolicyEngine
 from .registry import SkillRegistry
 from .self_development import SelfDevelopmentEngine
 from .self_optimization import SelfOptimizationStore
@@ -69,6 +70,12 @@ class Agent:
         self.registry = SkillRegistry(
             config.get("skills_dir", "skills"),
             extra_skills_dirs=extra_skills_dirs or None,
+            policy_engine=PolicyEngine(
+                config.get("policy_dir")
+                or str(
+                    (Path(__file__).resolve().parents[2] / "policy").resolve()
+                )
+            ),
         )
         self.registry.discover()
 
@@ -191,7 +198,7 @@ class Agent:
                 f"自动沉淀失败：{self.last_auto_reflection_error}"
             )
 
-    def chat(self, user_input: str) -> str:
+    def chat(self, user_input: str, *, subject: str = "agent") -> str:
         """Process one turn while preserving bounded conversation and continuity."""
 
         # 自我优化快车道：每轮对话前应用白名单内的温度覆盖；MockLLM 没有
@@ -243,7 +250,16 @@ class Agent:
             )
             for call in tool_calls:
                 tool_used = True
-                result = self.registry.dispatch(call["name"], call["arguments"])
+                try:
+                    result = self.registry.dispatch(
+                        call["name"], call["arguments"], subject=subject
+                    )
+                except TypeError as exc:
+                    # Compatibility for tests or extensions that monkeypatch the old
+                    # two-argument dispatch signature. Real SkillRegistry supports subject.
+                    if "unexpected keyword argument 'subject'" not in str(exc):
+                        raise
+                    result = self.registry.dispatch(call["name"], call["arguments"])
                 messages.append(
                     {
                         "role": "tool",

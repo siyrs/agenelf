@@ -51,6 +51,7 @@ app = FastAPI(title="Agenelf API", version="0.6.0")
 
 class ChatRequest(BaseModel):
     message: str
+    channel: str = "http"
 
 
 class ChatResponse(BaseModel):
@@ -108,7 +109,7 @@ class OptimizationRollbackRequest(BaseModel):
 
 
 def _dispatch_json(tool_name: str, args: dict | None = None) -> dict:
-    text = get_agent().registry.dispatch(tool_name, args or {})
+    text = get_agent().registry.dispatch(tool_name, args or {}, subject="api")
     try:
         value = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -122,8 +123,11 @@ def _dispatch_json(tool_name: str, args: dict | None = None) -> dict:
 def chat(request: ChatRequest) -> ChatResponse:
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="message 不能为空")
+    channel = request.channel.strip().lower()
+    if channel not in {"http", "mobile_device", "voice"}:
+        raise HTTPException(status_code=400, detail="channel 只能是 http、mobile_device 或 voice")
     try:
-        reply = get_agent().chat(request.message)
+        reply = get_agent().chat(request.message, subject=channel)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"对话处理失败：{exc}") from exc
     return ChatResponse(reply=reply)

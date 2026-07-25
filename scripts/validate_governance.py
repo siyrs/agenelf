@@ -156,6 +156,27 @@ def validate_policy(policy: Any) -> list[str]:
     return errors
 
 
+
+def validate_execution_modes(policy: Any) -> list[str]:
+    errors: list[str] = []
+    root = _mapping(policy, "execution_modes_root", errors)
+    if root.get("schema_version") != 1 or root.get("status") != "active":
+        errors.append("execution-modes 策略必须 schema_version=1 且 status=active")
+    defaults = _mapping(root.get("defaults"), "execution_modes.defaults", errors)
+    if defaults.get("unclassified_tool") != "deny":
+        errors.append("未分类工具必须默认拒绝")
+    if defaults.get("arguments_in_audit") is not False:
+        errors.append("执行审计不得记录工具参数")
+    modes = _mapping(root.get("execution_modes"), "execution_modes", errors)
+    required = {"pure", "local_state", "queued_runner", "controlled_sandbox", "host_controlled", "forbidden"}
+    missing = required - set(modes)
+    if missing:
+        errors.append(f"execution_mode 缺失：{', '.join(sorted(missing))}")
+    forbidden = _mapping(modes.get("forbidden"), "execution_modes.forbidden", errors)
+    if forbidden.get("approval") != "impossible":
+        errors.append("forbidden execution_mode 必须不可授权")
+    return errors
+
 def load_policy(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
@@ -177,12 +198,19 @@ def main() -> int:
         print(f"治理策略读取失败：{exc}", file=sys.stderr)
         return 2
     errors = validate_policy(policy)
+    execution_path = path.parent / "execution-modes.v1.yaml"
+    try:
+        execution_policy = load_policy(execution_path)
+    except (OSError, yaml.YAMLError) as exc:
+        print(f"执行模式策略读取失败：{exc}", file=sys.stderr)
+        return 2
+    errors.extend(validate_execution_modes(execution_policy))
     if errors:
         print("治理策略校验失败：", file=sys.stderr)
         for error in errors:
             print(f"- {error}", file=sys.stderr)
         return 1
-    print(f"治理策略校验通过：{path}")
+    print(f"治理策略校验通过：{path} + {execution_path}")
     return 0
 
 
