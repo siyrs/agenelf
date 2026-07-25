@@ -28,6 +28,28 @@ class FakeAgent:
         return self.replies.pop(0)
 
 
+class FakeLLM:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def chat(self, messages, tools=None):
+        self.calls.append(
+            {
+                "system": messages[0]["content"],
+                "tools": tools,
+            }
+        )
+        return {"content": "ok", "tool_calls": []}
+
+
+class FakeRegistry:
+    def __init__(self, schemas):
+        self.schemas = schemas
+
+    def all_tool_schemas(self):
+        return list(self.schemas)
+
+
 class TaskContinuationRuntimeTest(unittest.TestCase):
     def test_max_round_sentinel_automatically_continues_original_goal(self):
         agent = FakeAgent(
@@ -48,6 +70,32 @@ class TaskContinuationRuntimeTest(unittest.TestCase):
         self.assertEqual(agent.calls[1][1], "cli")
         self.assertIn("任务连续性运行时约束", agent.system_prompt)
         self.assertIn("技能变更只是中间步骤", agent.system_prompt)
+
+    def test_same_turn_model_call_receives_fresh_prompt_and_tool_schemas(self):
+        agent = FakeAgent(["完成"])
+        agent.llm = FakeLLM()
+        registry = FakeRegistry([{"function": {"name": "old_tool"}}])
+        task_continuation.configure_runtime(agent=agent, registry=registry, config={})
+
+        messages = [{"role": "system", "content": "stale prompt"}]
+        agent.llm.chat(messages, tools=[{"function": {"name": "stale_tool"}}])
+        self.assertIn("任务连续性运行时约束", agent.llm.calls[-1]["system"])
+        self.assertEqual(
+            agent.llm.calls[-1]["tools"],
+            [{"function": {"name": "old_tool"}}],
+        )
+
+        registry.schemas = [{"function": {"name": "newly_forged_tool"}}]
+        agent.system_prompt = "prompt refreshed after skill registration"
+        agent.llm.chat(messages, tools=None)
+        self.assertEqual(
+            agent.llm.calls[-1]["system"],
+            "prompt refreshed after skill registration",
+        )
+        self.assertEqual(
+            agent.llm.calls[-1]["tools"],
+            [{"function": {"name": "newly_forged_tool"}}],
+        )
 
     def test_total_budget_exhaustion_returns_and_persists_recoverable_checkpoint(self):
         agent = FakeAgent(
