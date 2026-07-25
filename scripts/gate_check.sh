@@ -21,7 +21,8 @@ mkdir -p "${REQ_DIR}" "${ROOT_DIR}/logs"
 rm -f "${REQ_DIR}/READY" "${REQ_DIR}/REJECTED" "${REQ_DIR}/candidate.sha256"
 
 log() {
-    local m="[$(date '+%F %T')] $*"
+    local m
+    m="[$(date '+%F %T')] $*"
     echo "${m}"
     echo "${m}" >> "${REPORT}"
     echo "${m}" >> "${LOG_FILE}"
@@ -101,6 +102,9 @@ PROTECTED_APP_FILES=(
     "core/validation.py"
     "core/capability_health.py"
     "core/registry.py"
+    "core/policy.py"
+    "core/execution_policy.py"
+    "core/capabilities.py"
     "core/code_repair.py"
     "core/task_engine.py"
     "core/model_router.py"

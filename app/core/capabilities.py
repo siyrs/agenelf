@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-_VALID_RISKS = {"read", "change", "privileged", "forbidden"}
+_VALID_RISKS = {"read", "change", "privileged", "irreversible", "forbidden"}
 
 
 @dataclass(frozen=True)

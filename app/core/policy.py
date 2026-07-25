@@ -229,6 +229,79 @@ class PolicyEngine:
             )
         return result
 
+    def evaluate_declared(
+        self,
+        capability: str,
+        operation: str,
+        declared_risk: str,
+        subject: str = "agent",
+    ) -> dict[str, Any]:
+        """Evaluate an explicit capability contract without example-name guessing.
+
+        ``evaluate`` remains compatible with legacy operation examples. Registry
+        middleware uses this method because execution contracts already carry a
+        reviewed risk and must not depend on matching a global examples list.
+        """
+
+        capability = str(capability or "").strip()
+        operation = str(operation or "").strip()
+        subject = str(subject or "agent").strip()
+        risk = str(declared_risk or "").strip().lower()
+        result: dict[str, Any] = {
+            "allowed": False,
+            "risk": "forbidden",
+            "approval": "impossible",
+            "auto_execute": False,
+            "requires_textual_confirmation": False,
+            "second_confirmation_required": False,
+            "rollback_required": False,
+            "reason": "",
+            "policy_version": self.policy_version,
+        }
+        if self._degraded:
+            result["reason"] = (
+                f"策略引擎处于降级模式（{self._load_error}），默认拒绝所有操作"
+            )
+            return result
+        channels = self._policy.get("interaction_channels", {})
+        current = set(channels.get("current", [])) if isinstance(channels, dict) else set()
+        opened = _BUILTIN_SUBJECTS | _RESTRICTED_SUBJECTS | current | {"host"}
+        if subject not in opened:
+            result["reason"] = f"渠道未开通：{subject}，拒绝 {capability}.{operation}"
+            return result
+        if operation in set(self.forbidden_behaviors()) or risk == "forbidden":
+            result["reason"] = f"{capability}.{operation} 属于永久禁止行为，不可授权"
+            return result
+        if risk not in _RISK_ORDER:
+            result["reason"] = f"未知声明风险：{risk!r}"
+            return result
+        risk_levels = self._policy.get("risk_levels", {})
+        cfg = risk_levels.get(risk, {}) if isinstance(risk_levels, dict) else {}
+        if not isinstance(cfg, dict) or not cfg:
+            result["reason"] = f"策略缺少风险级别：{risk}"
+            return result
+        approval = str(cfg.get("approval", "impossible"))
+        result.update(
+            allowed=approval != "impossible",
+            risk=risk,
+            approval=approval,
+            auto_execute=bool(cfg.get("auto_execute", False)),
+            second_confirmation_required=bool(
+                cfg.get("second_confirmation_required", False)
+            ),
+            rollback_required=bool(cfg.get("rollback_required", False)),
+            reason=(
+                f"{capability}.{operation} 使用显式 execution contract："
+                f"risk={risk}, approval={approval}"
+            ),
+        )
+        if subject in _RESTRICTED_SUBJECTS and risk != "read":
+            result["requires_textual_confirmation"] = True
+            if risk in {"privileged", "irreversible"}:
+                result["second_confirmation_required"] = True
+            result["reason"] += "；移动端/语音只能发起，不能充当批准人"
+        return result
+
     # ------------------------------------------------------------------
     # 策略查询辅助
     # ------------------------------------------------------------------

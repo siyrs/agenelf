@@ -19,6 +19,7 @@ services:
       - ./app-fork:/agenelf/app-fork:ro
       - ./app-tmp:/agenelf/app-tmp:rw
       - ./scripts:/agenelf/scripts:ro
+      - ./policy:/agenelf/policy:ro
       - ./data:/agenelf/data:rw
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:ro
@@ -57,6 +58,7 @@ services:
     volumes:
       - ./app-fork:/agenelf/app-fork:ro
       - ./scripts:/agenelf/scripts:ro
+      - ./policy:/agenelf/policy:ro
       - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
       - ./local/secrets:/agenelf/local/secrets:ro
       - ./data/ops-requests:/agenelf/data/ops-requests:ro
@@ -83,6 +85,7 @@ services:
     volumes:
       - ./app-fork:/agenelf/app-fork:ro
       - ./scripts:/agenelf/scripts:ro
+      - ./policy:/agenelf/policy:ro
       - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
       - ./data/validation-requests:/agenelf/data/validation-requests:ro
       - ./data/validation-results:/agenelf/data/validation-results:rw
@@ -108,6 +111,7 @@ services:
     volumes:
       - ./app-fork:/agenelf/app-fork:ro
       - ./scripts:/agenelf/scripts:ro
+      - ./policy:/agenelf/policy:ro
       - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
       - ./code-workspaces:/agenelf/code-workspaces:ro
       - ./repair-space:/agenelf/repair-space:rw

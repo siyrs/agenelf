@@ -1,0 +1,48 @@
+schema_version: 1
+policy_id: agenelf-registry-execution-modes
+policy_version: 1.0.0
+status: active
+last_reviewed: '2026-07-25'
+
+defaults:
+  unclassified_tool: deny
+  arguments_in_audit: false
+  policy_engine_required_in_agent_runtime: true
+
+execution_modes:
+  pure:
+    description: Deterministic read-only computation or safe catalog lookup inside the Agent process.
+    allowed_risks: [read]
+    external_side_effects: false
+  local_state:
+    description: Bounded writes to Agenelf-owned task, memory, reflection or optimization state only.
+    allowed_risks: [read, change]
+    external_side_effects: false
+    owner_approval: none
+  queued_runner:
+    description: Submit or inspect a fingerprint-bound request executed by a deterministic isolated runner.
+    allowed_risks: [read, change, privileged, irreversible]
+    external_side_effects: runner_only
+    exact_binding_required: true
+  controlled_sandbox:
+    description: Modify only app-tmp or another controlled sandbox, run tests and at most request host promotion.
+    allowed_risks: [change]
+    mobile_or_voice_direct_execution: false
+    direct_main_mutation: false
+  host_controlled:
+    description: Experimental or administrative action available only from an explicit host or CLI context.
+    allowed_subjects: [host, cli]
+    model_dispatch: false
+  forbidden:
+    description: Permanently disabled operation; authorization cannot override it.
+    allowed_risks: [forbidden]
+    approval: impossible
+
+requirements:
+  - every_non_read_tool_has_explicit_contract
+  - registry_enforces_before_skill_execute
+  - api_cli_and_model_calls_share_dispatch_middleware
+  - dynamic_argument_variants_resolve_before_policy_evaluation
+  - unclassified_non_read_tools_fail_acceptance
+  - dispatch_audit_excludes_arguments_and_credentials
+  - policy_degraded_mode_denies_agent_runtime_dispatch
