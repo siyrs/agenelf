@@ -1,0 +1,36 @@
+schema_version: 1
+policy_id: agenelf-task-engine-constraints
+status: active
+
+principles:
+  - id: explicit_goal
+    rule: "每个任务必须有主人目标和验收条件"
+  - id: evidence_driven
+    rule: "任务完成必须关联验证证据"
+  - id: resumable
+    rule: "长任务必须支持暂停、恢复和失败记录"
+  - id: single_control_plane
+    rule: "CLI HTTP Voice Mobile 必须共享同一任务和权限控制面"
+
+states:
+  - proposed
+  - planned
+  - running
+  - waiting_approval
+  - verifying
+  - completed
+  - failed
+  - cancelled
+
+forbidden:
+  - hidden_side_effects
+  - bypass_permission
+  - skip_validation
+  - direct_main_mutation
+  - fake_completion
+
+requirements:
+  evidence_plan: true
+  acceptance_criteria: true
+  audit_record: true
+  rollback_plan_for_changes: true
