@@ -36,4 +36,9 @@ replace_once(
     '''    registry = _registry()\n    if getattr(registry, "origin_of", lambda _: "")(name) != "app-space":\n        return _dump({"removed": False, "message": f"技能 {name} 不在 app-space 快车道上"})\n    appspace = _appspace_dir()\n''',
     '''    registry = _registry()\n    origin = getattr(registry, "origin_of", lambda _: "")(name)\n    if name in registry.skills and origin != "app-space":\n        return _dump({"removed": False, "message": f"内置技能 {name} 不能由 skill_forge 移除"})\n    if origin != "app-space":\n        return _dump({"removed": False, "message": f"技能 {name} 不在 app-space 快车道上"})\n    appspace = _appspace_dir()\n''',
 )
+replace_once(
+    "app/core/registry.py",
+    'return True, f"{message}；测试验证通过（tested=true）"',
+    'return True, f"{message}；已注册（含测试验证）；测试验证通过（tested=true）"',
+)
 print("compatibility fixes applied")
