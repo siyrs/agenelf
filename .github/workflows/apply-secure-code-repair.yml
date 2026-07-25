@@ -30,14 +30,34 @@ jobs:
           fetch-depth: 0
 
       - name: Decode and apply exact implementation payload
+        id: apply_payload
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          cat .agent-secure-repair/part-* | base64 --decode > /tmp/secure-code-repair-payload.tar.xz
-          sha256sum -c .agent-secure-repair/SHA256
-          mkdir -p /tmp/secure-code-repair-payload
-          tar -xJf /tmp/secure-code-repair-payload.tar.xz -C /tmp/secure-code-repair-payload
-          python /tmp/secure-code-repair-payload/apply_changes.py
+          set -o pipefail
+          {
+            set -euxo pipefail
+            cat .agent-secure-repair/part-* | base64 --decode > /tmp/secure-code-repair-payload.tar.xz
+            sha256sum -c .agent-secure-repair/SHA256
+            mkdir -p /tmp/secure-code-repair-payload
+            tar -xJf /tmp/secure-code-repair-payload.tar.xz -C /tmp/secure-code-repair-payload
+            python /tmp/secure-code-repair-payload/apply_changes.py
+          } > /tmp/secure-code-repair-apply.log 2>&1
+
+      - name: Upload payload application diagnostics
+        if: steps.apply_payload.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: secure-code-repair-apply-diagnostics
+          path: /tmp/secure-code-repair-apply.log
+          if-no-files-found: error
+
+      - name: Stop after payload application failure
+        if: steps.apply_payload.outcome == 'failure'
+        shell: bash
+        run: |
+          cat /tmp/secure-code-repair-apply.log
+          exit 1
 
       - uses: actions/setup-python@v5
         with:
