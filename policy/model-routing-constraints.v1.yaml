@@ -1,0 +1,53 @@
+schema_version: 1
+policy_id: agenelf-model-routing-constraints
+status: active
+
+principles:
+  - id: model_is_untrusted_planner
+    rule: "任何模型都不能成为授权源、策略源或可信执行证据源"
+  - id: provider_independent
+    rule: "权限、任务、审计和证据规则必须独立于 DeepSeek/GPT/GLM/Ollama 提供商"
+  - id: no_inline_credentials
+    rule: "local/models.yaml 只能引用 API Key 环境变量名，不能保存凭据值"
+  - id: explicit_fallback
+    rule: "路由必须返回明确回退链；没有就绪模型时不得静默使用未配置提供商"
+  - id: privacy_route
+    rule: "标记为 privacy 的任务默认只允许 local 模型，除非主人明确改变任务隐私策略"
+
+supported_task_types:
+  - routine
+  - reasoning
+  - coding
+  - privacy
+  - vision
+  - voice
+
+selection_dimensions:
+  - required_capabilities
+  - provider_ready
+  - cost_class
+  - privacy_class
+  - owner_route_order
+
+cost_classes:
+  local: 0
+  low: 1
+  medium: 2
+  high: 3
+
+forbidden:
+  - return_api_key_or_token
+  - embed_credentials_in_models_yaml
+  - treat_model_output_as_owner_approval
+  - let_provider_change_policy
+  - silently_route_privacy_task_to_external_model
+  - hide_selected_provider_from_audit
+
+required_audit_fields:
+  - task_type
+  - selected_alias
+  - selected_model
+  - fallback_chain
+  - required_capabilities
+  - max_cost_class
+  - privacy_preference

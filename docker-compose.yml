@@ -10,6 +10,7 @@ services:
       AGENELF_SELF_DIR: /agenelf/local/self
       AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
       AGENELF_VALIDATION_FILE: /agenelf/local/validation.yaml
+      AGENELF_MODELS_FILE: /agenelf/local/models.yaml
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -29,6 +30,7 @@ services:
       - ./local/context:/agenelf/local/context:ro
       - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
       - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
+      - ./local/models.yaml:/agenelf/local/models.yaml:ro
       - ./local/memory:/agenelf/local/memory:rw
       # Persistent reflections and improvement intentions are Agent-writable.
       - ./local/self:/agenelf/local/self:rw

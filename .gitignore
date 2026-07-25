@@ -15,6 +15,7 @@ local/profile.yaml
 local/preferences.yaml
 local/servers.yaml
 local/validation.yaml
+local/models.yaml
 local/context/
 local/memory/
 local/self/
