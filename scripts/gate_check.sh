@@ -74,11 +74,11 @@ pass "新增代码未发现危险模式"
 
 log "[gate] 检查 b/6：受保护宿主机与主人配置写入意图"
 cat > "${PROTECTED_PATTERNS}" <<'PROTECTED_EOF'
-open\([^)]*(scripts/|\.env([^a-zA-Z]|$)|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)[^)]*['"][wax]
-(shutil\.(copy|copyfile|copytree|move)|os\.(remove|rename|replace|unlink|chmod|rmdir))\([^)]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)
-(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)[^#\n]*\.(write_text|write_bytes|unlink|rename|chmod)\(
-(^|[^>])>>?[[:space:]]*[^[:space:]]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)
-\b(rm|mv|cp|tee)[[:space:]]+[^#\n|]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/validation|local/secrets)
+open\([^)]*(scripts/|\.env([^a-zA-Z]|$)|docker-compose|local/(profile|preferences|servers|memory|self)|local/(validation|models|repositories)|local/secrets|code-workspaces|repair-space)[^)]*['"][wax]
+(shutil\.(copy|copyfile|copytree|move)|os\.(remove|rename|replace|unlink|chmod|rmdir))\([^)]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/(validation|models|repositories)|local/secrets|code-workspaces|repair-space)
+(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/(validation|models|repositories)|local/secrets|code-workspaces|repair-space)[^#\n]*\.(write_text|write_bytes|unlink|rename|chmod)\(
+(^|[^>])>>?[[:space:]]*[^[:space:]]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/(validation|models|repositories)|local/secrets|code-workspaces|repair-space)
+\b(rm|mv|cp|tee)[[:space:]]+[^#\n|]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/(validation|models|repositories)|local/secrets|code-workspaces|repair-space)
 PROTECTED_EOF
 PROTECTED_HITS="$(grep -EnI -f "${PROTECTED_PATTERNS}" "${ADDED_LINES}" 2>/dev/null || true)"
 if [[ -n "${PROTECTED_HITS}" ]]; then
@@ -100,6 +100,17 @@ PROTECTED_APP_FILES=(
     "core/self_development.py"
     "core/validation.py"
     "core/capability_health.py"
+    "core/registry.py"
+    "core/code_repair.py"
+    "core/task_engine.py"
+    "core/model_router.py"
+    "core/channel_envelope.py"
+    "core/self_optimization.py"
+    "skills/code_repair.py"
+    "skills/code_writer.py"
+    "skills/skill_forge.py"
+    "skills/workflow_tasks.py"
+    "skills/model_routing.py"
     "skills/evolution_ops.py"
     "skills/server_ops.py"
     "skills/local_context.py"

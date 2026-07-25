@@ -87,6 +87,15 @@ class ValidationRunRequest(BaseModel):
     wait_seconds: int = Field(default=3, ge=0, le=12)
 
 
+class CodeRepairSubmitRequest(BaseModel):
+    repository: str
+    unified_diff: str
+    test_profile: str = ""
+    expected_base: str = ""
+    summary: str = ""
+    wait_seconds: int = Field(default=5, ge=0, le=15)
+
+
 class OptimizationApplyRequest(BaseModel):
     key: str
     value: float
@@ -197,6 +206,37 @@ def validation_result(
     return _dispatch_json(
         "get_validation_result",
         {"validation_id": validation_id, "wait_seconds": wait_seconds},
+    )
+
+
+@app.get("/code-repair/catalog", dependencies=[Depends(require_api_token)])
+def code_repair_catalog() -> dict:
+    return _dispatch_json("list_code_repair_repositories")
+
+
+@app.post("/code-repair/requests", dependencies=[Depends(require_api_token)])
+def submit_code_repair(request: CodeRepairSubmitRequest) -> dict:
+    return _dispatch_json(
+        "submit_code_repair_patch",
+        {
+            "repository": request.repository,
+            "unified_diff": request.unified_diff,
+            "test_profile": request.test_profile,
+            "expected_base": request.expected_base,
+            "summary": request.summary,
+            "wait_seconds": request.wait_seconds,
+        },
+    )
+
+
+@app.get("/code-repair/requests/{repair_id}", dependencies=[Depends(require_api_token)])
+def code_repair_result(
+    repair_id: str,
+    wait_seconds: int = Query(default=0, ge=0, le=15),
+) -> dict:
+    return _dispatch_json(
+        "get_code_repair_result",
+        {"repair_id": repair_id, "wait_seconds": wait_seconds},
     )
 
 

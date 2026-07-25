@@ -1,0 +1,28 @@
+schema_version: 1
+
+# Source repositories are placed by the owner under root/code-workspaces/<source_dir>.
+# The Agent sees only aliases and test-profile names. repair-runner mounts source as read-only.
+repositories: {}
+
+# Example repository (uncomment and adjust after cloning into code-workspaces/demo):
+# repositories:
+#   demo:
+#     description: Demo Python repository
+#     language: python
+#     source_dir: demo
+#     default_test_profile: python-unittest
+#     allowed_test_profiles: [python-compile, python-unittest]
+#     protected_paths: [.github/workflows/, policy/, local/, secrets/]
+#     max_patch_files: 20
+#     max_patch_bytes: 262144
+
+test_profiles:
+  python-compile:
+    commands:
+      - [python, -m, compileall, -q, .]
+    timeout_seconds: 180
+
+  python-unittest:
+    commands:
+      - [python, -m, unittest, discover, -s, tests, -v]
+    timeout_seconds: 900

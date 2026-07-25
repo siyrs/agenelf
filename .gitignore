@@ -9,6 +9,8 @@ app-space/
 data/
 .env
 .ops-runner.env
+code-workspaces/
+repair-space/
 
 # Owner-specific local data (examples and docs are explicitly tracked)
 local/profile.yaml
@@ -16,6 +18,7 @@ local/preferences.yaml
 local/servers.yaml
 local/validation.yaml
 local/models.yaml
+local/repositories.yaml
 local/context/
 local/memory/
 local/self/
@@ -25,7 +28,7 @@ local/secrets/
 config/servers.yaml
 secrets/
 
-# 成长报告数据产物（目录保留 .gitkeep，报告不进入 Git）
+# Growth report artifacts
 docs/growth-reports/*
 !docs/growth-reports/.gitkeep
 

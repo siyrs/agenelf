@@ -49,6 +49,7 @@ Agenelf 由四个彼此分离但可组合的层次构成：
 - [总体能力架构](docs/ARCHITECTURE.md)
 - [服务器运维](docs/SERVER_OPERATIONS.md)
 - [软件验证](docs/VALIDATION.md)
+- [隔离代码修复](docs/CODE_REPAIR.md)
 - [受控自主迭代](docs/AUTONOMY.md)
 - [证据驱动自我优化](docs/SELF_OPTIMIZATION.md)
 - [能力快车道](docs/APP_SPACE.md)（含测试门禁）

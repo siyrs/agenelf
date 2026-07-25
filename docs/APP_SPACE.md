@@ -1,3 +1,8 @@
+> 安全状态更新：app-space 自动扫描和 skill_forge 现已默认关闭。
+> 只有主人显式设置 `AGENELF_ENABLE_APP_SPACE_SKILLS=1` 与
+> `AGENELF_ENABLE_SKILL_FORGE=1`，并为候选提供通过的测试时才可实验性启用。
+> 外部代码修改应优先使用 [CODE_REPAIR.md](CODE_REPAIR.md)。
+
 # 能力快车道：app-space 技能锻造
 
 Agenelf 的自我完善有两条车道，分工明确、互不越权：
@@ -71,7 +76,7 @@ core/registry.py
 `python -m unittest` 子进程运行（PYTHONPATH 指向临时目录，默认 60s
 超时，继承当前解释器）。
 
-- **可选，不强制**：未附测试不阻断注册，但注册结果与
+- **可选，不强制**：未附测试会直接拒绝注册，但注册结果与
   `list_forged_skills` 输出都会明确标注 `tested: false`
   （“未附测试，建议补充”）；附测试且跑通则标注 `tested: true`，
   并在 `app-space/skills/<name>.tested` 写旁车标记（remove 时一并清理）。

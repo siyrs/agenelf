@@ -1,0 +1,64 @@
+schema_version: 1
+policy_id: agenelf-code-repair-constraints
+status: active
+
+purpose: >-
+  Let Agenelf propose and verify code changes without giving the model direct access
+  to source repositories, credentials, network, Git publishing, or the Agent process.
+
+execution_model:
+  source_repository_mount: read_only
+  disposable_worktree: required
+  network: disabled
+  secrets_mount: forbidden
+  shell: forbidden
+  commands_source: owner_configured_argv
+  model_supplied_commands: forbidden
+
+request_contract:
+  repository_alias_only: true
+  unified_diff_required: true
+  fingerprint_fields:
+    - repository
+    - test_profile
+    - patch_sha256
+    - patch_bytes
+    - expected_base
+  credential_like_patch_content: reject
+  binary_patch: reject
+  rename_patch: reject_in_v1
+
+runner_invariants:
+  - recompute_patch_digest
+  - verify_request_fingerprint
+  - verify_expected_base_when_present
+  - reject_path_escape
+  - reject_protected_paths
+  - apply_patch_to_disposable_copy_only
+  - run_owner_configured_tests_without_shell
+  - sanitize_test_output
+  - preserve_patch_and_test_evidence
+
+forbidden:
+  - modify_source_repository
+  - execute_code_in_agent_process
+  - read_agent_or_ops_secrets
+  - enable_network_for_tests
+  - accept_model_generated_shell
+  - commit
+  - push
+  - merge
+  - forge_success_without_test_exit_zero
+
+completion_evidence:
+  required:
+    - repair_id
+    - base_commit
+    - patch_sha256
+    - changed_files
+    - test_profile
+    - command_exit_codes
+    - source_repository_modified_false
+    - committed_false
+    - pushed_false
+    - merged_false

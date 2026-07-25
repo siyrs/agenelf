@@ -95,6 +95,7 @@ forbidden_behaviors:
   - expose_secrets_to_llm_or_chat_history
   - read_local_secrets_from_agent_runtime
   - execute_model_generated_arbitrary_shell
+  - execute_model_generated_code_in_agent_process
   - push_or_merge_main_directly_from_autonomous_runtime
   - weaken_tests_or_gate_to_make_a_candidate_pass
   - conceal_side_effects_failures_or_scope_expansion
@@ -113,6 +114,11 @@ protected_paths:
   - local/validation.yaml
   - local/profile.yaml
   - local/preferences.yaml
+  - local/repositories.yaml
+  - code-workspaces/
+  - repair-space/
+  - app/core/registry.py
+  - app/core/code_repair.py
   - app/core/permissions.py
   - app/core/operations.py
   - app/core/autonomy.py

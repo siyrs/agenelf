@@ -80,6 +80,12 @@ def load_config(
         if validation_override
         else local_dir / "validation.yaml"
     )
+    repositories_override = os.environ.get("AGENELF_REPOSITORIES_FILE", "").strip()
+    repositories_path = (
+        Path(repositories_override).resolve()
+        if repositories_override
+        else local_dir / "repositories.yaml"
+    )
 
     config["runtime_root"] = str(root)
     config["local_dir"] = str(local_dir)
@@ -94,9 +100,11 @@ def load_config(
     config.setdefault("memory_path", str(memory_path))
     config.setdefault("servers_path", str(servers_path))
     config.setdefault("validation_path", str(validation_path))
+    config.setdefault("repositories_path", str(repositories_path))
 
     os.environ["AGENELF_LOCAL_DIR"] = str(local_dir)
     os.environ["AGENELF_SELF_DIR"] = str(self_dir)
     os.environ["AGENELF_SERVERS_FILE"] = str(servers_path)
     os.environ["AGENELF_VALIDATION_FILE"] = str(validation_path)
+    os.environ["AGENELF_REPOSITORIES_FILE"] = str(repositories_path)
     return config
