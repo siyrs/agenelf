@@ -1,0 +1,82 @@
+name: Apply registry execution policy
+
+on:
+  push:
+    branches: [agent/registry-execution-policy-v1]
+    paths:
+      - 'scripts/apply_registry_execution_policy.py'
+      - 'app/core/execution_policy.py'
+      - 'app/tests/test_registry_execution_policy.py'
+      - 'policy/execution-modes.v1.yaml'
+      - 'docs/EXECUTION_POLICY.md'
+      - 'docs/audits/2026-07-25-K3-POLICY-ENFORCEMENT-AUDIT.md'
+      - '.github/workflows/apply-registry-execution-policy.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: registry-execution-policy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/registry-execution-policy-v1
+          fetch-depth: 0
+
+      - name: Apply exact K3 baseline migration
+        run: python scripts/apply_registry_execution_policy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r app/requirements.txt
+
+      - name: Validate governance policies
+        run: python scripts/validate_governance.py
+
+      - name: Compile Python sources
+        run: python -m compileall -q app scripts
+
+      - name: Run complete unit suite
+        working-directory: app
+        run: python -m unittest discover -s tests -v
+
+      - name: Validate initialization and Docker topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/init-local.json
+          docker compose config >/dev/null
+
+      - name: Validate all shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find scripts -maxdepth 1 -type f -name '*.sh' -print0)
+
+      - name: Remove migration-only files
+        run: rm -f scripts/apply_registry_execution_policy.py .github/workflows/apply-registry-execution-policy.yml
+
+      - name: Commit verified implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'agenelf-ci'
+          git config user.email 'agenelf-ci@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: enforce execution contracts at registry boundary'
+          git push origin HEAD:agent/registry-execution-policy-v1
