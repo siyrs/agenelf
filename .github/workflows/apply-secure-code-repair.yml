@@ -6,12 +6,17 @@ on:
     paths:
       - '.agent-secure-repair/**'
       - '.github/workflows/apply-secure-code-repair.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.agent-secure-repair/**'
+      - '.github/workflows/apply-secure-code-repair.yml'
 
 permissions:
   contents: write
 
 concurrency:
-  group: apply-secure-code-repair-${{ github.ref }}
+  group: apply-secure-code-repair-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
