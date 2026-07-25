@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from .policy import PolicyEngine
+
 
 def runtime_root(app_dir: str | Path) -> Path:
     configured = os.environ.get("AGENELF_ROOT", "").strip()
@@ -89,6 +91,13 @@ def load_config(
 
     config["runtime_root"] = str(root)
     config["local_dir"] = str(local_dir)
+    # 策略引擎注入：agent 侧可按 policy_dir 重建 PolicyEngine。
+    try:
+        engine = PolicyEngine()
+        config["policy_version"] = engine.policy_version
+        config["policy_dir"] = str(engine.policy_dir)
+    except Exception:  # 策略加载失败绝不影响配置主流程
+        config["policy_version"] = "0.0.0-empty"
     config["self_dir"] = str(self_dir)
     config.setdefault("skills_dir", str(app_dir / "skills"))
     config.setdefault(

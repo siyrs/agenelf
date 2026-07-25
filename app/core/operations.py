@@ -97,6 +97,56 @@ def _atomic_write_json(path: Path, data: dict[str, Any], exclusive: bool = False
     os.replace(tmp, path)
 
 
+_POLICY_RISK_ORDER = {
+    RISK_READ: 0,
+    RISK_CHANGE: 1,
+    RISK_PRIVILEGED: 2,
+    "irreversible": 3,
+    RISK_FORBIDDEN: 4,
+}
+
+
+def _policy_evaluation(capability: str, operation: str) -> dict[str, Any] | None:
+    """咨询策略引擎；引擎不可用或调用失败时返回 None（降级为既有行为）。"""
+
+    try:
+        from core.policy import PolicyEngine  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    try:
+        engine = PolicyEngine()
+        if getattr(engine, "degraded", False):
+            # 策略文件缺失/损坏 → 视为引擎不可用，回退既有行为；
+            # 只有健康引擎的判定才具有约束力（兼容未部署 policy/ 的环境）
+            return None
+        result = engine.evaluate(capability, operation, subject="agent")
+    except Exception:
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def _strictest_risk(declared: str, evaluation: dict[str, Any]) -> str:
+    """取既有判定与策略判定中更严格的风险级别（既有行为为下限）。
+
+    策略判定为 irreversible/forbidden 时，本执行面的风险词表无法安全表达，
+    直接拒绝提交（失败关闭），而不是静默降级。
+    """
+
+    policy_risk = str(evaluation.get("risk") or "").lower().strip()
+    if policy_risk in ("irreversible", RISK_FORBIDDEN):
+        raise PermissionError(f"策略引擎判定风险 {policy_risk} 超出可提交范围，拒绝提交")
+    effective = declared
+    if (
+        policy_risk in _POLICY_RISK_ORDER
+        and _POLICY_RISK_ORDER[policy_risk] > _POLICY_RISK_ORDER[declared]
+    ):
+        effective = policy_risk
+    if effective == RISK_READ and evaluation.get("auto_execute") is False:
+        # 策略禁止自动执行的读操作必须升级为需审批的变更级。
+        effective = RISK_CHANGE
+    return effective
+
+
 def read_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -137,6 +187,18 @@ def submit_operation(
     if parameters is not None and not isinstance(parameters, dict):
         raise TypeError("parameters 必须是对象")
 
+    declared_risk = risk
+    evaluation = _policy_evaluation(capability, operation)
+    policy_version = ""
+    approval_mode = ""
+    if evaluation:
+        policy_version = str(evaluation.get("policy_version") or "")
+        approval_mode = str(evaluation.get("approval") or "")
+        if evaluation.get("allowed") is False or approval_mode == "impossible":
+            reason = str(evaluation.get("reason") or "策略禁止")
+            raise PermissionError(f"策略引擎拒绝提交该操作：{reason}")
+        risk = _strictest_risk(declared_risk, evaluation)
+
     payload = canonical_payload(capability, operation, target, parameters)
     json.dumps(payload, ensure_ascii=False, sort_keys=True)
     operation_id = f"op-{uuid.uuid4().hex[:16]}"
@@ -150,6 +212,11 @@ def submit_operation(
         "created_at": now_iso(),
         "created_by": "agenelf-agent",
     }
+    if evaluation:
+        request["policy_version"] = policy_version
+        request["approval_mode"] = approval_mode
+        if risk != declared_risk:
+            request["declared_risk"] = declared_risk
     path = queue_paths(root)["requests"] / f"{operation_id}.json"
     _atomic_write_json(path, request, exclusive=True)
     audit(

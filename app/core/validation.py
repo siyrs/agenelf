@@ -88,6 +88,25 @@ def _atomic_json(path: Path, value: dict[str, Any], *, exclusive: bool = False) 
     os.replace(tmp, path)
 
 
+def _policy_evaluation(operation: str) -> dict[str, Any] | None:
+    """咨询策略引擎；引擎不可用或调用失败时返回 None（降级为既有行为）。"""
+
+    try:
+        from core.policy import PolicyEngine  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    try:
+        engine = PolicyEngine()
+        if getattr(engine, "degraded", False):
+            # 策略文件缺失/损坏 → 视为引擎不可用，回退既有行为；
+            # 只有健康引擎的判定才具有约束力（兼容未部署 policy/ 的环境）
+            return None
+        result = engine.evaluate(_CAPABILITY, operation, subject="agent")
+    except Exception:
+        return None
+    return result if isinstance(result, dict) else None
+
+
 def read_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -114,6 +133,18 @@ def submit_validation(
     root: Path | None = None,
 ) -> dict[str, Any]:
     payload = canonical_payload(operation, target)
+    evaluation = _policy_evaluation(payload["operation"])
+    if evaluation:
+        approval_mode = str(evaluation.get("approval") or "")
+        if evaluation.get("allowed") is False or approval_mode == "impossible":
+            reason = str(evaluation.get("reason") or "策略禁止")
+            raise PermissionError(f"策略引擎拒绝提交验证：{reason}")
+        policy_risk = str(evaluation.get("risk") or "").lower().strip()
+        if policy_risk and policy_risk != "read":
+            # 验证 Runner 只自动执行 read 级请求；策略判定更严格时失败关闭。
+            raise PermissionError(
+                f"策略引擎判定验证风险为 {policy_risk}，超出自动执行范围，拒绝提交"
+            )
     validation_id = f"val-{uuid.uuid4().hex[:16]}"
     request = {
         "schema_version": 1,
@@ -125,6 +156,9 @@ def submit_validation(
         "created_at": now_iso(),
         "created_by": "agenelf-agent",
     }
+    if evaluation:
+        request["policy_version"] = str(evaluation.get("policy_version") or "")
+        request["approval_mode"] = str(evaluation.get("approval") or "")
     path = queue_paths(root)["requests"] / f"{validation_id}.json"
     _atomic_json(path, request, exclusive=True)
     audit("validation_submitted", f"{validation_id} {operation} target={target}", root)

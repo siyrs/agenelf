@@ -21,7 +21,8 @@ local/models.yaml
 local/repositories.yaml
 local/context/
 local/memory/
-local/self/
+local/self/*
+!local/self/intentions.template.json
 local/secrets/
 
 # Legacy private locations kept ignored for migration compatibility

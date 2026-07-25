@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_TTL_SECONDS = 300
+ELEVATED_TTL_SECONDS = 180
+IRREVERSIBLE_TTL_SECONDS = 120
 MAX_PENDING_REQUESTS = 10
 
 STATUS_PENDING = "pending"
@@ -196,6 +198,25 @@ def classify_command(command: str) -> str:
     return "normal"
 
 
+def _policy_evaluation(capability: str, operation: str) -> dict[str, Any] | None:
+    """咨询策略引擎；引擎不可用或调用失败时返回 None（降级为既有行为）。"""
+
+    try:
+        from core.policy import PolicyEngine  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    try:
+        engine = PolicyEngine()
+        if getattr(engine, "degraded", False):
+            # 策略文件缺失/损坏 → 视为引擎不可用，回退既有行为；
+            # 只有健康引擎的判定才具有约束力（兼容未部署 policy/ 的环境）
+            return None
+        result = engine.evaluate(capability, operation, subject="agent")
+    except Exception:
+        return None
+    return result if isinstance(result, dict) else None
+
+
 def _count_pending(root: Path | None = None) -> int:
     requests = _directory("auth-requests", root)
     decisions = _directory("auth-decisions", root)
@@ -216,8 +237,17 @@ def request_auth(
     reason: str = "",
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     binding: dict[str, Any] | None = None,
+    *,
+    operation: str = "",
+    capability: str = "server.operations",
+    channel: str = "cli",
 ) -> tuple[bool, str]:
-    """Create a proposal; only host-side approval can create a decision."""
+    """Create a proposal; only host-side approval can create a decision.
+
+    When the policy engine is importable, its evaluation binds the request to
+    a policy version and approval mode.  Elevated/irreversible modes escalate
+    to dual-signature (two distinct human approvers) with a shorter TTL.
+    """
 
     root = _root()
     pending = _count_pending(root)
@@ -232,6 +262,24 @@ def request_auth(
             "detail": str(detail),
         }
     )
+    evaluation = _policy_evaluation(capability, operation)
+    policy_version = ""
+    approval_mode = ""
+    required_approvers = 1
+    effective_ttl = max(1, int(ttl_seconds))
+    policy_fields: dict[str, Any] = {}
+    if evaluation:
+        policy_version = str(evaluation.get("policy_version") or "")
+        approval_mode = str(evaluation.get("approval") or "")
+        if approval_mode == "owner_elevated":
+            required_approvers = 2
+            effective_ttl = ELEVATED_TTL_SECONDS
+            policy_fields["require_distinct_humans"] = True
+        elif approval_mode == "owner_irreversible":
+            required_approvers = 2
+            effective_ttl = IRREVERSIBLE_TTL_SECONDS
+            policy_fields["require_distinct_humans"] = True
+            policy_fields["second_confirmation_required"] = True
     now = _now()
     data = {
         "schema_version": 2,
@@ -240,16 +288,28 @@ def request_auth(
         "action": str(action),
         "detail": str(detail),
         "reason": str(reason),
+        "channel": str(channel),
         "binding": bound,
         "fingerprint": binding_fingerprint(bound),
         "created_at": _iso(now),
-        "expires_at": _iso(now + timedelta(seconds=max(1, int(ttl_seconds)))),
+        "expires_at": _iso(now + timedelta(seconds=effective_ttl)),
+        "ttl_seconds": effective_ttl,
+        "approvals": [],
     }
+    if evaluation:
+        data["policy_version"] = policy_version
+        data["approval_mode"] = approval_mode
+        if required_approvers > 1:
+            data["required_approvers"] = required_approvers
+        data.update(policy_fields)
     try:
         _write(_path("auth-requests", request_id, root), data, exclusive=True)
     except OSError as exc:
         return False, f"授权请求创建失败：{exc}"
-    audit("auth_request", f"{request_id} skill={skill} action={action}")
+    detail_msg = f"{request_id} skill={skill} action={action}"
+    if policy_version:
+        detail_msg += f" policy_version={policy_version}"
+    audit("auth_request", detail_msg)
     return True, request_id
 
 
@@ -282,8 +342,29 @@ def check_auth(
         return STATUS_EXPIRED if _expired(request.get("expires_at")) else STATUS_PENDING
     if decision.get("decision") == "deny":
         return STATUS_DENIED
+    try:
+        required_approvers = int(request.get("required_approvers") or 1)
+    except (TypeError, ValueError):
+        required_approvers = 1
     if decision.get("decision") != "approve":
+        if required_approvers > 1:
+            # 多票仍在收集中，尚未形成最终批准。
+            return STATUS_EXPIRED if _expired(request.get("expires_at")) else STATUS_PENDING
         return STATUS_NOT_FOUND
+    if required_approvers > 1:
+        # 双签：仅统计宿主机裁决文件中不同 decided_by 的票数；
+        # 同一批准人重复投票只算一票。
+        approvers = {
+            str(item.get("decided_by"))
+            for item in decision.get("approvals") or []
+            if isinstance(item, dict) and item.get("decided_by")
+        }
+        if len(approvers) < required_approvers:
+            return (
+                STATUS_EXPIRED
+                if _expired(request.get("expires_at"))
+                else STATUS_PENDING
+            )
     if _expired(decision.get("expires_at")):
         return STATUS_EXPIRED
 

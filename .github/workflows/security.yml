@@ -1,0 +1,116 @@
+name: Security & Supply Chain
+
+# 供应链与安全门禁。与 docs/SAFETY_POLICY.md 第 6 节保持同步。
+# 诚实约束：本文件中的第三方 Action 当前使用版本标签引用，尚未固定到
+# 完整 commit SHA；每个 uses 上方的 TODO 注释不得在固定前删除。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  governance:
+    name: Governance policy lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - uses: actions/checkout@v4
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate governance policy
+        run: python scripts/validate_governance.py
+      - name: Compile governance validator
+        run: python -m py_compile scripts/validate_governance.py
+
+  dependency-audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # 首次引入供应链门禁：历史依赖基线尚未清理，先告警不阻断；
+    # 待漏洞基线清零后移除 continue-on-error 转为阻断门禁。
+    continue-on-error: true
+    steps:
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - uses: actions/checkout@v4
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit and project dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+          pip install -r app/requirements.txt
+      - name: Audit dependencies for known vulnerabilities
+        run: pip-audit --progress-spinner off
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Assert private paths are not tracked
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! git ls-files | grep -E '^(local/secrets/|\.env$|\.ops-runner\.env$)'
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议；
+      # gitleaks 建议同时固定 gitleaks-action 版本与 GITLEAKS_VERSION。
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_VERSION: "8.18.4"
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - uses: actions/checkout@v4
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install cyclonedx-bom and project dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install cyclonedx-bom
+          pip install -r app/requirements.txt
+      - name: Generate SBOM
+        run: cyclonedx-py environment --of JSON --outfile sbom.json
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+          retention-days: 30
+
+  shellcheck:
+    name: ShellCheck scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            shellcheck --severity=warning "$script"
+          done < <(find scripts -maxdepth 1 -type f -name '*.sh' -print0)
