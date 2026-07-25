@@ -23,7 +23,8 @@ fi
 REQ_DIR="${ROOT_DIR}/data/promote-requests/${REQ_ID}"
 mkdir -p "${ROOT_DIR}/logs" "${BACKUP_DIR}"
 log() {
-    local m="[$(date '+%F %T')] $*"
+    local m
+    m="[$(date '+%F %T')] $*"
     echo "${m}"
     echo "${m}" >> "${LOG_FILE}"
 }
