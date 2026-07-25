@@ -1,8 +1,10 @@
 """Runtime continuity layer for skill upgrades and bounded tool loops.
 
-The core chat loop remains unchanged. This skill adds two deterministic behaviors:
+The core chat loop remains unchanged. This skill adds three deterministic behaviors:
 1. every rebuilt system prompt states that a skill upgrade is an intermediate step;
-2. the legacy max-tool-round sentinel automatically starts another bounded segment,
+2. every model call receives the latest system prompt and registry tool schemas, so a
+   skill registered during the current turn is usable on the very next tool round;
+3. the legacy max-tool-round sentinel automatically starts another bounded segment,
    using fresh tool schemas and the preserved conversation history.
 """
 
@@ -15,14 +17,14 @@ from typing import Any
 SKILL_META = {
     "name": "task_continuation",
     "description": "技能热加载后自动续办原任务，并在总预算耗尽时输出可恢复检查点。",
-    "version": "1.0.0",
+    "version": "1.1.0",
 }
 
 CAPABILITY_META = {
     "id": "agent.task_continuation",
     "name": "任务连续性",
     "description": "跨技能重载与多段工具预算持续执行同一用户目标。",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "domain": "autonomy",
     "composes_with": ["agent.self_development", "server.docker", "agent.workflow"],
     "operations": [],
@@ -45,6 +47,38 @@ def _segment_budget(config: dict[str, Any] | None) -> int:
     except ValueError:
         value = 3
     return max(2, min(value, 6))
+
+
+def _bind_fresh_model_context(agent: Any, registry: Any | None) -> None:
+    """Make each model call observe skills registered during the current turn."""
+
+    llm = getattr(agent, "llm", None)
+    current_chat = getattr(llm, "chat", None)
+    if (
+        llm is None
+        or registry is None
+        or not callable(current_chat)
+        or getattr(llm, "_task_continuation_fresh_context_bound", False)
+    ):
+        return
+
+    original_llm_chat = current_chat
+
+    def chat_with_fresh_context(
+        self: Any,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        # skill_forge and other governed registration paths refresh
+        # agent.system_prompt. Replace only the system message for the current model
+        # call; keep the accumulated assistant/tool messages untouched.
+        if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
+            messages[0] = {**messages[0], "content": str(agent.system_prompt)}
+        fresh_tools = registry.all_tool_schemas() or None
+        return original_llm_chat(messages, tools=fresh_tools)
+
+    llm.chat = MethodType(chat_with_fresh_context, llm)
+    llm._task_continuation_fresh_context_bound = True
 
 
 def configure_runtime(
@@ -77,6 +111,7 @@ def configure_runtime(
             )
 
     agent._refresh_system_prompt = MethodType(refresh_with_continuity, agent)
+    _bind_fresh_model_context(agent, registry)
 
     original_chat = agent.chat
 
