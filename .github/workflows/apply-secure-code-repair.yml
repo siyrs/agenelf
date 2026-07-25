@@ -4,12 +4,12 @@ on:
   push:
     branches: [agent/secure-code-repair-v1]
     paths:
-      - '.agent-secure-repair/**'
+      - '.agent-secure-repair-v2/**'
       - '.github/workflows/apply-secure-code-repair.yml'
   pull_request:
     branches: [main]
     paths:
-      - '.agent-secure-repair/**'
+      - '.agent-secure-repair-v2/**'
       - '.github/workflows/apply-secure-code-repair.yml'
 
 permissions:
@@ -37,8 +37,8 @@ jobs:
           set -o pipefail
           {
             set -euxo pipefail
-            cat .agent-secure-repair/part-* | base64 --decode > /tmp/secure-code-repair-payload.tar.xz
-            sha256sum -c .agent-secure-repair/SHA256
+            cat .agent-secure-repair-v2/part-* | base64 --decode > /tmp/secure-code-repair-payload.tar.xz
+            sha256sum -c .agent-secure-repair-v2/SHA256
             mkdir -p /tmp/secure-code-repair-payload
             tar -xJf /tmp/secure-code-repair-payload.tar.xz -C /tmp/secure-code-repair-payload
             python /tmp/secure-code-repair-payload/apply_changes.py
@@ -100,7 +100,7 @@ jobs:
 
       - name: Remove transport-only payload and workflow
         shell: bash
-        run: rm -rf .agent-secure-repair .github/workflows/apply-secure-code-repair.yml
+        run: rm -rf .agent-secure-repair .agent-secure-repair-v2 .github/workflows/apply-secure-code-repair.yml
 
       - name: Commit and push verified implementation
         shell: bash
