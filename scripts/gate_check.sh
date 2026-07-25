@@ -21,7 +21,8 @@ mkdir -p "${REQ_DIR}" "${ROOT_DIR}/logs"
 rm -f "${REQ_DIR}/READY" "${REQ_DIR}/REJECTED" "${REQ_DIR}/candidate.sha256"
 
 log() {
-    local m="[$(date '+%F %T')] $*"
+    local m
+    m="[$(date '+%F %T')] $*"
     echo "${m}"
     echo "${m}" >> "${REPORT}"
     echo "${m}" >> "${LOG_FILE}"
