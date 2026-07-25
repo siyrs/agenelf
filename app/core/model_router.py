@@ -87,7 +87,11 @@ class ModelRouter:
     @staticmethod
     def _reject_inline_secrets(profile: dict[str, Any], alias: str) -> None:
         for key, value in profile.items():
-            if _SENSITIVE_KEYS.search(str(key)) and key != "api_key_env" and value not in {None, ""}:
+            if (
+                _SENSITIVE_KEYS.search(str(key))
+                and key != "api_key_env"
+                and value not in {None, ""}
+            ):
                 raise ModelRouterError(
                     f"模型 {alias} 不得在 models.yaml 内保存凭据字段 {key!r}"
                 )
@@ -131,7 +135,11 @@ class ModelRouter:
                 "model": _safe_text(raw_profile.get("model"), 200),
                 "api_key_env": api_key_env,
                 "capabilities": sorted(
-                    {_safe_text(item, 100) for item in capabilities if _safe_text(item, 100)}
+                    {
+                        _safe_text(item, 100)
+                        for item in capabilities
+                        if _safe_text(item, 100)
+                    }
                 ),
                 "cost_class": cost_class,
                 "privacy": privacy,
@@ -143,11 +151,12 @@ class ModelRouter:
             values = raw_routes.get(task_type, [])
             if not isinstance(values, list):
                 raise ModelRouterError(f"路由 {task_type} 必须是数组")
-            routes[task_type] = [
-                str(alias)
-                for alias in values
-                if str(alias) in providers and str(alias) not in values[: values.index(alias)]
-            ]
+            ordered: list[str] = []
+            for raw_alias in values:
+                alias = str(raw_alias)
+                if alias in providers and alias not in ordered:
+                    ordered.append(alias)
+            routes[task_type] = ordered
         self.providers = providers
         self.routes = routes
         self.warnings = warnings
@@ -203,10 +212,11 @@ class ModelRouter:
         }
         aliases = list(self.routes.get(task_type, []))
         if prefer_local:
+            order = {alias: index for index, alias in enumerate(aliases)}
             aliases.sort(
                 key=lambda alias: (
                     0 if self.providers[alias]["privacy"] == "local" else 1,
-                    aliases.index(alias),
+                    order[alias],
                 )
             )
         candidates: list[dict[str, Any]] = []
