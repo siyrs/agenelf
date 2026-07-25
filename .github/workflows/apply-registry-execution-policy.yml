@@ -58,8 +58,24 @@ jobs:
         run: python -m compileall -q app scripts
 
       - name: Run complete unit suite
+        id: unit_tests
+        continue-on-error: true
         working-directory: app
-        run: python -m unittest discover -s tests -v
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/registry-execution-tests.log
+
+      - name: Upload unit-test diagnostics
+        if: steps.unit_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-execution-test-diagnostics
+          path: /tmp/registry-execution-tests.log
+
+      - name: Stop after unit-test failure
+        if: steps.unit_tests.outcome == 'failure'
+        run: exit 1
 
       - name: Validate initialization and Docker topology
         shell: bash
