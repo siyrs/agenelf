@@ -5,8 +5,10 @@ on:
     branches: [agent/registry-execution-policy-v1]
     paths:
       - 'scripts/apply_registry_execution_policy.py'
+      - 'scripts/apply_registry_execution_policy_fixes.py'
       - 'app/core/execution_policy.py'
       - 'app/tests/test_registry_execution_policy.py'
+      - 'app/tests/test_policy_runtime_mounts.py'
       - 'policy/execution-modes.v1.yaml'
       - 'docs/EXECUTION_POLICY.md'
       - 'docs/audits/2026-07-25-K3-POLICY-ENFORCEMENT-AUDIT.md'
@@ -15,8 +17,10 @@ on:
     branches: [main]
     paths:
       - 'scripts/apply_registry_execution_policy.py'
+      - 'scripts/apply_registry_execution_policy_fixes.py'
       - 'app/core/execution_policy.py'
       - 'app/tests/test_registry_execution_policy.py'
+      - 'app/tests/test_policy_runtime_mounts.py'
       - 'policy/execution-modes.v1.yaml'
       - 'docs/EXECUTION_POLICY.md'
       - 'docs/audits/2026-07-25-K3-POLICY-ENFORCEMENT-AUDIT.md'
@@ -40,7 +44,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply exact K3 baseline migration
-        run: python scripts/apply_registry_execution_policy.py
+        run: |
+          python scripts/apply_registry_execution_policy.py
+          python scripts/apply_registry_execution_policy_fixes.py
 
       - uses: actions/setup-python@v5
         with:
@@ -95,7 +101,10 @@ jobs:
           done < <(find scripts -maxdepth 1 -type f -name '*.sh' -print0)
 
       - name: Remove migration-only files
-        run: rm -f scripts/apply_registry_execution_policy.py .github/workflows/apply-registry-execution-policy.yml
+        run: |
+          rm -f scripts/apply_registry_execution_policy.py
+          rm -f scripts/apply_registry_execution_policy_fixes.py
+          rm -f .github/workflows/apply-registry-execution-policy.yml
 
       - name: Commit verified implementation
         shell: bash
