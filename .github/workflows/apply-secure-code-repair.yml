@@ -75,8 +75,26 @@ jobs:
         run: python -m compileall -q app scripts
 
       - name: Run complete unit suite
+        id: unit_tests
+        continue-on-error: true
+        shell: bash
         working-directory: app
-        run: python -m unittest discover -s tests -v
+        run: python -m unittest discover -s tests -v > /tmp/secure-code-repair-tests.log 2>&1
+
+      - name: Upload complete unit-test diagnostics
+        if: steps.unit_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: secure-code-repair-test-diagnostics
+          path: /tmp/secure-code-repair-tests.log
+          if-no-files-found: error
+
+      - name: Stop after unit-test failure
+        if: steps.unit_tests.outcome == 'failure'
+        shell: bash
+        run: |
+          tail -n 160 /tmp/secure-code-repair-tests.log
+          exit 1
 
       - name: Validate local initialization and Docker topology
         shell: bash
