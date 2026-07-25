@@ -22,7 +22,8 @@ LOG_FILE="${LOG_DIR}/github.log"
 mkdir -p "${LOG_DIR}"
 
 log() {
-    local m="[$(date '+%F %T')] $*"
+    local m
+    m="[$(date '+%F %T')] $*"
     echo "${m}"
     echo "${m}" >> "${LOG_FILE}"
 }
