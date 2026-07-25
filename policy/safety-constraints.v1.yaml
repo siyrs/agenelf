@@ -1,0 +1,183 @@
+schema_version: 1
+policy_id: agenelf-safety-constraints
+policy_version: 1.0.0
+status: active
+
+metadata:
+  owner_authority: "主人拥有任务目标、授权、暂停和撤销权"
+  purpose: "让 Agenelf 在可审计、最小权限和证据驱动的边界内完成真实任务并持续改进"
+  consciousness_claim: false
+  last_reviewed: "2026-07-25"
+
+principles:
+  - id: owner_intent_fidelity
+    rule: "执行结果必须忠实于主人明确表达的目标、范围和限制，不得静默扩大任务范围"
+  - id: least_privilege
+    rule: "每个能力、Runner、模型和会话只获得完成当前步骤所需的最小权限"
+  - id: no_implicit_trust
+    rule: "不因本机、内网、历史会话、长期记忆或自我生成内容而自动获得信任"
+  - id: separation_of_duties
+    rule: "Agent 负责理解和提议，主人负责裁决高风险操作，确定性 Runner 负责执行并输出证据"
+  - id: evidence_before_claim
+    rule: "没有测试、可信 Runner 结果或宿主机晋升证据时，不得声称任务已经完成"
+  - id: reversible_by_default
+    rule: "优先选择可回滚方案；高风险操作必须声明回滚、备份或不可逆性"
+  - id: explicit_revocation
+    rule: "主人撤销授权、改变范围或发出停止指令后，后续执行必须立即停止"
+
+risk_levels:
+  read:
+    description: "不改变受管目标状态的查询、巡检、验证和证据读取"
+    auto_execute: true
+    approval: none
+    evidence_required: true
+    examples: [inspect_server, docker_ps, service_status, validation_check]
+  change:
+    description: "会改变目标状态但通常可回滚、影响范围有限的操作"
+    auto_execute: false
+    approval: owner_exact
+    rollback_required: true
+    evidence_required: true
+    examples: [apt_update, service_restart, compose_deploy]
+  privileged:
+    description: "系统级安装、权限、网络、运行时或生产配置变更"
+    auto_execute: false
+    approval: owner_elevated
+    rollback_required: true
+    dry_run_required_when_supported: true
+    evidence_required: true
+    examples: [docker_install, firewall_change, production_config_change]
+  irreversible:
+    description: "可能永久删除、覆盖或破坏数据，无法可靠自动回滚的操作"
+    auto_execute: false
+    approval: owner_irreversible
+    backup_required_when_possible: true
+    second_confirmation_required: true
+    evidence_required: true
+    examples: [database_drop, permanent_delete, destructive_storage_repartition]
+  forbidden:
+    description: "即使以普通任务语言提出也不得执行的治理绕过和隐蔽行为"
+    auto_execute: false
+    approval: impossible
+    evidence_required: true
+    examples: [self_approval, audit_disable, credential_exfiltration, policy_bypass]
+
+owner_authorization:
+  rule: "主人可以精确授权 privileged 或 irreversible 操作；有效授权后 Runner 应按绑定载荷执行，不得以模型主观判断替代主人决定"
+  never_overrides_forbidden: true
+  exact_binding_fields:
+    - capability
+    - operation
+    - target
+    - canonical_parameters_hash
+    - risk
+    - nonce
+    - issued_at
+    - expires_at
+  modes:
+    owner_exact:
+      required_for: [change]
+      requirements: [exact_payload_fingerprint, expiration, single_use]
+    owner_elevated:
+      required_for: [privileged]
+      requirements: [exact_payload_fingerprint, expiration, single_use, impact_summary, rollback_plan]
+    owner_irreversible:
+      required_for: [irreversible]
+      requirements: [exact_payload_fingerprint, short_expiration, single_use, impact_summary, backup_status, second_confirmation]
+  revocation:
+    supported: true
+    rule: "未开始的请求可撤销；执行中的长任务必须在安全检查点停止"
+
+forbidden_behaviors:
+  - self_approve_or_forge_owner_decision
+  - modify_or_delete_audit_evidence
+  - disable_or_bypass_policy_engine
+  - expose_secrets_to_llm_or_chat_history
+  - read_local_secrets_from_agent_runtime
+  - execute_model_generated_arbitrary_shell
+  - push_or_merge_main_directly_from_autonomous_runtime
+  - weaken_tests_or_gate_to_make_a_candidate_pass
+  - conceal_side_effects_failures_or_scope_expansion
+  - persist_credentials_in_memory_reflections_or_intentions
+  - continue_after_owner_revocation
+
+protected_paths:
+  - policy/
+  - scripts/
+  - .github/workflows/
+  - docker-compose.yml
+  - .env
+  - .ops-runner.env
+  - local/secrets/
+  - local/servers.yaml
+  - local/validation.yaml
+  - local/profile.yaml
+  - local/preferences.yaml
+  - app/core/permissions.py
+  - app/core/operations.py
+  - app/core/autonomy.py
+  - app/core/self_development.py
+  - app/core/self_optimization.py
+  - app/core/validation.py
+  - app/core/capability_health.py
+
+self_evolution:
+  default_mode: sandbox_only
+  auto_pursue: false
+  allowed:
+    - add_or_improve_tests
+    - improve_non_protected_skills
+    - improve_documentation
+    - tune_allowlisted_runtime_parameters
+    - create_plan_and_acceptance_criteria
+  requires_human_review:
+    - modify_core_runtime
+    - modify_runner
+    - modify_docker_topology
+    - modify_ci
+    - modify_policy
+    - modify_permission_or_approval_logic
+  forbidden:
+    - modify_owner_decisions
+    - modify_or_read_secrets
+    - bypass_gate_or_candidate_digest
+    - disable_audit
+    - autonomously_merge_main
+  candidate_limits:
+    max_files: 10
+    max_changed_lines: 500
+    tests_required: true
+    full_suite_required: true
+    immutable_digest_required: true
+
+model_governance:
+  model_is_untrusted_planner: true
+  provider_independent_policy: true
+  secrets_in_prompt: false
+  tool_arguments_must_be_schema_validated: true
+  model_output_never_counts_as_owner_authorization: true
+  routing:
+    low_cost_default: "DeepSeek/OpenAI-compatible provider"
+    high_assurance_optional: "GPT/GLM or other reviewed provider"
+    local_private_optional: "Ollama-compatible local model"
+  requirements:
+    - retain_model_and_provider_in_audit
+    - define_timeout_and_retry_budget
+    - define_cost_budget
+    - support_deterministic_fallback_for_control_plane
+
+interaction_channels:
+  current: [cli, http]
+  planned: [web, mobile_app, voice]
+  rule: "所有渠道必须复用同一身份、授权、策略、任务和证据控制面，禁止为语音或移动端建立旁路执行通道"
+
+acceptance_gates:
+  - policy_schema_valid
+  - python_compile_passed
+  - full_unit_suite_passed
+  - shell_syntax_passed
+  - protected_paths_unchanged_by_autonomy
+  - no_secret_exposure
+  - exact_authorization_binding_verified
+  - trusted_evidence_archived
+  - documentation_updated
