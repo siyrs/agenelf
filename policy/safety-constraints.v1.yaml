@@ -1,6 +1,6 @@
 schema_version: 1
 policy_id: agenelf-safety-constraints
-policy_version: 1.0.0
+policy_version: 1.1.0
 status: active
 
 metadata:
@@ -31,14 +31,14 @@ risk_levels:
     auto_execute: true
     approval: none
     evidence_required: true
-    examples: [inspect_server, docker_ps, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result]
+    examples: [inspect_server, docker_ps, docker_logs, docker_diagnose, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result]
   change:
     description: "会改变目标状态但通常可回滚、影响范围有限的操作"
     auto_execute: false
     approval: owner_exact
     rollback_required: true
     evidence_required: true
-    examples: [apt_update, service_restart, compose_deploy]
+    examples: [apt_update, service_restart, docker_restart, compose_deploy]
   privileged:
     description: "系统级安装、权限、网络、运行时或生产配置变更"
     auto_execute: false
