@@ -42,6 +42,7 @@ jobs:
             mkdir -p /tmp/secure-code-repair-payload
             tar -xJf /tmp/secure-code-repair-payload.tar.xz -C /tmp/secure-code-repair-payload
             python /tmp/secure-code-repair-payload/apply_changes.py
+            python .agent-secure-repair-v2/fix_after_apply.py
           } > /tmp/secure-code-repair-apply.log 2>&1
 
       - name: Upload payload application diagnostics
