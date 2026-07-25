@@ -11,7 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,6 +28,18 @@ jobs:
       - name: Run unit tests
         working-directory: app
         run: python -m unittest discover -s tests -v
+      - name: Validate local initialization and Docker topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate > /tmp/agenelf-init.json
+          grep -q '"models": true' /tmp/agenelf-init.json
+          grep -q '"validation": true' /tmp/agenelf-init.json
+          docker compose config > /tmp/agenelf-compose.yaml
+          grep -q 'validation-runner:' /tmp/agenelf-compose.yaml
+          grep -q 'AGENELF_MODELS_FILE' /tmp/agenelf-compose.yaml
       - name: Validate shell scripts
         shell: bash
         run: |
