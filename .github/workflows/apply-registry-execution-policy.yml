@@ -11,6 +11,16 @@ on:
       - 'docs/EXECUTION_POLICY.md'
       - 'docs/audits/2026-07-25-K3-POLICY-ENFORCEMENT-AUDIT.md'
       - '.github/workflows/apply-registry-execution-policy.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/apply_registry_execution_policy.py'
+      - 'app/core/execution_policy.py'
+      - 'app/tests/test_registry_execution_policy.py'
+      - 'policy/execution-modes.v1.yaml'
+      - 'docs/EXECUTION_POLICY.md'
+      - 'docs/audits/2026-07-25-K3-POLICY-ENFORCEMENT-AUDIT.md'
+      - '.github/workflows/apply-registry-execution-policy.yml'
 
 permissions:
   contents: write
