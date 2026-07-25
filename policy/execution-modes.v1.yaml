@@ -2,6 +2,7 @@ schema_version: 1
 policy_id: agenelf-registry-execution-modes
 policy_version: 1.0.0
 status: active
+last_reviewed: '2026-07-25'
 
 defaults:
   unclassified_tool: deny
