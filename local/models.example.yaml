@@ -1,0 +1,53 @@
+# Copy to local/models.yaml. Never store API keys in this file.
+# External credentials are referenced only by environment-variable names.
+providers:
+  deepseek:
+    enabled: true
+    protocol: openai_compatible
+    model: deepseek-v4-pro
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    capabilities: [chat, tools, reasoning, coding]
+    cost_class: low
+    privacy: external
+    description: 默认低成本规划与编码模型
+
+  gpt:
+    enabled: false
+    protocol: openai_compatible
+    model: gpt-coding
+    base_url: https://api.openai.com/v1
+    api_key_env: GPT_API_KEY
+    capabilities: [chat, tools, reasoning, coding, vision]
+    cost_class: high
+    privacy: external
+    description: 高难推理、代码和视觉候选
+
+  glm:
+    enabled: false
+    protocol: openai_compatible
+    model: glm-code
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: GLM_API_KEY
+    capabilities: [chat, tools, reasoning, coding]
+    cost_class: medium
+    privacy: external
+    description: 国内备用推理与编码模型
+
+  ollama:
+    enabled: false
+    protocol: ollama
+    model: qwen3-coder
+    base_url: http://host.docker.internal:11434
+    capabilities: [chat, coding, privacy]
+    cost_class: local
+    privacy: local
+    description: 本地私密任务与离线回退
+
+routes:
+  routine: [deepseek, glm, ollama]
+  reasoning: [gpt, deepseek, glm]
+  coding: [deepseek, gpt, glm, ollama]
+  privacy: [ollama]
+  vision: [gpt]
+  voice: [deepseek, glm]
