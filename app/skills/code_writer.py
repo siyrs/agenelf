@@ -1,21 +1,33 @@
-"""code_writer 技能：写代码文件并执行 Python 片段。
+"""Compatibility scratch writer with in-process code execution permanently disabled.
 
-安全约束：
-- 写文件被限制在项目目录内，拒绝绝对路径逃逸和 ``../`` 穿越；
-- 执行代码通过子进程运行，带 30 秒超时，stdout/stderr 全量捕获返回。
+Historically this skill could write anywhere inside the application tree and launch
+arbitrary Python in the Agent process.  That violated Agenelf's split-runtime policy.
+It now writes bounded text files only inside ``workspace/scratch``.  Executable
+validation belongs to the isolated ``code.repair`` runner.
 """
-
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
+import tempfile
 from pathlib import Path
 
 SKILL_META = {
     "name": "code_writer",
-    "description": "代码写入与执行：在项目目录内写代码文件，并用子进程运行 Python 片段（30 秒超时）。",
-    "version": "0.1.0",
+    "description": "兼容型安全草稿写入：仅写 workspace/scratch 文本文件；任意 Python 执行已永久禁用。",
+    "version": "1.0.0",
+}
+
+CAPABILITY_META = {
+    "id": "code.scratch",
+    "name": "代码草稿区",
+    "description": "在隔离 scratch 目录保存有界文本草稿；不执行代码、不修改应用或受管仓库。",
+    "version": "1.0.0",
+    "domain": "development",
+    "operations": [
+        {"name": "write_code_file", "description": "写入 scratch 文本草稿", "risk": "change"},
+        {"name": "run_python", "description": "旧任意 Python 执行入口，永久禁止", "risk": "forbidden"},
+    ],
+    "composes_with": ["code.repair"],
 }
 
 TOOLS: list[dict] = [
@@ -23,18 +35,12 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_code_file",
-            "description": "在项目目录内写入一个代码文件（自动创建父目录），拒绝逃逸项目目录的路径，返回写入后的文件路径。",
+            "description": "在 workspace/scratch 内写入一个有界文本草稿；拒绝绝对路径、路径逃逸、符号链接和可执行/二进制扩展。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "相对于项目根目录的文件路径（如 scripts/hello.py）；也接受项目目录内的绝对路径。",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "要写入的文件内容（UTF-8）。",
-                    },
+                    "path": {"type": "string", "description": "scratch 下相对路径，如 drafts/fix.py。"},
+                    "content": {"type": "string", "description": "UTF-8 文本，最多 128 KiB。"},
                 },
                 "required": ["path", "content"],
             },
@@ -44,101 +50,134 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "run_python",
-            "description": "用子进程执行一段 Python 代码（30 秒超时），返回退出码、stdout 与 stderr。",
+            "description": "已禁用的旧接口。请改用 code.repair 隔离 Runner 运行测试。",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "要执行的 Python 源代码片段。",
-                    },
-                },
+                "properties": {"code": {"type": "string"}},
                 "required": ["code"],
             },
         },
     },
 ]
 
-# 项目根目录（skills/ 的上级）；测试可通过 set_project_root 注入临时目录
-_project_root: Path | None = None
+_ALLOWED_SUFFIXES = {
+    ".py",
+    ".md",
+    ".txt",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".java",
+    ".kt",
+    ".kts",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".vue",
+    ".html",
+    ".css",
+    ".sql",
+    ".sh",
+}
+_MAX_BYTES = 131_072
+_scratch_root: Path | None = None
 
 
 def set_project_root(path: str | Path | None) -> None:
-    """覆盖项目根目录（主要供测试隔离使用）；传 None 恢复默认。"""
-    global _project_root
-    _project_root = None if path is None else Path(path).resolve()
+    """Compatibility test hook; the supplied directory becomes the scratch root."""
+    global _scratch_root
+    _scratch_root = None if path is None else Path(path).resolve()
 
 
-def _get_project_root() -> Path:
-    """获取项目根目录，默认为本文件所在 skills/ 目录的上级。"""
-    if _project_root is not None:
-        return _project_root
-    return Path(__file__).resolve().parent.parent
+def _get_scratch_root() -> Path:
+    if _scratch_root is not None:
+        root = _scratch_root
+    else:
+        configured = os.environ.get("AGENELF_SCRATCH_DIR", "").strip()
+        if configured:
+            root = Path(configured).resolve()
+        else:
+            runtime = os.environ.get("AGENELF_ROOT", "").strip()
+            base = Path(runtime).resolve() if runtime else Path(__file__).resolve().parents[2]
+            root = base / "workspace" / "scratch"
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
+
+
+def _safe_target(path: str) -> Path:
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("path 不能为空")
+    raw = Path(path.strip())
+    if raw.is_absolute() or ".." in raw.parts:
+        raise ValueError("路径逃逸出 scratch 目录")
+    if raw.suffix.lower() not in _ALLOWED_SUFFIXES:
+        raise ValueError(f"不允许写入扩展名 {raw.suffix or '（无）'}")
+    root = _get_scratch_root()
+    candidate = root / raw
+    resolved_parent = candidate.parent.resolve()
+    try:
+        resolved_parent.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("路径逃逸出 scratch 目录") from exc
+    cursor = root
+    for part in raw.parts[:-1]:
+        cursor = cursor / part
+        if cursor.exists() and cursor.is_symlink():
+            raise ValueError("路径中包含符号链接")
+    if candidate.exists() and candidate.is_symlink():
+        raise ValueError("目标文件是符号链接")
+    return candidate
 
 
 def write_code_file(path: str, content: str) -> str:
-    """把 content 写入项目目录内的 path，返回绝对路径。"""
-    if not isinstance(path, str) or not path.strip():
-        return "写入失败：path 不能为空"
-    root = _get_project_root()
-    raw = Path(path)
-    # 相对路径拼到项目根下；绝对路径保持原样，随后统一做包含校验
-    candidate = raw if raw.is_absolute() else root / raw
     try:
-        resolved = candidate.resolve()
-    except OSError as exc:
-        return f"写入失败：路径无法解析：{exc}"
-    # Python 3.10+：is_relative_to 防止 ../ 或绝对路径逃逸出项目目录
-    if not resolved.is_relative_to(root):
-        return f"写入失败：路径 {path!r} 逃逸出项目目录 {root}"
-    try:
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(content, encoding="utf-8")
-    except OSError as exc:
+        target = _safe_target(path)
+        text = str(content or "")
+        size = len(text.encode("utf-8"))
+        if size > _MAX_BYTES:
+            return f"写入失败：内容 {size} 字节超过 {_MAX_BYTES} 字节上限"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}-", suffix=".tmp", dir=target.parent, text=True
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            os.replace(tmp_name, target)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+        return str(target.resolve())
+    except (OSError, ValueError) as exc:
         return f"写入失败：{exc}"
-    return str(resolved)
 
 
 def run_python(code: str) -> str:
-    """子进程执行 Python 片段，返回退出码与输出。"""
-    if not isinstance(code, str) or not code.strip():
-        return "执行失败：code 不能为空"
-    try:
-        child_env = os.environ.copy()
-        # Windows 子进程默认沿用本地代码页；强制 UTF-8，和父进程的解码约定一致。
-        child_env.setdefault("PYTHONIOENCODING", "utf-8")
-        proc = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            cwd=str(_get_project_root()),
-            env=child_env,
-        )
-    except subprocess.TimeoutExpired:
-        return "执行超时（30 秒限制），进程已被终止"
-    except OSError as exc:
-        return f"执行失败：无法启动 Python 子进程：{exc}"
-    parts = [f"退出码：{proc.returncode}"]
-    parts.append(f"stdout:\n{proc.stdout}" if proc.stdout else "stdout:（空）")
-    parts.append(f"stderr:\n{proc.stderr}" if proc.stderr else "stderr:（空）")
-    return "\n".join(parts)
+    del code
+    return (
+        "执行已拒绝：Agent 进程内任意 Python 执行已永久禁用。"
+        "请使用 code.repair，把 unified diff 交给无网络 repair-runner 并运行主人配置的测试。"
+    )
 
 
 _DISPATCH = {
-    "write_code_file": lambda a: write_code_file(a.get("path", ""), a.get("content", "")),
-    "run_python": lambda a: run_python(a.get("code", "")),
+    "write_code_file": lambda args: write_code_file(args.get("path", ""), args.get("content", "")),
+    "run_python": lambda args: run_python(args.get("code", "")),
 }
 
 
 def execute(tool_name: str, args: dict) -> str:
-    """按协议路由工具调用；内部捕获所有异常并返回字符串。"""
     handler = _DISPATCH.get(tool_name)
     if handler is None:
         return f"未知工具：{tool_name}，可用工具：{', '.join(sorted(_DISPATCH))}"
     try:
         return handler(args or {})
-    except Exception as exc:  # 兜底：协议要求永不抛异常
+    except Exception as exc:
         return f"执行失败：{type(exc).__name__}: {exc}"

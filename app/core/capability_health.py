@@ -102,6 +102,34 @@ class CapabilityHealth:
             )
         return values
 
+    def _repair_evidence(self) -> list[dict[str, Any]]:
+        values: list[dict[str, Any]] = []
+        directory = self.root / "data" / "repair-results"
+        if not directory.is_dir():
+            return values
+        requests = self.root / "data" / "repair-requests"
+        for path in sorted(directory.glob("repair-*.json")):
+            result = _read_json(path)
+            if result is None:
+                continue
+            request = _read_json(requests / path.name) or {}
+            status = str(result.get("status", "unknown"))
+            values.append(
+                {
+                    "source_type": "code_repair",
+                    "source_id": path.stem,
+                    "capability": "code.repair",
+                    "operation": "apply_patch_and_test",
+                    "target": str(result.get("repository") or request.get("target") or "unknown"),
+                    "status": status,
+                    "success": _status_success(status),
+                    "observed_at": str(result.get("finished_at") or request.get("created_at") or ""),
+                    "summary": _safe_summary(result.get("summary") or result.get("reason") or status),
+                    "evidence_path": str(path.relative_to(self.root)),
+                }
+            )
+        return values
+
     def _autonomy_evidence(self) -> list[dict[str, Any]]:
         values: list[dict[str, Any]] = []
         directory = self.root / "data" / "autonomy-cycles"
@@ -135,6 +163,7 @@ class CapabilityHealth:
         values = (
             self._operation_evidence()
             + self._validation_evidence()
+            + self._repair_evidence()
             + self._autonomy_evidence()
         )
         values.sort(key=lambda item: (str(item.get("observed_at", "")), str(item.get("source_id", ""))))

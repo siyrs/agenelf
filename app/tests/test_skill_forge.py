@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import textwrap
@@ -24,6 +25,16 @@ TOOLS = [{"type": "function", "function": {"name": "hello_echo", "description": 
 def execute(tool_name, args):
     return "echo:" + str((args or {}).get("text", ""))
 '''
+
+_FORGE_TEST = '''
+import unittest
+import hello_echo
+
+class HelloEchoTest(unittest.TestCase):
+    def test_echo(self):
+        self.assertEqual(hello_echo.execute("hello_echo", {"text": "x"}), "echo:x")
+'''
+
 
 
 class _FakeAgent:
@@ -56,6 +67,10 @@ class SkillForgeTest(unittest.TestCase):
         (self.main_dir / "builtin_ops.py").write_text(
             textwrap.dedent(_BUILTIN_SOURCE), encoding="utf-8"
         )
+        self.old_app_space = os.environ.get("AGENELF_ENABLE_APP_SPACE_SKILLS")
+        self.old_forge = os.environ.get("AGENELF_ENABLE_SKILL_FORGE")
+        os.environ["AGENELF_ENABLE_APP_SPACE_SKILLS"] = "1"
+        os.environ["AGENELF_ENABLE_SKILL_FORGE"] = "1"
         self.registry = SkillRegistry(
             str(self.main_dir), extra_skills_dirs=[str(self.appspace_dir)]
         )
@@ -65,12 +80,25 @@ class SkillForgeTest(unittest.TestCase):
         forge_module.configure_runtime(agent=self.agent, registry=self.registry)
 
     def tearDown(self) -> None:
+        if self.old_app_space is None:
+            os.environ.pop("AGENELF_ENABLE_APP_SPACE_SKILLS", None)
+        else:
+            os.environ["AGENELF_ENABLE_APP_SPACE_SKILLS"] = self.old_app_space
+        if self.old_forge is None:
+            os.environ.pop("AGENELF_ENABLE_SKILL_FORGE", None)
+        else:
+            os.environ["AGENELF_ENABLE_SKILL_FORGE"] = self.old_forge
         self._tmp.cleanup()
 
     def _forge(self, name: str, source: str, description: str = "测试技能") -> dict:
         result = self.registry.dispatch(
             "forge_skill",
-            {"name": name, "description": description, "source_code": source},
+            {
+                "name": name,
+                "description": description,
+                "source_code": source,
+                "test_code": textwrap.dedent(_FORGE_TEST).replace("hello_echo", name),
+            },
         )
         return json.loads(result)
 

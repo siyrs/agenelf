@@ -33,6 +33,7 @@ REQUIRED_FORBIDDEN = {
     "disable_or_bypass_policy_engine",
     "expose_secrets_to_llm_or_chat_history",
     "execute_model_generated_arbitrary_shell",
+    "execute_model_generated_code_in_agent_process",
     "push_or_merge_main_directly_from_autonomous_runtime",
     "weaken_tests_or_gate_to_make_a_candidate_pass",
 }
@@ -41,6 +42,9 @@ REQUIRED_PROTECTED_PREFIXES = {
     "scripts/",
     ".github/workflows/",
     "local/secrets/",
+    "local/repositories.yaml",
+    "app/core/registry.py",
+    "app/core/code_repair.py",
     "app/core/permissions.py",
     "app/core/operations.py",
     "app/core/autonomy.py",

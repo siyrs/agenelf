@@ -80,18 +80,16 @@ class TestCodeWriter(unittest.TestCase):
         self.skill.set_project_root(None)
         self.tmp.cleanup()
 
-    def test_write_and_run_print_script(self):
+    def test_write_scratch_and_python_execution_is_disabled(self):
         path_string = self.skill.execute(
             "write_code_file",
-            {"path": "scripts/hello.py", "content": "print('你好，Agenelf')"},
+            {"path": "notes/hello.py", "content": "print('你好，Agenelf')"},
         )
         written = Path(path_string)
         self.assertTrue(written.is_file())
-        result = self.skill.execute(
-            "run_python", {"code": f"import runpy; runpy.run_path({str(written)!r})"}
-        )
-        self.assertIn("退出码：0", result)
-        self.assertIn("你好，Agenelf", result)
+        self.assertEqual(written.parent.parent, Path(self.tmp.name).resolve())
+        result = self.skill.execute("run_python", {"code": "print('never')"})
+        self.assertIn("永久禁用", result)
 
     def test_reject_path_escape(self):
         result = self.skill.execute(

@@ -11,6 +11,7 @@ local/
 ├── context/              # 补充 Markdown/TXT/YAML/JSON，Agent 只读
 ├── servers.yaml          # 服务器别名和允许操作，不含密钥
 ├── validation.yaml       # HTTP/TCP 检查别名、断言和套件，不含凭据
+├── repositories.yaml      # 代码仓库别名、保护路径与测试 profile，不含源码或凭据
 ├── models.yaml           # 模型别名、能力、成本和 API Key 环境变量名
 ├── secrets/              # SSH 私钥、known_hosts，仅 ops-runner 可见
 ├── memory/
@@ -32,6 +33,7 @@ local/
 | profile/preferences/context | 只读 | 不挂载 | 不挂载 |
 | servers.yaml | 只读、只返回脱敏摘要 | 只读、用于执行 | 不挂载 |
 | validation.yaml | 只读、只返回别名摘要 | 不挂载 | 只读、用于检查 |
+| repositories.yaml | 只读、只返回仓库/测试别名 | 不挂载 | 不挂载；仅 repair-runner 只读 |
 | models.yaml | 只读、只返回脱敏目录 | 不挂载 | 不挂载 |
 | secrets/ | **不可见** | 只读 | **不可见** |
 | memory/ | 读写 | 不挂载 | 不挂载 |

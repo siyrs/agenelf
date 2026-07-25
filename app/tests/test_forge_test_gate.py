@@ -5,13 +5,14 @@
 - 附失败测试 → 拒绝注册且技能文件不存在
 - 测试语法错误 / 规模超限 → 拒绝
 - 测试超时（缩短 test_timeout）→ 拒绝
-- 未附测试 → 注册成功但标注未测试
+- 未附测试或空白测试 → 拒绝注册
 - forge/list/remove 全链路的 tested 标注与标记清理
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import textwrap
@@ -176,20 +177,19 @@ class ForgeTestGateRegistryTest(unittest.TestCase):
         self.assertFalse((self.appspace_dir / "gate_slow.py").exists())
         self.assertNotIn("gate_slow", self.registry.skills)
 
-    def test_no_test_code_registers_but_marks_untested(self):
+    def test_no_test_code_is_rejected(self):
         ok, message = self._register("gate_plain", "gate_plain_tool")
-        self.assertTrue(ok, message)
-        self.assertIn("未附测试", message)
-        self.assertFalse((self.appspace_dir / "gate_plain.tested").exists())
-        self.assertTrue((self.appspace_dir / "gate_plain.py").is_file())
+        self.assertFalse(ok)
+        self.assertIn("必须附带", message)
+        self.assertFalse((self.appspace_dir / "gate_plain.py").exists())
 
-    def test_blank_test_code_counts_as_untested(self):
+    def test_blank_test_code_is_rejected(self):
         ok, message = self._register(
             "gate_blank", "gate_blank_tool", test_code="   \n  "
         )
-        self.assertTrue(ok, message)
-        self.assertIn("未附测试", message)
-        self.assertFalse((self.appspace_dir / "gate_blank.tested").exists())
+        self.assertFalse(ok)
+        self.assertIn("必须附带", message)
+        self.assertFalse((self.appspace_dir / "gate_blank.py").exists())
 
     def test_unregister_cleans_tested_marker(self):
         ok, _ = self._register(
@@ -218,6 +218,10 @@ class ForgeTestGateSkillTest(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "skills" / "skill_forge.py"
         )
         shutil.copy(real_forge, self.main_dir / "skill_forge.py")
+        self.old_app_space = os.environ.get("AGENELF_ENABLE_APP_SPACE_SKILLS")
+        self.old_forge = os.environ.get("AGENELF_ENABLE_SKILL_FORGE")
+        os.environ["AGENELF_ENABLE_APP_SPACE_SKILLS"] = "1"
+        os.environ["AGENELF_ENABLE_SKILL_FORGE"] = "1"
         self.registry = SkillRegistry(
             str(self.main_dir), extra_skills_dirs=[str(self.appspace_dir)]
         )
@@ -226,6 +230,14 @@ class ForgeTestGateSkillTest(unittest.TestCase):
         forge_module.configure_runtime(agent=None, registry=self.registry)
 
     def tearDown(self) -> None:
+        if self.old_app_space is None:
+            os.environ.pop("AGENELF_ENABLE_APP_SPACE_SKILLS", None)
+        else:
+            os.environ["AGENELF_ENABLE_APP_SPACE_SKILLS"] = self.old_app_space
+        if self.old_forge is None:
+            os.environ.pop("AGENELF_ENABLE_SKILL_FORGE", None)
+        else:
+            os.environ["AGENELF_ENABLE_SKILL_FORGE"] = self.old_forge
         self._tmp.cleanup()
 
     def _forge(self, name: str, tool: str, test_code: str | None = None) -> dict:
@@ -261,15 +273,11 @@ class ForgeTestGateSkillTest(unittest.TestCase):
         self.assertTrue(removed["removed"], removed)
         self.assertFalse((self.appspace_dir / "fg_echo.tested").exists())
 
-    def test_forge_without_test_marks_untested(self):
+    def test_forge_without_test_is_rejected(self):
         forged = self._forge("fg_plain", "fg_plain_tool")
-        self.assertTrue(forged["forged"], forged)
-        self.assertFalse(forged["tested"])
-        self.assertIn("已注册（未附测试，建议补充）", forged["message"])
-
-        listed = self._list()
-        self.assertEqual(listed["count"], 1)
-        self.assertFalse(listed["skills"][0]["tested"])
+        self.assertFalse(forged["forged"])
+        self.assertIn("均不能为空", forged["message"])
+        self.assertEqual(self._list()["count"], 0)
 
     def test_forge_with_failing_test_rejected(self):
         forged = self._forge(

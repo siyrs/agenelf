@@ -28,6 +28,8 @@ _SKILL_PROTOCOL_DOC = """\
 7. 通用代码写入 app；主人画像、兴趣、服务器清单、验证策略、记忆和成长连续性必须保存在 local，不得硬编码进技能。
 8. “自我意识、意愿、意向”只能实现为可观测、持久化的软件状态，不得宣称主观意识或情感。
 9. 软件验证只能选择 local/validation.yaml 中的别名，由隔离 Runner 执行；不得让模型自由提供 URL、主机或端口。
+10. 模型生成代码不得在 Agent 进程内执行；外部仓库修改必须走 code.repair 的只读源码、一次性副本和可信测试证据。
+11. app-space 与 skill_forge 默认关闭，即使主人开启也只允许附测试的受限纯计算实验技能。
 只输出 Python 源码本身，不要输出任何解释文字。"""
 
 
@@ -42,6 +44,8 @@ class Agent:
             os.environ["AGENELF_SERVERS_FILE"] = str(config["servers_path"])
         if config.get("validation_path"):
             os.environ["AGENELF_VALIDATION_FILE"] = str(config["validation_path"])
+        if config.get("repositories_path"):
+            os.environ["AGENELF_REPOSITORIES_FILE"] = str(config["repositories_path"])
         llm_cfg = config.get("llm", {})
         api_key = llm_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
         if config.get("mock") or not api_key:
@@ -49,16 +53,17 @@ class Agent:
         else:
             self.llm = LLMClient(config)
 
-        # 能力快车道：除 app/skills 外额外扫描运行根下 app-space/skills
-        # （容器内可写挂载）；核心代码仍走 app-tmp→gate→promote 慢车道
+        # Executable Python extensions are disabled by default.  Importing an
+        # app-space module executes its top-level code inside the Agent process, so
+        # the owner must explicitly opt in before that directory is even scanned.
         extra_skills_dirs: list[str] = []
         runtime_root = config.get("runtime_root") or os.environ.get("AGENELF_ROOT")
-        if runtime_root:
+        app_space_enabled = os.environ.get("AGENELF_ENABLE_APP_SPACE_SKILLS", "0") == "1"
+        if runtime_root and app_space_enabled:
             appspace_skills = Path(runtime_root) / "app-space" / "skills"
             try:
                 appspace_skills.mkdir(parents=True, exist_ok=True)
             except OSError:
-                # 目录不可创建时降级：discover 对缺失目录容错，注册时再报错
                 pass
             extra_skills_dirs.append(str(appspace_skills))
         self.registry = SkillRegistry(
@@ -381,53 +386,16 @@ class Agent:
         return engine.get_cycle(cycle_id) if cycle_id else engine.latest_cycles()
 
     def evolve_skill(self, description: str) -> str:
-        """Generate a skill in writable development mode; production uses autonomy."""
+        """Legacy entrypoint retained as a safe diagnostic response.
 
-        response = self.llm.chat(
-            [
-                {
-                    "role": "system",
-                    "content": "你是技能代码生成器，必须遵守能力边界与技能协议。",
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"请为以下需求生成一个新的技能文件源码：\n"
-                        f"{description}\n\n{_SKILL_PROTOCOL_DOC}"
-                    ),
-                },
-            ]
+        Direct skill registration used to write model-generated Python into the
+        running Agent process.  That path is now disabled.  Generic repository
+        changes use code.repair; Agenelf's own core changes use the controlled
+        app-tmp -> tests -> gate -> host-promotion pipeline.
+        """
+
+        del description
+        return (
+            "直接技能热加载已禁用（默认）。外部代码请使用 code.repair 隔离修复；"
+            "Agenelf 自身改动请使用 /pursue <intent-id> --apply 或 /autonomy。"
         )
-        source = (response.get("content") or "").strip()
-        if not source:
-            return "技能进化失败：LLM 未返回任何源码"
-        if source.startswith("```"):
-            lines = source.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            source = "\n".join(lines).strip()
-
-        filename = "evolved_skill.py"
-        try:
-            tree = ast.parse(source)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Assign) and any(
-                    isinstance(target, ast.Name) and target.id == "SKILL_META"
-                    for target in node.targets
-                ):
-                    metadata = ast.literal_eval(node.value)
-                    if isinstance(metadata, dict) and metadata.get("name"):
-                        filename = f"{metadata['name']}.py"
-                    break
-        except (SyntaxError, ValueError):
-            pass
-
-        ok, message = self.registry.register_new_skill(filename, source)
-        if ok:
-            skill_name = os.path.splitext(os.path.basename(filename))[0]
-            self.configure_skill_runtimes(skill_name)
-            self._refresh_system_prompt()
-            return f"技能进化成功：{message}"
-        return f"技能进化失败：{message}"

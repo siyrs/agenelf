@@ -257,6 +257,11 @@ class SkillRegistry:
             return f"错误：工具 {tool_name} 执行异常\n{traceback.format_exc(limit=3)}"
 
     def register_new_skill(self, filename: str, source_code: str) -> tuple[bool, str]:
+        if os.environ.get("AGENELF_ENABLE_DIRECT_SKILL_REGISTRATION", "0") != "1":
+            return False, (
+                "直接向 app/skills 写入并热加载模型生成代码已禁用；"
+                "请使用 code.repair 或受控 app-tmp 晋升流程"
+            )
         filename = os.path.basename(filename)
         if not filename.endswith(".py"):
             filename += ".py"
@@ -349,11 +354,22 @@ class SkillRegistry:
                 os.path.join(sandbox, f"{test_module}.py"), "w", encoding="utf-8"
             ) as handle:
                 handle.write(test_code)
-            env = dict(os.environ)
-            pythonpath = env.get("PYTHONPATH")
-            env["PYTHONPATH"] = (
-                sandbox if not pythonpath else sandbox + os.pathsep + pythonpath
-            )
+            # Do not inherit Agent credentials, provider keys, proxies or
+            # owner-local paths into experimental test subprocesses.
+            env = {
+                "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                "PYTHONPATH": sandbox,
+                "HOME": sandbox,
+                "TMPDIR": sandbox,
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "CI": "1",
+                "NO_PROXY": "*",
+                "no_proxy": "*",
+                "HTTP_PROXY": "",
+                "HTTPS_PROXY": "",
+                "ALL_PROXY": "",
+            }
             try:
                 proc = subprocess.run(
                     [sys.executable, "-m", "unittest", test_module],
@@ -454,18 +470,17 @@ class SkillRegistry:
         if rejected is not None:
             return False, rejected
 
-        # 测试门禁：空白测试视为未附测试；附测试则先校验再沙盒跑通
-        if test_code is not None and not test_code.strip():
-            test_code = None
-        if test_code is not None:
-            rejected = self._check_test_source(test_code)
-            if rejected is not None:
-                return False, rejected
-            rejected = self._run_forge_tests(
-                name, filename, source_code, test_code, test_timeout
-            )
-            if rejected is not None:
-                return False, rejected
+        # Executable extensions are never accepted without a real test.
+        if test_code is None or not test_code.strip():
+            return False, "快车道技能必须附带非空 unittest 测试代码"
+        rejected = self._check_test_source(test_code)
+        if rejected is not None:
+            return False, rejected
+        rejected = self._run_forge_tests(
+            name, filename, source_code, test_code, test_timeout
+        )
+        if rejected is not None:
+            return False, rejected
 
         path = os.path.join(target_dir, filename)
         try:
@@ -485,16 +500,10 @@ class SkillRegistry:
                 return False, f"技能注册失败: {exc}"
         except OSError as exc:
             return False, f"技能写入失败: {exc}"
-        tested = test_code is not None
-        if tested:
-            self._write_tested_marker(target_dir, name)
-        self._audit_forge(
-            f"name={name} origin=app-space tested={'true' if tested else 'false'}"
-        )
+        self._write_tested_marker(target_dir, name)
+        self._audit_forge(f"name={name} origin=app-space tested=true")
         message = f"技能 {name} 注册成功（origin=app-space），已热加载可用"
-        if tested:
-            return True, f"{message}；测试验证通过（tested=true）"
-        return True, f"{message}；未附测试（tested=false），建议补充验证测试"
+        return True, f"{message}；已注册（含测试验证）；测试验证通过（tested=true）"
 
     def unregister_external_skill(self, name: str) -> tuple[bool, str]:
         """从注册表卸载一个快车道技能（不删文件）；内置技能拒绝。"""

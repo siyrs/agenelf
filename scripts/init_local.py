@@ -58,6 +58,10 @@ def initialize(migrate: bool = True) -> dict:
         if not directory.exists():
             directory.mkdir(parents=True, exist_ok=True)
             actions.append(f"创建 {directory.relative_to(ROOT)}/")
+    for directory in (ROOT / "code-workspaces", ROOT / "repair-space"):
+        if not directory.exists():
+            directory.mkdir(parents=True, exist_ok=True)
+            actions.append(f"创建 {directory.relative_to(ROOT)}/")
 
     profile_sources = []
     servers_sources = []
@@ -80,6 +84,9 @@ def initialize(migrate: bool = True) -> dict:
         LOCAL / "validation.example.yaml", LOCAL / "validation.yaml", actions
     )
     _copy_if_missing(LOCAL / "models.example.yaml", LOCAL / "models.yaml", actions)
+    _copy_if_missing(
+        LOCAL / "repositories.example.yaml", LOCAL / "repositories.yaml", actions
+    )
 
     memory_target = LOCAL / "memory" / "memory.json"
     for source in memory_sources:
@@ -116,6 +123,7 @@ def initialize(migrate: bool = True) -> dict:
         LOCAL / "servers.yaml",
         LOCAL / "validation.yaml",
         LOCAL / "models.yaml",
+        LOCAL / "repositories.yaml",
         memory_target,
         self_dir / "reflections.json",
         self_dir / "intentions.json",
@@ -149,6 +157,9 @@ def status() -> dict:
         "servers": (LOCAL / "servers.yaml").is_file(),
         "validation": (LOCAL / "validation.yaml").is_file(),
         "models": (LOCAL / "models.yaml").is_file(),
+        "repositories": (LOCAL / "repositories.yaml").is_file(),
+        "code_workspaces": (ROOT / "code-workspaces").is_dir(),
+        "repair_space": (ROOT / "repair-space").is_dir(),
         "context_dir": (LOCAL / "context").is_dir(),
         "memory": (LOCAL / "memory" / "memory.json").is_file(),
         "self_dir": self_dir.is_dir(),

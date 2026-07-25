@@ -23,6 +23,20 @@ def _skill_source(name: str, tool: str, marker: str, desc: str = "x") -> str:
     )
 
 
+def _test_source(name: str, tool: str, expected: str) -> str:
+    cls = "".join(part.title() for part in name.split("_"))
+    return textwrap.dedent(
+        f"""
+        import unittest
+        import {name}
+
+        class {cls}Test(unittest.TestCase):
+            def test_tool(self):
+                self.assertEqual({name}.execute({tool!r}, {{}}), {expected!r})
+        """
+    )
+
+
 class AppSpaceRegistryTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -85,12 +99,25 @@ class AppSpaceRegistryTest(unittest.TestCase):
             str(self.appspace_dir),
             "hot_skill.py",
             _skill_source("hot_skill", "hot_tool", "hot-loaded"),
+            test_code=_test_source("hot_skill", "hot_tool", "hot-loaded"),
         )
         self.assertTrue(ok, message)
         self.assertIn("app-space", message)
         self.assertEqual(registry.dispatch("hot_tool", {}), "hot-loaded")
         self.assertTrue((self.appspace_dir / "hot_skill.py").is_file())
         self.assertEqual(registry.origin_of("hot_skill"), "app-space")
+
+    def test_register_external_skill_requires_tests(self):
+        registry = self._registry()
+        registry.discover()
+        ok, message = registry.register_external_skill(
+            str(self.appspace_dir),
+            "untested.py",
+            _skill_source("untested", "untested_tool", "x"),
+        )
+        self.assertFalse(ok)
+        self.assertIn("必须附带", message)
+        self.assertFalse((self.appspace_dir / "untested.py").exists())
 
     def test_register_external_skill_syntax_error_leaves_no_file(self):
         registry = self._registry()
@@ -112,7 +139,7 @@ class AppSpaceRegistryTest(unittest.TestCase):
             "SKILL_META = {}\n",  # 缺少 TOOLS 与 execute
         )
         self.assertFalse(ok)
-        self.assertIn("技能注册失败", message)
+        self.assertIn("必须附带", message)
         self.assertFalse((self.appspace_dir / "no_proto.py").exists())
         self.assertNotIn("no_proto", registry.skills)
 
@@ -152,6 +179,7 @@ class AppSpaceRegistryTest(unittest.TestCase):
             str(self.appspace_dir),
             "audited.py",
             _skill_source("audited", "audited_tool", "x"),
+            test_code=_test_source("audited", "audited_tool", "x"),
         )
         self.assertTrue(ok)
         log_path = self.root / "logs" / "audit.log"
@@ -176,6 +204,7 @@ class AppSpaceRegistryTest(unittest.TestCase):
             self.appspace_dir,
             "temp_skill.py",
             _skill_source("temp_skill", "temp_tool", "x"),
+            test_code=_test_source("temp_skill", "temp_tool", "x"),
         )
         self.assertTrue(ok)
         ok, _ = registry.unregister_external_skill("temp_skill")
