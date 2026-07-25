@@ -38,20 +38,61 @@ replace_once(
 )
 replace_once(
     "app/core/execution_policy.py",
-    '''        if action == "restart":\n            return _contract(tool_name, "server.operations", "service_restart", "change", "queued_runner")\n        return None\n''',
-    '''        if action == "restart":\n            return _contract(tool_name, "server.operations", "service_restart", "change", "queued_runner")\n        if not action:\n            return ToolExecutionContract(\n                tool_name, "server.operations", "dynamic:action", "read",\n                "queued_runner", source="dynamic-placeholder"\n            )\n        return None\n''',
+    '''        if action == "restart":
+            return _contract(tool_name, "server.operations", "service_restart", "change", "queued_runner")
+        return None
+''',
+    '''        if action == "restart":
+            return _contract(tool_name, "server.operations", "service_restart", "change", "queued_runner")
+        if not action:
+            return ToolExecutionContract(
+                tool_name, "server.operations", "dynamic:action", "read",
+                "queued_runner", source="dynamic-placeholder"
+            )
+        return None
+''',
 )
 
 replace_once(
     "app/core/agent.py",
-    '''                result = self.registry.dispatch(\n                    call["name"], call["arguments"], subject=subject\n                )\n''',
-    '''                try:\n                    result = self.registry.dispatch(\n                        call["name"], call["arguments"], subject=subject\n                    )\n                except TypeError as exc:\n                    # Compatibility for tests or extensions that monkeypatch the old\n                    # two-argument dispatch signature. Real SkillRegistry supports subject.\n                    if "unexpected keyword argument 'subject'" not in str(exc):\n                        raise\n                    result = self.registry.dispatch(call["name"], call["arguments"])\n''',
+    '''            policy_engine=PolicyEngine(config.get("policy_dir")),
+''',
+    '''            policy_engine=PolicyEngine(
+                config.get("policy_dir")
+                or str(
+                    (Path(__file__).resolve().parents[2] / "policy").resolve()
+                )
+            ),
+''',
+)
+replace_once(
+    "app/core/agent.py",
+    '''                result = self.registry.dispatch(
+                    call["name"], call["arguments"], subject=subject
+                )
+''',
+    '''                try:
+                    result = self.registry.dispatch(
+                        call["name"], call["arguments"], subject=subject
+                    )
+                except TypeError as exc:
+                    # Compatibility for tests or extensions that monkeypatch the old
+                    # two-argument dispatch signature. Real SkillRegistry supports subject.
+                    if "unexpected keyword argument 'subject'" not in str(exc):
+                        raise
+                    result = self.registry.dispatch(call["name"], call["arguments"])
+''',
 )
 
 replace_once(
     "app/core/configuration.py",
     '    config["policy_dir"] = str(root / "policy")\n',
-    '''    runtime_policy_dir = root / "policy"\n    source_policy_dir = app_dir.parent / "policy"\n    config["policy_dir"] = str(\n        runtime_policy_dir if runtime_policy_dir.is_dir() else source_policy_dir\n    )\n''',
+    '''    runtime_policy_dir = root / "policy"
+    source_policy_dir = app_dir.parent / "policy"
+    config["policy_dir"] = str(
+        runtime_policy_dir if runtime_policy_dir.is_dir() else source_policy_dir
+    )
+''',
 )
 
 replace_count(
