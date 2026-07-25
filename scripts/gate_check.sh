@@ -138,7 +138,8 @@ else
     TEST_CMD='for t in tests/test_*.py; do python3 "${t}" || exit 1; done'
 fi
 log "测试命令：${TEST_CMD}"
-if ! (cd "${APP_TMP}" && eval "${TEST_CMD}") > "${TEST_LOG}" 2>&1; then
+# 注入 PYTHONPATH，保证不带 sys.path 引导的测试文件也能直接 import core/skills
+if ! (cd "${APP_TMP}" && export PYTHONPATH="${APP_TMP}${PYTHONPATH:+:${PYTHONPATH}}" && eval "${TEST_CMD}") > "${TEST_LOG}" 2>&1; then
     log "测试输出（末尾 50 行）："
     tail -n 50 "${TEST_LOG}" | while IFS= read -r line; do log "  ${line}"; done
     fail "单元测试未通过，拒绝晋升"

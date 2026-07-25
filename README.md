@@ -50,6 +50,10 @@ Agenelf 由四个彼此分离但可组合的层次构成：
 - [服务器运维](docs/SERVER_OPERATIONS.md)
 - [软件验证](docs/VALIDATION.md)
 - [受控自主迭代](docs/AUTONOMY.md)
+- [证据驱动自我优化](docs/SELF_OPTIMIZATION.md)
+- [能力快车道](docs/APP_SPACE.md)（含测试门禁）
+- [任务板](docs/TASKS.md)
+- [成长报告](docs/GROWTH_REPORT.md)
 
 ## 快速开始
 
@@ -278,6 +282,13 @@ GitHub Actions 会执行：
 - 自主修改安全关键模块和主人数据写入的拒绝测试。
 
 ## 后续能力方向
+
+已落地并可持续运行：
+
+- 证据驱动自我优化快车道：白名单参数微调 + **负反馈自动回滚**（优化后健康恶化即自动回退，见 [SELF_OPTIMIZATION.md](docs/SELF_OPTIMIZATION.md)）；
+- 无人值守成长守护 `scripts/growth_daemon.sh`：周期性触发确定性反思、optimize_auto 与健康摘要留痕；只有触发权，代码晋升仍是人工闸门（见 [AUTONOMY.md](docs/AUTONOMY.md)）。
+
+后续规划：
 
 - `software.validation` 后续：认证检查、浏览器验证、日志断言与分布式验收；
 - `code.repair`：任务沙盒、补丁、测试和代码审查证据；

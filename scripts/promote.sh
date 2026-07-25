@@ -62,7 +62,15 @@ log "[promote] READY、报告与候选摘要全部校验通过：${CURRENT_SHA}"
 
 TS="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="${BACKUP_DIR}/${TS}.tar.gz"
-tar -czf "${BACKUP_FILE}" -C "${ROOT_DIR}" app
+# 排除易变的 __pycache__；tar 退出码 1（读取期间文件变化，如 .pyc 抖动）视为可接受警告，
+# 仅 0/1 放行，其余视为致命错误（set -e 下需显式捕获）
+tar_rc=0
+tar -czf "${BACKUP_FILE}" --exclude='__pycache__' --exclude='*.pyc' \
+    --warning=no-file-changed -C "${ROOT_DIR}" app || tar_rc=$?
+if [[ ${tar_rc} -gt 1 ]]; then
+    log "[promote] 错误：备份 app/ 失败（tar 退出码 ${tar_rc}），中止晋升"
+    exit 1
+fi
 log "[promote] 已备份 app/ -> ${BACKUP_FILE}"
 rollback() {
     log "[promote] 发生失败，正在从备份回滚 app/ ..."

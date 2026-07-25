@@ -52,9 +52,12 @@ def _render_capabilities(catalog: list[dict[str, Any]] | None) -> str:
         return "（尚未声明能力域；旧技能仍可直接使用）"
     lines: list[str] = []
     for capability in catalog:
+        origin = capability.get("origin")
+        origin_block = f"｜来源={origin}" if origin else ""
         lines.append(
             f"- {capability.get('id')}｜{capability.get('name')}｜"
-            f"领域={capability.get('domain')}｜{capability.get('description', '')}"
+            f"领域={capability.get('domain')}{origin_block}｜"
+            f"{capability.get('description', '')}"
         )
         operations = capability.get("operations", [])
         if isinstance(operations, list):

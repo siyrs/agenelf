@@ -15,6 +15,7 @@ from .local_context import LocalContextStore
 from .memory import MemoryStore
 from .registry import SkillRegistry
 from .self_development import SelfDevelopmentEngine
+from .self_optimization import SelfOptimizationStore
 
 _SKILL_PROTOCOL_DOC = """\
 技能协议（必须严格遵守）：
@@ -48,7 +49,22 @@ class Agent:
         else:
             self.llm = LLMClient(config)
 
-        self.registry = SkillRegistry(config.get("skills_dir", "skills"))
+        # 能力快车道：除 app/skills 外额外扫描运行根下 app-space/skills
+        # （容器内可写挂载）；核心代码仍走 app-tmp→gate→promote 慢车道
+        extra_skills_dirs: list[str] = []
+        runtime_root = config.get("runtime_root") or os.environ.get("AGENELF_ROOT")
+        if runtime_root:
+            appspace_skills = Path(runtime_root) / "app-space" / "skills"
+            try:
+                appspace_skills.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                # 目录不可创建时降级：discover 对缺失目录容错，注册时再报错
+                pass
+            extra_skills_dirs.append(str(appspace_skills))
+        self.registry = SkillRegistry(
+            config.get("skills_dir", "skills"),
+            extra_skills_dirs=extra_skills_dirs or None,
+        )
         self.registry.discover()
 
         agent_cfg = config.get("agent", {})
@@ -57,8 +73,15 @@ class Agent:
             memory_path,
             max_entries=int(agent_cfg.get("memory_max_entries", 1000)),
         )
-        self.memory_prompt_limit = int(agent_cfg.get("memory_prompt_limit", 50))
-        self.memory_prompt_max_chars = int(agent_cfg.get("memory_prompt_max_chars", 8000))
+        self._memory_prompt_limit_default = int(agent_cfg.get("memory_prompt_limit", 50))
+        self._memory_prompt_max_chars_default = int(agent_cfg.get("memory_prompt_max_chars", 8000))
+        # 自我优化快车道：只覆盖白名单内的运行期参数，绝不修改 config.yaml
+        opt_local = config.get("local_dir") or os.environ.get("AGENELF_LOCAL_DIR") or str(Path(memory_path).resolve().parent)
+        self.optimization = SelfOptimizationStore(
+            config.get("self_dir") or str(Path(opt_local) / "self"),
+            root=config.get("runtime_root") or os.environ.get("AGENELF_ROOT"),
+        )
+        self._apply_optimization_overrides()
         self.max_tool_rounds = int(agent_cfg.get("max_tool_rounds", 8))
         self.history_max_messages = max(0, int(agent_cfg.get("history_max_messages", 12)))
         self.history: list[dict] = []
@@ -109,10 +132,18 @@ class Agent:
                     f"运行时绑定失败：{type(exc).__name__}: {exc}"
                 )
 
+    def _apply_optimization_overrides(self) -> None:
+        """用自我优化白名单内的有效覆盖值刷新运行期参数（无覆盖则回默认值）。"""
+
+        self.memory_prompt_limit = int(self.optimization.get_effective("agent.memory_prompt_limit", self._memory_prompt_limit_default))
+        self.memory_prompt_max_chars = int(self.optimization.get_effective("agent.memory_prompt_max_chars", self._memory_prompt_max_chars_default))
+
     def _refresh_system_prompt(self) -> None:
         self.local_context.reload()
         if self.local_context.profile:
             self.persona = {}
+        # 自我优化覆盖在每轮刷新时重新生效（记忆块每次重建，无缓存）
+        self._apply_optimization_overrides()
         self.system_prompt = build_system_prompt(
             self.persona,
             self.memory.as_prompt_block(
@@ -158,6 +189,17 @@ class Agent:
     def chat(self, user_input: str) -> str:
         """Process one turn while preserving bounded conversation and continuity."""
 
+        # 自我优化快车道：每轮对话前应用白名单内的温度覆盖；MockLLM 没有
+        # 该属性也可直接赋值，其他异常一律容错，绝不影响对话主流程
+        try:
+            self.llm.temperature = float(
+                self.optimization.get_effective(
+                    "llm.temperature",
+                    self.config.get("llm", {}).get("temperature", 0.6),
+                )
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
         self._refresh_system_prompt()
         messages: list[dict] = [
             {"role": "system", "content": self.system_prompt},

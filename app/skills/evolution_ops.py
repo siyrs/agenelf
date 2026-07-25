@@ -208,6 +208,39 @@ def _bash_script_path(path: Path) -> str:
 # ----------------------------------------------------------------------
 # 工具实现
 # ----------------------------------------------------------------------
+def _force_remove_tree(path: Path, retries: int = 5) -> None:
+    """稳健删除目录树：共享/惰性文件系统上 rmtree 可能"假成功"，
+    删除后校验并带退避重试，最终仍存在则抛 OSError。"""
+    import time
+
+    if not path.exists():
+        return
+    for attempt in range(retries):
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        time.sleep(0.2 * (attempt + 1))
+    if path.exists():
+        raise OSError(f"目录删除后仍存在（共享文件系统延迟？）：{path}")
+
+
+def _mirror_tree(src: Path, dst: Path) -> None:
+    """把 src 完整镜像到 dst（含清除 dst 多余文件），并做复制后完整性校验。"""
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    src_files = {p.relative_to(src) for p in src.rglob("*") if p.is_file()}
+    dst_files = {p.relative_to(dst) for p in dst.rglob("*") if p.is_file()}
+    # 清除 dst 中的残留文件（上一轮迭代的 leftovers）
+    for extra in dst_files - src_files:
+        try:
+            (dst / extra).unlink()
+        except OSError:
+            pass
+    dst_files = {p.relative_to(dst) for p in dst.rglob("*") if p.is_file()}
+    missing = src_files - dst_files
+    if missing:
+        raise OSError(f"复制后完整性校验失败，缺失 {len(missing)} 个文件，例如：{sorted(missing)[:3]}")
+
+
 def evolution_begin(goal: str) -> str:
     """开始一次自我迭代：复制 app-fork/ 到 app-tmp/ 并创建会话。"""
     if not isinstance(goal, str) or not goal.strip():
@@ -218,11 +251,10 @@ def evolution_begin(goal: str) -> str:
     if not fork.is_dir():
         return f"开始失败：运行代码副本目录不存在：{fork}"
 
-    # 先清空 app-tmp/ 再全量复制，保证暂存区与 app-fork/ 完全一致
+    # 先稳健清空 app-tmp/ 再镜像复制，保证暂存区与 app-fork/ 完全一致
     try:
-        if tmp.exists():
-            shutil.rmtree(tmp)
-        shutil.copytree(fork, tmp)
+        _force_remove_tree(tmp)
+        _mirror_tree(fork, tmp)
     except OSError as exc:
         return f"开始失败：复制代码副本到暂存区出错：{exc}"
 

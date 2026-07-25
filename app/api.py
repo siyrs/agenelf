@@ -87,6 +87,17 @@ class ValidationRunRequest(BaseModel):
     wait_seconds: int = Field(default=3, ge=0, le=12)
 
 
+class OptimizationApplyRequest(BaseModel):
+    key: str
+    value: float
+    reason: str = ""
+    evidence: list[str] = Field(default_factory=list)
+
+
+class OptimizationRollbackRequest(BaseModel):
+    key: str
+
+
 def _dispatch_json(tool_name: str, args: dict | None = None) -> dict:
     text = get_agent().registry.dispatch(tool_name, args or {})
     try:
@@ -313,6 +324,37 @@ def pursue_intention(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"推进改进意向失败：{exc}") from exc
+
+
+@app.get("/self/optimization", dependencies=[Depends(require_api_token)])
+def self_optimization_status() -> dict:
+    return get_agent().optimization.status()
+
+
+@app.post("/self/optimization/apply", dependencies=[Depends(require_api_token)])
+def self_optimization_apply(request: OptimizationApplyRequest) -> dict:
+    applied, message = get_agent().optimization.apply(
+        request.key,
+        request.value,
+        request.reason,
+        evidence=request.evidence,
+    )
+    if not applied:
+        raise HTTPException(status_code=400, detail=message)
+    return {"applied": True, "message": message}
+
+
+@app.post("/self/optimization/rollback", dependencies=[Depends(require_api_token)])
+def self_optimization_rollback(request: OptimizationRollbackRequest) -> dict:
+    rolled_back, message = get_agent().optimization.rollback(request.key)
+    if not rolled_back:
+        raise HTTPException(status_code=400, detail=message)
+    return {"rolled_back": True, "message": message}
+
+
+@app.post("/self/optimization/auto", dependencies=[Depends(require_api_token)])
+def self_optimization_auto() -> dict:
+    return get_agent().optimization.auto_tune()
 
 
 @app.post("/autonomy/cycles", dependencies=[Depends(require_api_token)])

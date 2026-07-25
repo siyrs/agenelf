@@ -175,3 +175,24 @@ agent.self_development
 自主评估现在读取确定性 Runner 产生的运维与软件验证结果。连续失败至少两次，或三次以上观测成功率低于 60%，会形成 `capability_degraded:*` 发现，并由现有反思系统创建去重改进意向。
 
 能力健康只影响计划和意向优先级；它不能自动推进补丁、批准操作或绕过晋升。
+
+## 无人值守成长守护
+
+`scripts/growth_daemon.sh` 是宿主机侧的确定性守护进程（不调用 LLM），按固定间隔自动触发成长链路的"快车道"环节：
+
+```text
+每轮（默认 3600s，--once 跑一轮退出）：
+  1. 确定性反思：从 capability_health 可信证据沉淀一条反思
+     （local/self/reflections.json，trigger=growth_daemon）
+  2. optimize_auto：证据驱动参数微调 + 负反馈自动回滚检查
+  3. 记录 capability_health 摘要
+全部动作以统一 JSON 行留痕 logs/growth.log（时间戳/动作/结果摘要）
+```
+
+触发方式：
+
+- docker 与 compose 服务可用：`docker compose exec -T agenelf` 在容器内执行（CLI 支持 `--reflect-once` 时反思走 CLI，否则 python 直调 core 模块）；
+- docker 不可用：优雅降级为本地直调（`AGENELF_MOCK=1 AGENELF_ROOT=<根> python3`），仅依赖标准库；
+- 部署：`cron`（`*/30 * * * * /path/scripts/growth_daemon.sh --once`）或 systemd user timer，示例写在脚本头部注释。
+
+与人工闸门的关系：**守护进程只有"触发权"**。它只触发反思沉淀与白名单内运行期参数微调（快车道，可自动回滚）；代码晋升（`make promote REQ=<id>`）、改进意向的批准与推进、运维操作审批仍是人类闸门，守护进程绝不自动晋升、不修改代码、不触碰 `config.yaml` 与主人私有数据。

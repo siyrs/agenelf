@@ -1,27 +1,72 @@
-"""Skill registry with an optional composable capability catalog."""
+"""Skill registry with an optional composable capability catalog.
+
+除主目录 ``app/skills`` 外，注册表还可以扫描运行根下的额外技能目录
+（``app-space/skills``，容器内可写挂载）。这是能力扩展的“快车道”：
+新技能经协议校验后写入 app-space 并热加载；同名技能始终由主目录优先，
+核心代码改动仍走 app-tmp → gate → promote 慢车道。
+"""
 
 from __future__ import annotations
 
 import ast
 import importlib.util
 import os
+import re
+import subprocess
 import sys
+import tempfile
 import traceback
+from datetime import datetime, timezone
 from typing import Any
 
 from .capabilities import normalize_capability_meta
 
 _REQUIRED_ATTRS = ("SKILL_META", "TOOLS", "execute")
 
+# 快车道来源标注：主目录技能为 "app"，额外目录技能为 "app-space"
+ORIGIN_APP = "app"
+ORIGIN_APP_SPACE = "app-space"
+
+# 快车道单文件规模约束（与 gate_check.sh 的规模限值同族）
+_EXTERNAL_MAX_LINES = 500
+_EXTERNAL_MAX_CHARS = 64_000
+
+# 快车道测试门禁：测试代码规模上限与沙盒运行默认超时（秒）
+_TEST_MAX_LINES = 500
+_TEST_DEFAULT_TIMEOUT = 60.0
+# 测试失败时返回给调用方的输出尾部截断长度
+_TEST_OUTPUT_TAIL = 1500
+
+# 快车道危险模式（与 scripts/gate_check.sh 检查 a/6 同族，注册时即拒绝）
+_DANGEROUS_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"rm\s+-rf\s+/([\s\"';|&)]|$)",
+        r"mkfs",
+        r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;\s*:",
+        r"(>{1,2}|tee\s+)\s*/etc/passwd",
+        r"open\([^)]*/etc/passwd[^)]*['\"][wa]",
+        r"docker\.sock",
+        r"curl[^|]*\|\s*(sudo\s+)?(ba)?sh(\s|$)",
+        r"sk-[a-zA-Z0-9]{20,}",
+    )
+)
+
 
 class SkillRegistry:
     """Discover, validate, reload and dispatch skill modules."""
 
-    def __init__(self, skills_dir: str):
+    def __init__(self, skills_dir: str, extra_skills_dirs: list[str] | None = None):
         self.skills_dir = os.path.abspath(skills_dir)
+        # 额外技能目录（快车道），约定第一个为 app-space/skills 可写目录
+        self.extra_skills_dirs: list[str] = [
+            os.path.abspath(path) for path in (extra_skills_dirs or [])
+        ]
         self.skills: dict[str, object] = {}
         self.errors: dict[str, str] = {}
         self._tool_index: dict[str, str] = {}
+        # 技能名 -> 来源（app / app-space），用于清单标注与越权保护
+        self._origins: dict[str, str] = {}
 
     @staticmethod
     def _skill_name_from_file(filename: str) -> str:
@@ -111,38 +156,69 @@ class SkillRegistry:
         )
         return descriptor.as_dict()
 
-    def discover(self) -> list[str]:
-        if not os.path.isdir(self.skills_dir):
-            return []
-        for filename in sorted(os.listdir(self.skills_dir)):
+    def _scan_dir(self, directory: str, *, origin: str) -> None:
+        """扫描单个技能目录；同名技能先到先得（主目录先于 extra 扫描）。"""
+
+        if not os.path.isdir(directory):
+            return
+        for filename in sorted(os.listdir(directory)):
             if not filename.endswith(".py") or filename.startswith("_"):
                 continue
             name = self._skill_name_from_file(filename)
-            path = os.path.join(self.skills_dir, filename)
+            if name in self.skills:
+                # 主目录优先：app/ 中的同名技能覆盖 app-space/
+                continue
+            path = os.path.join(directory, filename)
             try:
                 module = self._load_module(path)
                 self._validate_module(module)
                 self._register_module(name, module)
+                self._origins[name] = origin
             except Exception:
                 self.errors[name] = traceback.format_exc(limit=5)
+
+    def discover(self) -> list[str]:
+        self._scan_dir(self.skills_dir, origin=ORIGIN_APP)
+        for extra_dir in self.extra_skills_dirs:
+            self._scan_dir(extra_dir, origin=ORIGIN_APP_SPACE)
         return list(self.skills.keys())
 
+    def origin_of(self, name: str) -> str:
+        """返回技能来源：app（内置）或 app-space（快车道）；未知返回空串。"""
+
+        return self._origins.get(name, "")
+
     def reload(self, name: str) -> bool:
-        path = os.path.join(self.skills_dir, f"{name}.py")
-        if not os.path.exists(path):
+        candidates = [os.path.join(self.skills_dir, f"{name}.py")]
+        candidates.extend(
+            os.path.join(extra_dir, f"{name}.py")
+            for extra_dir in self.extra_skills_dirs
+        )
+        path = next((item for item in candidates if os.path.exists(item)), None)
+        if path is None:
             return False
+        origin = (
+            ORIGIN_APP
+            if os.path.dirname(os.path.abspath(path)) == self.skills_dir
+            else ORIGIN_APP_SPACE
+        )
         old = self.skills.get(name)
+        old_origin = self._origins.get(name)
         try:
             module = self._load_module(path)
             self._validate_module(module)
             self._register_module(name, module)
+            self._origins[name] = origin
             return True
         except Exception:
             self.errors[name] = traceback.format_exc(limit=5)
             if old is None:
                 self.skills.pop(name, None)
+                self._origins.pop(name, None)
             else:
                 self.skills[name] = old
+                if old_origin is not None:
+                    self._origins[name] = old_origin
             try:
                 self._rebuild_tool_index()
             except Exception:
@@ -156,12 +232,17 @@ class SkillRegistry:
         return schemas
 
     def capability_catalog(self) -> list[dict[str, Any]]:
-        """Return stable capability-domain metadata for planning and UI."""
+        """Return stable capability-domain metadata for planning and UI.
 
-        catalog = [
-            self._descriptor_for(name, module)
-            for name, module in sorted(self.skills.items())
-        ]
+        每条描述附带 ``origin``：内置技能为 ``app``，快车道技能为
+        ``app-space``，便于规划与审计区分能力来源。
+        """
+
+        catalog: list[dict[str, Any]] = []
+        for name, module in sorted(self.skills.items()):
+            descriptor = self._descriptor_for(name, module)
+            descriptor["origin"] = self._origins.get(name, ORIGIN_APP)
+            catalog.append(descriptor)
         catalog.sort(key=lambda item: (item["domain"], item["id"]))
         return catalog
 
@@ -202,3 +283,240 @@ class SkillRegistry:
             if written and os.path.exists(path):
                 os.remove(path)
             return False, f"技能注册失败: {exc}"
+
+    # ------------------------------------------------------------------
+    # app-space 快车道：只写 extra 目录第一个（app-space/skills）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _check_external_source(source_code: str) -> str | None:
+        """规模与危险模式约束（与 gate 同族）；返回拒绝原因或 None。"""
+
+        if len(source_code) > _EXTERNAL_MAX_CHARS:
+            return f"源码大小 {len(source_code)} 字符超过快车道上限 {_EXTERNAL_MAX_CHARS}"
+        line_count = source_code.count("\n") + 1
+        if line_count > _EXTERNAL_MAX_LINES:
+            return f"源码行数 {line_count} 超过快车道上限 {_EXTERNAL_MAX_LINES}"
+        for pattern in _DANGEROUS_PATTERNS:
+            if pattern.search(source_code):
+                return f"源码命中危险模式：{pattern.pattern}"
+        return None
+
+    @staticmethod
+    def _check_test_source(test_code: str) -> str | None:
+        """测试代码的注册前校验；返回拒绝原因或 None。
+
+        测试代码会在沙盒子进程中真实执行，因此除 ast 语法与规模限制
+        （≤500 行 / ≤64K 字符）外，还套用与技能源码同族的危险模式扫描，
+        防止测试通道绕过快车道的安全底线。
+        """
+
+        try:
+            ast.parse(test_code)
+        except SyntaxError as exc:
+            return f"测试代码语法校验失败: {exc}"
+        if len(test_code) > _EXTERNAL_MAX_CHARS:
+            return (
+                f"测试代码大小 {len(test_code)} 字符超过快车道上限 "
+                f"{_EXTERNAL_MAX_CHARS}"
+            )
+        line_count = test_code.count("\n") + 1
+        if line_count > _TEST_MAX_LINES:
+            return f"测试代码行数 {line_count} 超过快车道上限 {_TEST_MAX_LINES}"
+        for pattern in _DANGEROUS_PATTERNS:
+            if pattern.search(test_code):
+                return f"测试代码命中危险模式：{pattern.pattern}"
+        return None
+
+    @staticmethod
+    def _run_forge_tests(
+        name: str, filename: str, source_code: str, test_code: str, timeout: float
+    ) -> str | None:
+        """沙盒运行测试：技能源码 + 测试源码写入临时目录后 subprocess 执行。
+
+        技能文件名与注册目标一致，保证测试里 ``import <name>`` 可用；
+        测试文件为 ``test_<name>.py``，以 ``python -m unittest`` 运行，
+        PYTHONPATH 指向临时目录。返回拒绝原因（失败/超时）或 None（通过）；
+        临时目录随上下文管理器销毁，不留垃圾。
+        """
+
+        with tempfile.TemporaryDirectory(prefix="agenelf-forge-test-") as sandbox:
+            with open(
+                os.path.join(sandbox, filename), "w", encoding="utf-8"
+            ) as handle:
+                handle.write(source_code)
+            test_module = f"test_{name}"
+            with open(
+                os.path.join(sandbox, f"{test_module}.py"), "w", encoding="utf-8"
+            ) as handle:
+                handle.write(test_code)
+            env = dict(os.environ)
+            pythonpath = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = (
+                sandbox if not pythonpath else sandbox + os.pathsep + pythonpath
+            )
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-m", "unittest", test_module],
+                    cwd=sandbox,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return f"测试验证超时（>{timeout:g}s），拒绝注册"
+            except OSError as exc:
+                return f"测试沙盒启动失败: {exc}"
+            if proc.returncode != 0:
+                output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+                tail = output[-_TEST_OUTPUT_TAIL:] if output else "（无输出）"
+                return (
+                    f"测试验证失败（exit={proc.returncode}），拒绝注册。"
+                    f"尾部输出：\n{tail}"
+                )
+        return None
+
+    @staticmethod
+    def _tested_marker_path(target_dir: str, name: str) -> str:
+        """tested 旁车标记：app-space/skills/<name>.tested。"""
+
+        return os.path.join(target_dir, f"{name}.tested")
+
+    def _write_tested_marker(self, target_dir: str, name: str) -> None:
+        """Best-effort 写入 tested 标记（记录验证时间），失败不影响注册。"""
+
+        try:
+            stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            with open(
+                self._tested_marker_path(target_dir, name), "w", encoding="utf-8"
+            ) as handle:
+                handle.write(f"tested=true verified_at={stamp}\n")
+        except OSError:
+            pass
+
+    def _audit_forge(self, detail: str) -> None:
+        """Best-effort 审计：写入运行根 logs/audit.log，失败绝不影响主流程。"""
+
+        if not self.extra_skills_dirs:
+            return
+        # app-space/skills 的上两级即运行根（与 docker-compose 挂载一致）
+        root = os.path.dirname(os.path.dirname(self.extra_skills_dirs[0]))
+        path = os.path.join(root, "logs", "audit.log")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"[{stamp}] [skill_forge] {detail}\n")
+        except OSError:
+            pass
+
+    def register_external_skill(
+        self,
+        dirname: str,
+        filename: str,
+        source_code: str,
+        test_code: str | None = None,
+        test_timeout: float = _TEST_DEFAULT_TIMEOUT,
+    ) -> tuple[bool, str]:
+        """快车道注册：校验后写入 app-space/skills 并热加载。
+
+        与 ``register_new_skill`` 使用同一套 ast 语法校验与临时导入协议
+        校验（SKILL_META/TOOLS/execute），失败不留垃圾文件；区别是只允许
+        写入 extra 目录第一个（app-space/skills），绝不触碰主目录。
+
+        可选的 ``test_code`` 是快车道测试门禁：提供时先在临时目录沙盒中
+        运行测试（``import <name>`` 可用，60s 超时，可用 ``test_timeout``
+        调整），失败/超时即拒绝注册且不留文件；通过则走正常注册流程并
+        写入 ``<name>.tested`` 旁车标记。未提供时不阻断注册，但结果中
+        明确标注“未附测试”。
+        """
+
+        if not self.extra_skills_dirs:
+            return False, "未配置 app-space 技能目录，快车道不可用"
+        target_dir = os.path.abspath(str(dirname))
+        if target_dir != self.extra_skills_dirs[0]:
+            return False, (
+                f"越权路径：快车道只允许写入 {self.extra_skills_dirs[0]}"
+            )
+        filename = os.path.basename(filename)
+        if not filename.endswith(".py"):
+            filename += ".py"
+        if filename.startswith("_"):
+            return False, "技能文件名不能以下划线开头"
+        name = self._skill_name_from_file(filename)
+        if self._origins.get(name) == ORIGIN_APP:
+            return False, f"技能 {name} 与内置技能同名，主目录优先，拒绝覆盖"
+        try:
+            ast.parse(source_code)
+        except SyntaxError as exc:
+            return False, f"语法校验失败: {exc}"
+        rejected = self._check_external_source(source_code)
+        if rejected is not None:
+            return False, rejected
+
+        # 测试门禁：空白测试视为未附测试；附测试则先校验再沙盒跑通
+        if test_code is not None and not test_code.strip():
+            test_code = None
+        if test_code is not None:
+            rejected = self._check_test_source(test_code)
+            if rejected is not None:
+                return False, rejected
+            rejected = self._run_forge_tests(
+                name, filename, source_code, test_code, test_timeout
+            )
+            if rejected is not None:
+                return False, rejected
+
+        path = os.path.join(target_dir, filename)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            written = False
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(source_code)
+                written = True
+                module = self._load_module(path)
+                self._validate_module(module)
+                self._register_module(name, module)
+                self._origins[name] = ORIGIN_APP_SPACE
+            except Exception as exc:
+                if written and os.path.exists(path):
+                    os.remove(path)
+                return False, f"技能注册失败: {exc}"
+        except OSError as exc:
+            return False, f"技能写入失败: {exc}"
+        tested = test_code is not None
+        if tested:
+            self._write_tested_marker(target_dir, name)
+        self._audit_forge(
+            f"name={name} origin=app-space tested={'true' if tested else 'false'}"
+        )
+        message = f"技能 {name} 注册成功（origin=app-space），已热加载可用"
+        if tested:
+            return True, f"{message}；测试验证通过（tested=true）"
+        return True, f"{message}；未附测试（tested=false），建议补充验证测试"
+
+    def unregister_external_skill(self, name: str) -> tuple[bool, str]:
+        """从注册表卸载一个快车道技能（不删文件）；内置技能拒绝。"""
+
+        if name not in self.skills:
+            return False, f"技能 {name} 未注册"
+        if self._origins.get(name) != ORIGIN_APP_SPACE:
+            return False, f"技能 {name} 是内置技能（origin=app），拒绝卸载"
+        self.skills.pop(name, None)
+        self._origins.pop(name, None)
+        self.errors.pop(name, None)
+        # 一并清理 tested 旁车标记（best-effort，不存在或无权限都忽略）
+        if self.extra_skills_dirs:
+            marker = self._tested_marker_path(self.extra_skills_dirs[0], name)
+            try:
+                if os.path.exists(marker):
+                    os.remove(marker)
+            except OSError:
+                pass
+        try:
+            self._rebuild_tool_index()
+        except Exception:
+            self._tool_index = {}
+        self._audit_forge(f"action=remove name={name} origin=app-space")
+        return True, f"技能 {name} 已从注册表卸载"

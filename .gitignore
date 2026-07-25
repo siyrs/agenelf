@@ -24,6 +24,10 @@ local/secrets/
 config/servers.yaml
 secrets/
 
+# 成长报告数据产物（目录保留 .gitkeep，报告不进入 Git）
+docs/growth-reports/*
+!docs/growth-reports/.gitkeep
+
 # Python
 __pycache__/
 *.pyc
