@@ -209,36 +209,53 @@ def _bash_script_path(path: Path) -> str:
 # 工具实现
 # ----------------------------------------------------------------------
 def _force_remove_tree(path: Path, retries: int = 5) -> None:
-    """稳健删除目录树：共享/惰性文件系统上 rmtree 可能"假成功"，
-    删除后校验并带退避重试，最终仍存在则抛 OSError。"""
+    """清空目录内容但保留目录本身（兼容 Docker bind mount，挂载点删不掉）。
+
+    共享/惰性文件系统上删除可能"假成功"，故带退避重试并校验。
+    """
     import time
 
     if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
         return
     for attempt in range(retries):
-        shutil.rmtree(path, ignore_errors=True)
-        if not path.exists():
+        # 只清空内容，保留目录根（bind mount 删不掉根目录）
+        _cleared = True
+        for item in list(path.iterdir()):
+            try:
+                if item.is_dir() and not item.is_symlink():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink()
+            except OSError:
+                _cleared = False
+        if _cleared and not list(path.iterdir()):
             return
         time.sleep(0.2 * (attempt + 1))
-    if path.exists():
-        raise OSError(f"目录删除后仍存在（共享文件系统延迟？）：{path}")
+    remaining = list(path.iterdir())
+    if remaining:
+        raise OSError(f"目录清空后仍有残留（共享文件系统延迟？）：{[p.name for p in remaining[:5]]}")
 
 
 def _mirror_tree(src: Path, dst: Path) -> None:
-    """把 src 完整镜像到 dst（含清除 dst 多余文件），并做复制后完整性校验。"""
-    shutil.copytree(src, dst, dirs_exist_ok=True)
-    src_files = {p.relative_to(src) for p in src.rglob("*") if p.is_file()}
-    dst_files = {p.relative_to(dst) for p in dst.rglob("*") if p.is_file()}
-    # 清除 dst 中的残留文件（上一轮迭代的 leftovers）
-    for extra in dst_files - src_files:
+    """把 src 的**内容**逐文件镜像到 dst（保留 dst 根目录不动，兼容 bind mount）。"""
+    dst.mkdir(parents=True, exist_ok=True)
+    # 先清空 dst 中的多余文件/目录
+    for item in list(dst.iterdir()):
         try:
-            (dst / extra).unlink()
+            if item.is_dir() and not item.is_symlink():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                item.unlink()
         except OSError:
             pass
-    dst_files = {p.relative_to(dst) for p in dst.rglob("*") if p.is_file()}
-    missing = src_files - dst_files
-    if missing:
-        raise OSError(f"复制后完整性校验失败，缺失 {len(missing)} 个文件，例如：{sorted(missing)[:3]}")
+    # 逐文件复制 src → dst
+    for src_path in src.rglob("*"):
+        if src_path.is_file():
+            rel = src_path.relative_to(src)
+            dst_path = dst / rel
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dst_path)
 
 
 def evolution_begin(goal: str) -> str:
@@ -315,7 +332,9 @@ def evolution_write_file(path: str, content: str) -> str:
 
     try:
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(content, encoding="utf-8")
+        # 清洗 surrogate 字符后写入，防御 LLM 生成的含 \ud800-\udfff 的测试代码
+        safe = content.replace("\ud800", "\\ud800").replace("\udfff", "\\udfff")
+        resolved.write_text(safe, encoding="utf-8")
     except OSError as exc:
         return f"写入失败：{exc}"
     return f"已写入暂存区文件：{resolved}（{len(content)} 字符）"

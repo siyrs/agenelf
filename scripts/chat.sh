@@ -15,4 +15,5 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 # 注意：容器内运行的是只读挂载的 app-fork/ 代码
-exec docker compose exec agenelf python /agenelf/app-fork/cli.py "$@"
+# MSYS_NO_PATHCONV=1 防止 Git Bash 把 /agenelf/... 转成 Windows 路径
+exec env MSYS_NO_PATHCONV=1 docker compose exec agenelf python /agenelf/app-fork/cli.py "$@"

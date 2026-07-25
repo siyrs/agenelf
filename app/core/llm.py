@@ -8,6 +8,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
+
+# 清洗字符串中的孤立 surrogate 字符（\ud800-\udfff），避免 openai 库 json 序列化崩溃
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _sanitize_surrogates(obj: object) -> object:
+    """递归清洗对象中所有字符串的 surrogate 字符。"""
+    if isinstance(obj, str):
+        return _SURROGATE_RE.sub("�", obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(v) for v in obj]
+    return obj
+
 
 # 触发 MockLLM 生成工具调用的中文关键词
 _TRIGGER_KEYWORDS = ("写", "代码", "运行", "执行", "文件")
@@ -177,20 +193,26 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        # 防御性清洗：递归去除所有字符串中的 surrogate 字符，防止 openai JSON 编码崩溃
+        kwargs = _sanitize_surrogates(kwargs)
         resp = self._client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
+
+        # 清洗 LLM 响应中的 surrogate 字符（DeepSeek 等模型可能返回含 \ud800-\udfff 的文本）
+        content = _SURROGATE_RE.sub("�", str(msg.content or "")) if msg.content else None
 
         tool_calls: list[dict] = []
         for tc in msg.tool_calls or []:
             # arguments 是 JSON 字符串，解析失败时回退为空 dict
             try:
-                arguments = json.loads(tc.function.arguments or "{}")
+                raw_args = _SURROGATE_RE.sub("�", str(tc.function.arguments or "{}"))
+                arguments = json.loads(raw_args)
             except json.JSONDecodeError:
                 arguments = {}
             tool_calls.append(
                 {"id": tc.id, "name": tc.function.name, "arguments": arguments}
             )
-        return {"content": msg.content, "tool_calls": tool_calls}
+        return {"content": content, "tool_calls": tool_calls}
 
 
 class MockLLM(LLMClient):

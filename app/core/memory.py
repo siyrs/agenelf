@@ -4,12 +4,27 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 
 from .privacy import redact_sensitive_text
 
+# 清洗孤立 surrogate 字符，防止 json.dump 崩溃
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
 VALID_KINDS = {"fact", "preference", "episode"}
+
+
+def _sanitize_memories(obj: object) -> object:
+    """递归清洗对象中所有字符串的 surrogate 字符。"""
+    if isinstance(obj, str):
+        return _SURROGATE_RE.sub("�", obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_memories(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_memories(v) for v in obj]
+    return obj
 DEFAULT_PROMPT_LIMIT = 50
 DEFAULT_PROMPT_MAX_CHARS = 8000
 DEFAULT_MAX_ENTRIES = 1000
@@ -45,7 +60,8 @@ class MemoryStore:
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(self.memories, handle, ensure_ascii=False, indent=2)
+                # 递归清洗 surrogate 后写盘，兜底防御 LLM 返回的非法 Unicode
+                json.dump(_sanitize_memories(self.memories), handle, ensure_ascii=False, indent=2)
                 handle.write("\n")
             os.replace(temp_path, self.path)
         except OSError:

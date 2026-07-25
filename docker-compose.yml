@@ -17,7 +17,6 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./app-fork:/agenelf/app-fork:ro
-      - ./app-tmp:/agenelf/app-tmp:rw
       - ./scripts:/agenelf/scripts:ro
       - ./policy:/agenelf/policy:ro
       - ./data:/agenelf/data:rw
@@ -40,6 +39,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+      - /agenelf/app-tmp:uid=1000,gid=1000,mode=755
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true
