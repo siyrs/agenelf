@@ -151,15 +151,14 @@ class EnhancedOpsRunner(legacy.OpsRunner):
             elif operation == "docker_diagnose":
                 tail = int(params.get("tail", 200))
                 inspect_format = (
-                    "Name={{.Name}}\\nImage={{.Config.Image}}\\n"
-                    "Status={{.State.Status}}\\nExitCode={{.State.ExitCode}}\\n"
-                    "Error={{.State.Error}}\\nRestartCount={{.RestartCount}}\\n"
-                    "StartedAt={{.State.StartedAt}}\\nFinishedAt={{.State.FinishedAt}}\\n"
-                    "Path={{.Path}}\\nArgs={{json .Args}}\\nMounts={{json .Mounts}}\\n"
-                    "EnvCount={{len .Config.Env}}"
+                    "Name={{.Name}}\nImage={{.Config.Image}}\n"
+                    "Status={{.State.Status}}\nExitCode={{.State.ExitCode}}\n"
+                    "Error={{.State.Error}}\nRestartCount={{.RestartCount}}\n"
+                    "StartedAt={{.State.StartedAt}}\nFinishedAt={{.State.FinishedAt}}\n"
+                    "Mounts={{json .Mounts}}\nEnvCount={{len .Config.Env}}"
                 )
                 stats_format = (
-                    "table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}\\t{{.PIDs}}"
+                    "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}"
                 )
                 command = (
                     "set -eu; "
