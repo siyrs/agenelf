@@ -1,12 +1,8 @@
 """Registry-level execution contracts and policy enforcement.
 
-Risk answers *how dangerous an operation is*. ``execution_mode`` answers *where and
-how it is allowed to run*. Keeping these dimensions separate prevents local task
-state, deterministic runners and host-controlled sandboxes from being treated as
-one generic "change" operation.
-
-The registry calls this module before every model/API/CLI tool dispatch. Arguments
-are never written to the policy audit log.
+Risk answers how dangerous an operation is. ``execution_mode`` answers where and how
+it may run.  Every external side effect is classified before skill execution and tool
+arguments are never written to policy audit logs.
 """
 from __future__ import annotations
 
@@ -62,8 +58,6 @@ def _contract(
     return ToolExecutionContract(tool, capability, operation, risk, execution_mode)
 
 
-# Built-in contracts are deliberately explicit for every tool that writes state,
-# enters a runner, touches the controlled sandbox, or is permanently forbidden.
 _EXPLICIT: dict[str, ToolExecutionContract] = {
     # Server operations.
     "list_managed_servers": _contract("list_managed_servers", "server.operations", "catalog", "read", "pure"),
@@ -73,6 +67,7 @@ _EXPLICIT: dict[str, ToolExecutionContract] = {
     "update_apt_index": _contract("update_apt_index", "server.operations", "apt_update", "change", "queued_runner"),
     "install_docker": _contract("install_docker", "server.operations", "docker_install", "privileged", "queued_runner"),
     "deploy_compose_project": _contract("deploy_compose_project", "server.operations", "compose_deploy", "change", "queued_runner"),
+    "down_compose_project": _contract("down_compose_project", "server.operations", "compose_down", "change", "queued_runner"),
     # Structured remote Docker operations.
     "list_docker_runtime": _contract("list_docker_runtime", "docker.operations", "catalog", "read", "pure"),
     "get_docker_operation": _contract("get_docker_operation", "docker.operations", "get_result", "read", "pure"),
@@ -97,7 +92,7 @@ _EXPLICIT: dict[str, ToolExecutionContract] = {
     "workflow_update_step": _contract("workflow_update_step", "agent.workflow", "update_step", "change", "local_state"),
     "workflow_add_evidence": _contract("workflow_add_evidence", "agent.workflow", "add_evidence", "change", "local_state"),
     "workflow_next_action": _contract("workflow_next_action", "agent.workflow", "next_action", "read", "pure"),
-    # Restart-safe local continuation state.
+    # Restart-safe continuation.
     "checkpoint_task_continuation": _contract("checkpoint_task_continuation", "agent.task_continuation", "checkpoint", "change", "local_state"),
     "task_continuation_status": _contract("task_continuation_status", "agent.task_continuation", "status", "read", "pure"),
     "complete_task_continuation": _contract("complete_task_continuation", "agent.task_continuation", "complete", "change", "local_state"),
@@ -121,7 +116,7 @@ _EXPLICIT: dict[str, ToolExecutionContract] = {
     "optimize_apply": _contract("optimize_apply", "agent.self_optimization", "optimize_apply", "change", "local_state"),
     "optimize_rollback": _contract("optimize_rollback", "agent.self_optimization", "optimize_rollback", "change", "local_state"),
     "optimize_auto": _contract("optimize_auto", "agent.self_optimization", "optimize_auto", "change", "local_state"),
-    # Lightweight task board and compatibility notes.
+    # Lightweight task board.
     "task_list": _contract("task_list", "agent.task_board", "task_list", "read", "pure"),
     "task_create": _contract("task_create", "agent.task_board", "task_create", "change", "local_state"),
     "task_advance": _contract("task_advance", "agent.task_board", "task_advance", "change", "local_state"),
@@ -131,10 +126,9 @@ _EXPLICIT: dict[str, ToolExecutionContract] = {
     "create_todo": _contract("create_todo", "task_handler", "create_todo", "change", "local_state"),
     "save_note": _contract("save_note", "task_handler", "save_note", "change", "local_state"),
     "read_note": _contract("read_note", "task_handler", "read_note", "read", "pure"),
-    # Safe scratch writer; arbitrary Python remains forbidden.
+    # Scratch and skill forge.
     "write_code_file": _contract("write_code_file", "code.scratch", "write_code_file", "change", "local_state"),
     "run_python": _contract("run_python", "code.scratch", "run_python", "forbidden", "forbidden"),
-    # Experimental skill forge is host-only even when environment gates are enabled.
     "forge_skill": _contract("forge_skill", "agent.skill_forge", "forge_skill", "change", "host_controlled"),
     "list_forged_skills": _contract("list_forged_skills", "agent.skill_forge", "list_forged_skills", "read", "pure"),
     "remove_forged_skill": _contract("remove_forged_skill", "agent.skill_forge", "remove_forged_skill", "change", "host_controlled"),
@@ -150,13 +144,6 @@ _LEGACY_PURE_TOOLS = {"ask_llm", "growth_pulse", "summarize"}
 
 
 def resolve_contract(tool_name: str, args: dict[str, Any], module: Any) -> ToolExecutionContract | None:
-    """Resolve a deterministic contract for one tool call.
-
-    Dynamic tools are resolved from validated enum-like arguments. Unknown tools on
-    capabilities that explicitly declare only read operations may inherit ``pure``;
-    unknown legacy tools do not inherit trust.
-    """
-
     tool_name = str(tool_name or "").strip()
     data = args if isinstance(args, dict) else {}
 
@@ -168,15 +155,31 @@ def resolve_contract(tool_name: str, args: dict[str, Any], module: Any) -> ToolE
             return _contract(tool_name, "server.operations", "service_restart", "change", "queued_runner")
         if not action:
             return ToolExecutionContract(
-                tool_name, "server.operations", "dynamic:action", "read",
-                "queued_runner", source="dynamic-placeholder"
+                tool_name,
+                "server.operations",
+                "dynamic:action",
+                "read",
+                "queued_runner",
+                source="dynamic-placeholder",
             )
         return None
 
     if tool_name == "pursue_improvement_intention":
         if bool(data.get("apply_changes", False)):
-            return _contract(tool_name, "agent.self_development", "pursue_intention", "change", "controlled_sandbox")
-        return _contract(tool_name, "agent.self_development", "pursue_intention", "change", "local_state")
+            return _contract(
+                tool_name,
+                "agent.self_development",
+                "pursue_intention",
+                "change",
+                "controlled_sandbox",
+            )
+        return _contract(
+            tool_name,
+            "agent.self_development",
+            "pursue_intention",
+            "change",
+            "local_state",
+        )
 
     explicit = _EXPLICIT.get(tool_name)
     if explicit is not None:
@@ -184,38 +187,84 @@ def resolve_contract(tool_name: str, args: dict[str, Any], module: Any) -> ToolE
 
     raw = getattr(module, "CAPABILITY_META", None)
     if isinstance(raw, dict):
-        capability = str(raw.get("id") or getattr(module, "SKILL_META", {}).get("name") or "").strip()
+        capability = str(
+            raw.get("id") or getattr(module, "SKILL_META", {}).get("name") or ""
+        ).strip()
         operations = raw.get("operations", [])
         declared = [item for item in operations if isinstance(item, dict)] if isinstance(operations, list) else []
         for item in declared:
-            if str(item.get("name", "")).strip() == tool_name:
-                risk = str(item.get("risk", "read")).strip().lower()
+            if str(item.get("name", "")).strip() != tool_name:
+                continue
+            risk = str(item.get("risk", "read")).strip().lower()
+            mode = str(item.get("execution_mode", "")).strip()
+            if mode not in VALID_EXECUTION_MODES:
                 mode = "pure" if risk == "read" else "local_state" if risk == "change" else "queued_runner"
                 if risk == "forbidden":
                     mode = "forbidden"
-                return ToolExecutionContract(tool_name, capability, tool_name, risk, mode, source="exact-operation")
-        if declared and all(str(item.get("risk", "read")).strip().lower() == "read" for item in declared):
-            return ToolExecutionContract(tool_name, capability, tool_name, "read", "pure", source="read-only-capability")
+            return ToolExecutionContract(
+                tool_name,
+                capability,
+                tool_name,
+                risk,
+                mode,
+                source="exact-operation",
+            )
+        if declared and all(
+            str(item.get("risk", "read")).strip().lower() == "read" for item in declared
+        ):
+            return ToolExecutionContract(
+                tool_name,
+                capability,
+                tool_name,
+                "read",
+                "pure",
+                source="read-only-capability",
+            )
 
     if tool_name in _LEGACY_PURE_TOOLS:
         skill_meta = getattr(module, "SKILL_META", {})
         capability = str(skill_meta.get("name") or module.__name__).strip()
-        return ToolExecutionContract(tool_name, capability, tool_name, "read", "pure", source="legacy-pure-allowlist")
+        return ToolExecutionContract(
+            tool_name,
+            capability,
+            tool_name,
+            "read",
+            "pure",
+            source="legacy-pure-allowlist",
+        )
     return None
 
 
-def evaluate_contract(policy_engine: Any | None, contract: ToolExecutionContract | None, subject: str) -> dict[str, Any]:
+def evaluate_contract(
+    policy_engine: Any | None,
+    contract: ToolExecutionContract | None,
+    subject: str,
+) -> dict[str, Any]:
     subject = str(subject or "agent").strip()
     if contract is None:
         if policy_engine is None:
-            return {"allowed": True, "reason": "测试/兼容运行时未绑定 PolicyEngine", "policy_version": "unbound"}
-        return {"allowed": False, "reason": "工具缺少 execution contract，默认拒绝", "policy_version": getattr(policy_engine, "policy_version", "unknown")}
-
+            return {
+                "allowed": True,
+                "reason": "测试/兼容运行时未绑定 PolicyEngine",
+                "policy_version": "unbound",
+            }
+        return {
+            "allowed": False,
+            "reason": "工具缺少 execution contract，默认拒绝",
+            "policy_version": getattr(policy_engine, "policy_version", "unknown"),
+        }
     if contract.execution_mode == "forbidden" or contract.risk == "forbidden":
-        return {"allowed": False, "reason": "execution_mode=forbidden，任何渠道都不可执行", "policy_version": getattr(policy_engine, "policy_version", "unknown")}
-
+        return {
+            "allowed": False,
+            "reason": "execution_mode=forbidden，任何渠道都不可执行",
+            "policy_version": getattr(policy_engine, "policy_version", "unknown"),
+        }
     if policy_engine is None:
-        return {"allowed": True, "reason": "测试/兼容运行时未绑定 PolicyEngine", "policy_version": "unbound"}
+        return {
+            "allowed": True,
+            "reason": "测试/兼容运行时未绑定 PolicyEngine",
+            "policy_version": "unbound",
+        }
 
     decision = policy_engine.evaluate_declared(
         contract.capability,
@@ -223,8 +272,10 @@ def evaluate_contract(policy_engine: Any | None, contract: ToolExecutionContract
         contract.risk,
         subject=subject,
     )
-    result = dict(decision) if isinstance(decision, dict) else {"allowed": False, "reason": "策略引擎返回异常"}
-
+    result = dict(decision) if isinstance(decision, dict) else {
+        "allowed": False,
+        "reason": "策略引擎返回异常",
+    }
     if contract.execution_mode == "pure" and contract.risk != "read":
         result.update(allowed=False, reason="pure 模式只能声明 read 风险")
     elif contract.execution_mode == "local_state":
@@ -243,7 +294,6 @@ def evaluate_contract(policy_engine: Any | None, contract: ToolExecutionContract
             result.update(allowed=False, reason="host_controlled 工具只允许宿主机或显式 CLI 操作")
     elif contract.execution_mode == "queued_runner" and result.get("allowed"):
         result["reason"] = str(result.get("reason", "")) + "；实际副作用必须由指纹绑定的确定性 Runner 执行"
-
     result.setdefault("policy_version", getattr(policy_engine, "policy_version", "unknown"))
     return result
 
@@ -254,8 +304,6 @@ def audit_dispatch(
     subject: str,
     decision: dict[str, Any],
 ) -> None:
-    """Append a parameter-free JSON audit record. Failures never break dispatch."""
-
     configured = os.environ.get("AGENELF_ROOT", "").strip()
     root = Path(configured).resolve() if configured else Path(__file__).resolve().parents[2]
     path = root / "logs" / "policy-dispatch.jsonl"
