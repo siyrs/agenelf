@@ -257,5 +257,6 @@ acceptance_gates:
   - authorized_upgrade_runner_isolated
   - no_secret_exposure
   - exact_authorization_binding_verified
+  - trusted_evidence_archived
   - backup_and_rollback_evidence_archived
   - documentation_updated
