@@ -71,8 +71,13 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: app/requirements.txt
-      - name: Install minimal runtime dependency
-        run: python -m pip install pyyaml
+      - name: Install Windows CLI dependencies
+        run: python -m pip install pyyaml rich prompt-toolkit
+      - name: Verify slash command palette and Tab completion
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = (Resolve-Path app).Path
+          python -m unittest discover -s app/tests -p test_interactive_prompt.py -v
       - name: Create a request with a deliberately stale app-fork
         shell: pwsh
         run: |
@@ -86,13 +91,13 @@ jobs:
           sys.path.insert(0, str(Path("app").resolve()))
           from core import operations
           request = operations.submit_operation(
-              "server.operations",
-              "apt_update",
-              "windows-ci",
-              {},
-              "change",
-              "Windows approval smoke test",
-              root=Path(".").resolve(),
+            "server.operations",
+            "apt_update",
+            "windows-ci",
+            {},
+            "change",
+            "Windows approval smoke test",
+            root=Path(".").resolve(),
           )
           Path("windows-request-id.txt").write_text(request["id"], encoding="utf-8")
           '@ | Set-Content -Path create-windows-request.py -Encoding UTF8
