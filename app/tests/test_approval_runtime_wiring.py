@@ -61,12 +61,15 @@ class ApprovalRuntimeWiringTest(unittest.TestCase):
         )
         self.assertIn("approval-key", compose["volumes"])
 
-    def test_windows_and_shell_wrappers_use_same_python_implementation(self):
+    def test_windows_and_shell_wrappers_prefer_same_python_implementation(self):
         powershell = (ROOT / "scripts/approve.ps1").read_text(encoding="utf-8")
         shell = (ROOT / "scripts/approve.sh").read_text(encoding="utf-8")
         self.assertIn("approve.py", powershell)
         self.assertIn("approve.py", shell)
-        self.assertNotIn("auth-decisions", shell)
+        # Normal repository execution delegates before entering the deliberately
+        # retained standalone fallback used by old copied-script installations.
+        self.assertLess(shell.index("approve.py"), shell.index("DECISIONS_DIR"))
+        self.assertIn('if [[ -f "${SCRIPT_DIR}/approve.py" ]]', shell)
 
     def test_approval_key_init_is_persistent(self):
         script = ROOT / "scripts/init_approval_key.py"
