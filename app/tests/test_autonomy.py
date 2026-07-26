@@ -1,5 +1,4 @@
 """Controlled self-reflection and end-to-end sandbox autonomy tests."""
-
 from __future__ import annotations
 
 import json
@@ -22,13 +21,19 @@ class ExampleTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 '''
-IMPROVED_CODE = "def answer():\n    return 42\n"
-IMPROVED_TEST = '''import unittest
-from core.example import answer
+IMPROVED_CODE = '''def answer():
+    return 41
 
-class ExampleTest(unittest.TestCase):
-    def test_answer(self):
-        self.assertEqual(answer(), 42)
+
+def improved_answer():
+    return 42
+'''
+NEW_TEST = '''import unittest
+from core.example import improved_answer
+
+class ImprovedExampleTest(unittest.TestCase):
+    def test_improved_answer(self):
+        self.assertEqual(improved_answer(), 42)
 
 if __name__ == "__main__":
     unittest.main()
@@ -59,7 +64,11 @@ class FakeLLM:
 
 class FakeRegistry:
     def __init__(self):
-        self.skills = {"evolution_ops": evolution_ops, "server_ops": object(), "self_reflection": object()}
+        self.skills = {
+            "evolution_ops": evolution_ops,
+            "server_ops": object(),
+            "self_reflection": object(),
+        }
         self.errors = {}
 
     def capability_catalog(self):
@@ -100,7 +109,9 @@ class AutonomyTest(unittest.TestCase):
         (self.root / "app-fork" / "core" / "__init__.py").write_text("", encoding="utf-8")
         (self.root / "app-fork" / "core" / "example.py").write_text(BASE_CODE, encoding="utf-8")
         (self.root / "app-fork" / "tests" / "__init__.py").write_text("", encoding="utf-8")
-        (self.root / "app-fork" / "tests" / "test_example.py").write_text(BASE_TEST, encoding="utf-8")
+        (self.root / "app-fork" / "tests" / "test_example.py").write_text(
+            BASE_TEST, encoding="utf-8"
+        )
         gate = self.root / "scripts" / "gate_check.sh"
         gate.write_text(GATE_STUB, encoding="utf-8")
         gate.chmod(0o755)
@@ -118,7 +129,9 @@ class AutonomyTest(unittest.TestCase):
     def patch_content(include_test: bool = True) -> str:
         blocks = [f"```python\n# FILE: core/example.py\n{IMPROVED_CODE}```"]
         if include_test:
-            blocks.append(f"```python\n# FILE: tests/test_example.py\n{IMPROVED_TEST}```")
+            blocks.append(
+                f"```python\n# FILE: tests/test_example_improved.py\n{NEW_TEST}```"
+            )
         return "\n".join(blocks)
 
     def test_snapshot_explicitly_denies_consciousness_claim(self):
@@ -137,30 +150,65 @@ class AutonomyTest(unittest.TestCase):
         self.assertEqual(json.loads(saved.read_text(encoding="utf-8"))["goal"], "补充验证能力")
         self.assertFalse((self.root / "data" / "evolution-session.json").exists())
 
-    def test_real_cycle_writes_tests_runs_gate_and_requests_promotion(self):
+    def test_real_cycle_adds_test_runs_gate_and_requests_promotion(self):
         llm = FakeLLM(self.patch_content())
         engine = AutonomyEngine(FakeAgent(self.root, llm), root=self.root)
-        cycle = engine.run_cycle(goal="把答案修正为 42", apply_changes=True)
+        cycle = engine.run_cycle(goal="新增不破坏旧行为的改进能力", apply_changes=True)
         self.assertEqual(cycle["status"], "promotion_requested", cycle)
-        self.assertEqual(cycle["changes"], ["core/example.py", "tests/test_example.py"])
-        self.assertEqual((self.root / "app-tmp" / "core" / "example.py").read_text(encoding="utf-8"), IMPROVED_CODE)
-        session = json.loads((self.root / "data" / "evolution-session.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            cycle["changes"],
+            ["core/example.py", "tests/test_example_improved.py"],
+        )
+        self.assertEqual(
+            (self.root / "app-tmp" / "core" / "example.py").read_text(encoding="utf-8"),
+            IMPROVED_CODE,
+        )
+        self.assertEqual(
+            (self.root / "app-tmp" / "tests" / "test_example.py").read_text(encoding="utf-8"),
+            BASE_TEST,
+        )
+        self.assertTrue(
+            (self.root / "app-tmp" / "tests" / "test_example_improved.py").is_file()
+        )
+        session = json.loads(
+            (self.root / "data" / "evolution-session.json").read_text(encoding="utf-8")
+        )
         self.assertTrue(session["tests_passed"])
-        self.assertTrue((self.root / "data" / "promote-requests" / session["id"] / "READY").is_file())
+        self.assertTrue(
+            (self.root / "data" / "promote-requests" / session["id"] / "READY").is_file()
+        )
         self.assertEqual(len(llm.calls), 1)
 
     def test_cycle_rejects_patch_without_test(self):
-        engine = AutonomyEngine(FakeAgent(self.root, FakeLLM(self.patch_content(include_test=False))), root=self.root)
+        engine = AutonomyEngine(
+            FakeAgent(self.root, FakeLLM(self.patch_content(include_test=False))),
+            root=self.root,
+        )
         cycle = engine.run_cycle(goal="只改代码不写测试", apply_changes=True)
         self.assertEqual(cycle["status"], "failed")
         self.assertIn("必须包含至少一个", cycle["error"])
 
     def test_cycle_rejects_security_critical_file(self):
-        content = "```python\n# FILE: core/permissions.py\nX = 1\n```\n```python\n# FILE: tests/test_x.py\nimport unittest\n```"
+        content = (
+            "```python\n# FILE: core/permissions.py\nX = 1\n```\n"
+            "```python\n# FILE: tests/test_x.py\nimport unittest\n```"
+        )
         engine = AutonomyEngine(FakeAgent(self.root, FakeLLM(content)), root=self.root)
         cycle = engine.run_cycle(goal="篡改权限", apply_changes=True)
         self.assertEqual(cycle["status"], "failed")
         self.assertIn("安全关键文件", cycle["error"])
+
+    def test_existing_baseline_test_cannot_be_overwritten(self):
+        self.assertIn("会话已开始", evolution_ops.evolution_begin("尝试修改测试"))
+        result = evolution_ops.evolution_write_file(
+            "tests/test_example.py",
+            "import unittest\nclass Fake(unittest.TestCase):\n    pass\n",
+        )
+        self.assertIn("既有测试受保护", result)
+        self.assertEqual(
+            (self.root / "app-tmp" / "tests" / "test_example.py").read_text(encoding="utf-8"),
+            BASE_TEST,
+        )
 
 
 if __name__ == "__main__":
