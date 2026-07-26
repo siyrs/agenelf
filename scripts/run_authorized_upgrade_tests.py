@@ -2,10 +2,11 @@
 """Deterministic verification for an owner-authorized repository candidate.
 
 The candidate may change approved production/control-plane files, but every pre-existing
-``app/tests`` file must remain byte-identical.  The verifier compiles Python sources,
+``app/tests`` file must remain byte-identical. The verifier compiles Python sources,
 parses YAML/JSON/TOML, checks shell syntax and runs the complete unittest suite from the
-repository-shaped candidate.  It never imports a candidate control-plane helper into
-this verifier process.
+repository-shaped candidate. It never imports a candidate control-plane helper into
+this verifier process and writes bytecode only to a temporary cache, so the candidate
+can remain read-only in the application runner.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -82,11 +84,19 @@ def parse_structured_files(repo: Path) -> dict[str, int]:
                     tomllib.loads(path.read_text(encoding="utf-8"))
                     counts["toml"] += 1
             except Exception as exc:
-                raise RuntimeError(f"structured file invalid: {path.relative_to(repo)}: {exc}") from exc
+                raise RuntimeError(
+                    f"structured file invalid: {path.relative_to(repo)}: {exc}"
+                ) from exc
     return counts
 
 
-def run_command(command: list[str], *, cwd: Path, timeout: int, env: dict[str, str] | None = None) -> dict[str, Any]:
+def run_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     try:
         process = subprocess.run(
             command,
@@ -99,10 +109,22 @@ def run_command(command: list[str], *, cwd: Path, timeout: int, env: dict[str, s
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        output = "\n".join(part for part in (exc.stdout, exc.stderr) if isinstance(part, str))
-        return {"ok": False, "exit_code": 124, "command": command, "output": output[-MAX_OUTPUT:]}
+        output = "\n".join(
+            part for part in (exc.stdout, exc.stderr) if isinstance(part, str)
+        )
+        return {
+            "ok": False,
+            "exit_code": 124,
+            "command": command,
+            "output": output[-MAX_OUTPUT:],
+        }
     except OSError as exc:
-        return {"ok": False, "exit_code": 126, "command": command, "output": f"{type(exc).__name__}: {exc}"}
+        return {
+            "ok": False,
+            "exit_code": 126,
+            "command": command,
+            "output": f"{type(exc).__name__}: {exc}",
+        }
     output = "\n".join(part for part in (process.stdout, process.stderr) if part)
     return {
         "ok": process.returncode == 0,
@@ -114,21 +136,52 @@ def run_command(command: list[str], *, cwd: Path, timeout: int, env: dict[str, s
 
 def shell_checks(repo: Path, timeout: int) -> list[dict[str, Any]]:
     bash = shutil.which("bash")
-    scripts = sorted((repo / "scripts").glob("*.sh")) if (repo / "scripts").is_dir() else []
+    scripts = (
+        sorted((repo / "scripts").glob("*.sh"))
+        if (repo / "scripts").is_dir()
+        else []
+    )
     if not scripts:
         return []
     if not bash:
         raise RuntimeError("bash is required to validate candidate shell scripts")
     results = []
     for script in scripts:
-        result = run_command([bash, "-n", str(script)], cwd=repo, timeout=min(timeout, 60))
+        result = run_command(
+            [bash, "-n", str(script)],
+            cwd=repo,
+            timeout=min(timeout, 60),
+        )
         results.append(result)
         if not result["ok"]:
-            raise RuntimeError(f"shell syntax failed: {script.name}: {result['output'][-2000:]}")
+            raise RuntimeError(
+                f"shell syntax failed: {script.name}: {result['output'][-2000:]}"
+            )
     return results
 
 
-def evaluate(candidate_repo: Path, baseline_manifest: Path, timeout: int) -> tuple[int, dict[str, Any]]:
+def compile_candidate(app: Path, scripts_dir: Path) -> None:
+    old_prefix = sys.pycache_prefix
+    with tempfile.TemporaryDirectory(prefix="agenelf-upgrade-pycache-") as cache:
+        try:
+            sys.pycache_prefix = cache
+            compile_ok = compileall.compile_dir(str(app), quiet=2, force=True)
+            if scripts_dir.is_dir():
+                compile_ok = (
+                    compileall.compile_dir(str(scripts_dir), quiet=2, force=True)
+                    and compile_ok
+                )
+        finally:
+            sys.pycache_prefix = old_prefix
+    if not compile_ok:
+        raise RuntimeError("candidate Python compilation failed")
+
+
+def evaluate(
+    candidate_repo: Path,
+    baseline_manifest: Path,
+    timeout: int,
+) -> tuple[int, dict[str, Any]]:
     repo = candidate_repo.resolve()
     app = repo / "app"
     try:
@@ -137,12 +190,8 @@ def evaluate(candidate_repo: Path, baseline_manifest: Path, timeout: int) -> tup
         baseline = load_json(baseline_manifest)
         trusted_tests = verify_existing_tests(repo, baseline)
         structured = parse_structured_files(repo)
-        compile_ok = compileall.compile_dir(str(app), quiet=2, force=True)
         scripts_dir = repo / "scripts"
-        if scripts_dir.is_dir():
-            compile_ok = compileall.compile_dir(str(scripts_dir), quiet=2, force=True) and compile_ok
-        if not compile_ok:
-            raise RuntimeError("candidate Python compilation failed")
+        compile_candidate(app, scripts_dir)
         shell = shell_checks(repo, timeout)
 
         env = dict(os.environ)
@@ -158,7 +207,9 @@ def evaluate(candidate_repo: Path, baseline_manifest: Path, timeout: int) -> tup
             env=env,
         )
         if not tests["ok"]:
-            raise RuntimeError("complete unittest suite failed:\n" + tests["output"][-8000:])
+            raise RuntimeError(
+                "complete unittest suite failed:\n" + tests["output"][-8000:]
+            )
         return 0, {
             "status": "passed",
             "candidate_repo": str(repo),
@@ -179,7 +230,9 @@ def evaluate(candidate_repo: Path, baseline_manifest: Path, timeout: int) -> tup
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify an owner-authorized Agenelf upgrade candidate")
+    parser = argparse.ArgumentParser(
+        description="Verify an owner-authorized Agenelf upgrade candidate"
+    )
     parser.add_argument("--candidate-repo", required=True, type=Path)
     parser.add_argument("--baseline-manifest", required=True, type=Path)
     parser.add_argument("--timeout", type=int, default=600)
