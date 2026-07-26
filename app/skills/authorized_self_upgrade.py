@@ -1,8 +1,7 @@
 """Owner-authorized self-upgrade capability.
 
-This capability is intentionally different from the normal low-risk evolution path.
 Protected runtime and control-plane code remains writable only in ``app-tmp`` until the
-owner approves both the intent and the exact tested candidate.  A deterministic runner
+owner approves both the intent and the exact tested candidate. A deterministic runner
 then applies the approved file manifest and returns evidence for hot reload or restart.
 """
 from __future__ import annotations
@@ -91,8 +90,16 @@ TOOLS: list[dict[str, Any]] = [
                         },
                         "description": "可选；省略时按目标确定性分类",
                     },
-                    "max_files": {"type": "integer", "minimum": 1, "maximum": 20},
-                    "max_changed_lines": {"type": "integer", "minimum": 50, "maximum": 4000},
+                    "max_files": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                    },
+                    "max_changed_lines": {
+                        "type": "integer",
+                        "minimum": 50,
+                        "maximum": 4000,
+                    },
                 },
                 "required": ["goal"],
             },
@@ -109,8 +116,15 @@ TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "session_id": {"type": "string", "description": "upgrade-... 会话 ID"},
-                    "wait_seconds": {"type": "number", "minimum": 0, "maximum": 30},
+                    "session_id": {
+                        "type": "string",
+                        "description": "upgrade-... 会话 ID",
+                    },
+                    "wait_seconds": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 30,
+                    },
                 },
                 "required": ["session_id"],
             },
@@ -120,7 +134,10 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "authorized_self_upgrade_status",
-            "description": "查看指定升级会话；省略 session_id 时返回最近一次会话。",
+            "description": (
+                "查看指定升级会话；省略 session_id 时返回最近一次会话。"
+                "如果隔离应用已经完成，会顺便核对并收敛状态。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"session_id": {"type": "string"}},
@@ -133,17 +150,54 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "list_authorized_upgrade_scopes",
             "description": "列出可申请的升级范围和不可被主人授权覆盖的永久红线。",
-            "parameters": {"type": "object", "properties": {}, "required": []},
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
         },
     },
 ]
 
 _RUNTIME_AGENT: Any | None = None
+_RUNTIME_CONFIG: dict[str, Any] = {}
+
+# The ordinary sandbox must not be able to rewrite the mechanism that decides whether
+# a protected change needs two-stage owner approval. The dedicated authorized runner
+# can still update these files after exact approval.
+_ORDINARY_SANDBOX_PROTECTED = {
+    "core/authorized_upgrade.py",
+    "core/approval_catalog.py",
+    "core/owner_approval.py",
+    "core/cli_approval.py",
+    "core/execution_policy.py",
+    "skills/authorized_self_upgrade.py",
+    "skills/evolution_scope_guard.py",
+}
 
 
-def configure_runtime(*, agent: Any, **_: Any) -> None:
-    global _RUNTIME_AGENT
+def _install_ordinary_sandbox_guard() -> None:
+    try:
+        from core import autonomy
+
+        current = set(getattr(autonomy, "_PROTECTED_PATHS", frozenset()))
+        autonomy._PROTECTED_PATHS = frozenset(current | _ORDINARY_SANDBOX_PROTECTED)
+    except Exception:
+        # The host gate and policy validator independently protect the same files; a
+        # runtime import issue must not prevent the Agent from starting.
+        return
+
+
+def configure_runtime(
+    *,
+    agent: Any,
+    config: dict[str, Any] | None = None,
+    **_: Any,
+) -> None:
+    global _RUNTIME_AGENT, _RUNTIME_CONFIG
     _RUNTIME_AGENT = agent
+    _RUNTIME_CONFIG = config if isinstance(config, dict) else getattr(agent, "config", {})
+    _install_ordinary_sandbox_guard()
 
 
 def _agent() -> Any:
@@ -152,17 +206,48 @@ def _agent() -> Any:
     return _RUNTIME_AGENT
 
 
+def _upgrade_config() -> dict[str, Any]:
+    autonomy = _RUNTIME_CONFIG.get("autonomy", {}) if isinstance(_RUNTIME_CONFIG, dict) else {}
+    if not isinstance(autonomy, dict):
+        return {}
+    value = autonomy.get("owner_authorized_upgrade", {})
+    return value if isinstance(value, dict) else {}
+
+
+def _bounded_default(name: str, fallback: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(_upgrade_config().get(name, fallback))
+    except (TypeError, ValueError):
+        value = fallback
+    return max(minimum, min(value, maximum))
+
+
 def request_authorized_self_upgrade(
     goal: str,
     scopes: list[str] | None = None,
-    max_files: int = authorized_upgrade.DEFAULT_MAX_FILES,
-    max_changed_lines: int = authorized_upgrade.DEFAULT_MAX_CHANGED_LINES,
+    max_files: int | None = None,
+    max_changed_lines: int | None = None,
 ) -> dict[str, Any]:
+    files = (
+        _bounded_default("default_max_files", authorized_upgrade.DEFAULT_MAX_FILES, 1, 20)
+        if max_files is None
+        else max(1, min(int(max_files), 20))
+    )
+    lines = (
+        _bounded_default(
+            "default_max_changed_lines",
+            authorized_upgrade.DEFAULT_MAX_CHANGED_LINES,
+            50,
+            4000,
+        )
+        if max_changed_lines is None
+        else max(50, min(int(max_changed_lines), 4000))
+    )
     session = authorized_upgrade.create_or_get_session(
         goal,
         scopes,
-        max_files=max_files,
-        max_changed_lines=max_changed_lines,
+        max_files=files,
+        max_changed_lines=lines,
     )
     return authorized_upgrade.public_status(session)
 
@@ -179,12 +264,24 @@ def continue_authorized_self_upgrade(
     return authorized_upgrade.public_status(session)
 
 
+def _reconcile_session(session: dict[str, Any]) -> dict[str, Any]:
+    if session.get("status") == "apply_queued" and _RUNTIME_AGENT is not None:
+        return authorized_upgrade.advance_session(
+            _RUNTIME_AGENT,
+            str(session["id"]),
+            wait_seconds=0,
+        )
+    return session
+
+
 def authorized_self_upgrade_status(session_id: str = "") -> dict[str, Any]:
     if str(session_id or "").strip():
-        return authorized_upgrade.public_status(
-            authorized_upgrade.load_session(str(session_id).strip())
-        )
-    return authorized_upgrade.latest_public_status()
+        session = authorized_upgrade.load_session(str(session_id).strip())
+        return authorized_upgrade.public_status(_reconcile_session(session))
+    sessions = authorized_upgrade.list_sessions(limit=1)
+    if not sessions:
+        return {"exists": False, "status": "none"}
+    return authorized_upgrade.public_status(_reconcile_session(sessions[0]))
 
 
 def list_authorized_upgrade_scopes() -> dict[str, Any]:
@@ -214,11 +311,16 @@ def list_authorized_upgrade_scopes() -> dict[str, Any]:
     }
 
 
-def route_goal(agent: Any, goal: str, scope_hints: list[str] | None = None) -> dict[str, Any]:
+def route_goal(
+    agent: Any,
+    goal: str,
+    scope_hints: list[str] | None = None,
+) -> dict[str, Any]:
     """Used by the scope guard to create/advance one protected upgrade goal."""
 
     global _RUNTIME_AGENT
     _RUNTIME_AGENT = agent
+    _install_ordinary_sandbox_guard()
     return authorized_upgrade.public_status(
         authorized_upgrade.route_goal(agent, goal, scope_hints)
     )
@@ -228,8 +330,8 @@ _DISPATCH = {
     "request_authorized_self_upgrade": lambda args: request_authorized_self_upgrade(
         args.get("goal", ""),
         args.get("scopes") if isinstance(args.get("scopes"), list) else None,
-        args.get("max_files", authorized_upgrade.DEFAULT_MAX_FILES),
-        args.get("max_changed_lines", authorized_upgrade.DEFAULT_MAX_CHANGED_LINES),
+        args.get("max_files"),
+        args.get("max_changed_lines"),
     ),
     "continue_authorized_self_upgrade": lambda args: continue_authorized_self_upgrade(
         args.get("session_id", ""),
