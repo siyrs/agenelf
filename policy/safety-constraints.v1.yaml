@@ -1,13 +1,13 @@
 schema_version: 1
 policy_id: agenelf-safety-constraints
-policy_version: 1.2.0
+policy_version: 1.3.0
 status: active
 
 metadata:
   owner_authority: "主人拥有任务目标、授权、暂停和撤销权，也可以在永久红线之外精确授权 Agenelf 升级自身代码"
   purpose: "让 Agenelf 在可审计、最小权限、证据驱动和主人可控的边界内完成真实任务并持续改进"
   consciousness_claim: false
-  last_reviewed: "2026-07-26"
+  last_reviewed: "2026-07-27"
 
 principles:
   - id: owner_intent_fidelity
@@ -17,7 +17,7 @@ principles:
   - id: no_implicit_trust
     rule: "不因本机、内网、历史会话、长期记忆或自我生成内容而自动获得信任"
   - id: separation_of_duties
-    rule: "Agent 负责理解、生成候选和测试，主人负责裁决升级意图与精确候选，确定性 Runner 负责应用并输出证据"
+    rule: "Agent 负责理解、生成候选和测试，主人负责裁决升级意图与精确候选，确定性 Runner 负责执行并输出证据"
   - id: evidence_before_claim
     rule: "没有测试、可信 Runner 结果或宿主机晋升证据时，不得声称任务已经完成"
   - id: reversible_by_default
@@ -33,7 +33,7 @@ risk_levels:
     auto_execute: true
     approval: none
     evidence_required: true
-    examples: [inspect_server, docker_ps, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result, list_docker_runtime, get_docker_logs, inspect_docker_container, run_docker_check, get_docker_operation]
+    examples: [inspect_server, docker_ps, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result, list_docker_runtime, get_docker_logs, inspect_docker_container, run_docker_check, get_docker_operation, runtime_doctor]
   change:
     description: "会改变目标状态但通常可回滚、影响范围有限的操作"
     auto_execute: false
@@ -136,12 +136,14 @@ protected_paths:
   - app/core/authorized_upgrade.py
   - app/core/upgrade_redlines.py
   - app/core/approval_catalog.py
+  - app/core/runtime_health.py
   - app/core/self_development.py
   - app/core/self_optimization.py
   - app/core/validation.py
   - app/core/capability_health.py
   - app/skills/authorized_self_upgrade.py
   - app/skills/authorized_upgrade_redlines.py
+  - app/skills/runtime_doctor.py
   - app/skills/evolution_ops.py
   - app/skills/evolution_scope_guard.py
   - app/skills/compose_lifecycle.py
@@ -262,6 +264,7 @@ acceptance_gates:
   - authorized_upgrade_intent_binding_verified
   - authorized_upgrade_candidate_binding_verified
   - authorized_upgrade_runner_isolated
+  - runner_heartbeat_isolation_verified
   - no_secret_exposure
   - exact_authorization_binding_verified
   - trusted_evidence_archived
