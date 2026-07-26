@@ -1,6 +1,6 @@
 """Deterministic raw-terminal approval handling for the interactive CLI.
 
-Only text read directly from ``Console.input`` is parsed.  Operation requests and
+Only text read directly from ``Console.input`` is parsed. Operation requests and
 owner-authorized self-upgrade requests share this control plane, while model output and
 tool calls can never become an owner decision.
 """
@@ -43,7 +43,9 @@ def _pending_table(rows: list[dict[str, Any]]) -> Table:
 def show_pending(console: Console, *, root: str | None = None) -> None:
     rows = approval_catalog.list_pending_requests(root)
     if not rows:
-        console.print(Panel("当前没有等待主人审批的请求。", title="审批", border_style="cyan"))
+        console.print(
+            Panel("当前没有等待主人审批的请求。", title="审批", border_style="cyan")
+        )
         return
     console.print(_pending_table(rows[:20]))
     console.print(
@@ -53,7 +55,11 @@ def show_pending(console: Console, *, root: str | None = None) -> None:
 
 def _fallback_text(request_id: str, action: str, kind: str) -> str:
     ps_action = "approve" if action == "approve" else "deny"
-    services = "approval-runner ops-runner" if kind == "operation" else "approval-runner self-upgrade-runner"
+    services = (
+        "approval-runner ops-runner"
+        if kind == "operation"
+        else "approval-runner self-upgrade-runner"
+    )
     return (
         "审批代理没有在限定时间内响应。可在 Windows PowerShell 中执行：\n\n"
         f"  .\\scripts\\approve.ps1 {request_id} {ps_action}\n\n"
@@ -75,9 +81,69 @@ def _decision_panel(result: dict[str, Any], request: dict[str, Any]) -> Panel:
         f"裁决：{decision.get('decision', result.get('status'))}",
     ]
     if superseded:
-        lines.append("已自动拒绝同载荷重复请求：" + ", ".join(str(item) for item in superseded))
+        lines.append(
+            "已自动拒绝同载荷重复请求："
+            + ", ".join(str(item) for item in superseded)
+        )
     lines.append("批准绑定当前请求指纹；参数、范围或候选摘要变化后必须重新申请。")
     return Panel("\n".join(lines), title="主人审批已记录", border_style="green")
+
+
+def _find_upgrade_session(request_id: str) -> dict[str, Any] | None:
+    try:
+        from core import authorized_upgrade
+
+        for session in authorized_upgrade.list_sessions(limit=100):
+            if request_id in {
+                str(session.get("intent_auth_id", "")),
+                str(session.get("candidate_auth_id", "")),
+            }:
+                return session
+    except Exception:
+        return None
+    return None
+
+
+def _advance_upgrade_after_approval(
+    *,
+    agent: Any,
+    request_id: str,
+    console: Console,
+    wait_seconds: float,
+) -> dict[str, Any] | None:
+    """Advance the exact upgrade session without asking the model to rediscover it."""
+
+    session = _find_upgrade_session(request_id)
+    if session is None:
+        return None
+    try:
+        from core import authorized_upgrade
+
+        with console.status("Agenelf 正在按已批准的精确升级会话继续..."):
+            updated = authorized_upgrade.advance_session(
+                agent,
+                str(session["id"]),
+                wait_seconds=max(2.0, min(float(wait_seconds), 30.0)),
+            )
+        public = authorized_upgrade.public_status(updated)
+    except Exception as exc:
+        public = {
+            "id": session.get("id"),
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    console.print(
+        Panel(
+            json.dumps(public, ensure_ascii=False, indent=2),
+            title="主人授权升级进度",
+            border_style=(
+                "green"
+                if public.get("status") in {"succeeded", "restart_required"}
+                else "cyan"
+            ),
+        )
+    )
+    return public
 
 
 def handle_owner_decision(
@@ -98,7 +164,9 @@ def handle_owner_decision(
             parsed.get("request_id") or None
         )
     except owner_approval.AmbiguousApprovalError as exc:
-        console.print(Panel(str(exc), title="需要明确请求 ID", border_style="yellow"))
+        console.print(
+            Panel(str(exc), title="需要明确请求 ID", border_style="yellow")
+        )
         if exc.pending:
             console.print(_pending_table(exc.pending))
         return True
@@ -107,7 +175,10 @@ def handle_owner_decision(
         return True
 
     request_id = str(selected["id"])
-    kind = str(selected.get("kind") or ("operation" if request_id.startswith("op-") else "authorization"))
+    kind = str(
+        selected.get("kind")
+        or ("operation" if request_id.startswith("op-") else "authorization")
+    )
     wait_seconds = float(
         os.environ.get(
             "AGENELF_APPROVAL_WAIT_SECONDS",
@@ -123,7 +194,8 @@ def handle_owner_decision(
             ttl_seconds=max(15, int(wait_seconds) + 30),
         )
         result = owner_approval.wait_for_command_result(
-            str(command["id"]), timeout_seconds=max(1.0, min(wait_seconds, 30.0))
+            str(command["id"]),
+            timeout_seconds=max(1.0, min(wait_seconds, 30.0)),
         )
     except (owner_approval.ApprovalError, OSError, ValueError) as exc:
         console.print(
@@ -174,12 +246,30 @@ def handle_owner_decision(
         return True
 
     if kind == "authorization":
-        continuation = (
-            f"主人已在交互终端通过确定性审批通道批准精确授权请求 {request_id}。"
-            "请读取当前授权升级/自我迭代会话，严格按该授权绑定的目标、范围和摘要继续；"
-            "不得扩大路径、绕过测试或重复创建相同授权。若这是候选批准，请提交隔离应用并验证结果。"
+        upgrade = _advance_upgrade_after_approval(
+            agent=agent,
+            request_id=request_id,
+            console=console,
+            wait_seconds=max(wait_seconds, 8.0),
         )
-        status_text = "Agenelf 正在继续已授权的升级任务..."
+        if upgrade is not None:
+            status = str(upgrade.get("status", ""))
+            # First approval normally ends at awaiting_candidate_approval. The second
+            # approval ends at apply_queued/succeeded/restart_required. None of these
+            # states should ask the model to recreate or rediscover the request.
+            if status not in {"succeeded"}:
+                return True
+            continuation = (
+                f"主人授权升级 {upgrade.get('id')} 已由确定性流程成功应用。"
+                "请使用最新技能和可信结果继续原始任务，不要重复创建升级或审批请求。"
+            )
+            status_text = "Agenelf 正在使用已升级能力继续原任务..."
+        else:
+            continuation = (
+                f"主人已在交互终端通过确定性审批通道批准精确授权请求 {request_id}。"
+                "请读取该授权绑定的任务状态并继续；不得扩大范围或重复创建相同授权。"
+            )
+            status_text = "Agenelf 正在继续已授权的任务..."
     else:
         continuation = (
             f"主人已在交互终端通过确定性审批通道批准运维请求 {request_id}。"
