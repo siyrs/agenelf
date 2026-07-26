@@ -3,10 +3,10 @@
 
 The candidate may change approved production/control-plane files, but every pre-existing
 ``app/tests`` file must remain byte-identical. The verifier compiles Python sources,
-parses YAML/JSON/TOML, checks shell syntax and runs the complete unittest suite from the
-repository-shaped candidate. It never imports a candidate control-plane helper into
-this verifier process and writes bytecode only to a temporary cache, so the candidate
-can remain read-only in the application runner.
+parses YAML/JSON/TOML, checks shell syntax, runs the current trusted governance
+validator against the candidate policy, and runs the complete unittest suite. It never
+imports a candidate control-plane helper into this verifier process and writes bytecode
+only to a temporary cache, so the candidate can remain read-only.
 """
 from __future__ import annotations
 
@@ -177,6 +177,38 @@ def compile_candidate(app: Path, scripts_dir: Path) -> None:
         raise RuntimeError("candidate Python compilation failed")
 
 
+def trusted_governance_check(
+    repo: Path,
+    baseline: dict[str, str],
+    timeout: int,
+) -> dict[str, Any] | None:
+    policy = repo / "policy" / "safety-constraints.v1.yaml"
+    policy_was_in_baseline = "policy/safety-constraints.v1.yaml" in baseline
+    if not policy_was_in_baseline and not policy.is_file():
+        # Lightweight isolated unit fixtures can omit repository governance files. Real
+        # staged Agenelf repositories always include them in the baseline manifest.
+        return None
+    if not policy.is_file():
+        raise RuntimeError("candidate removed policy/safety-constraints.v1.yaml")
+    validator = Path(__file__).resolve().with_name("validate_governance.py")
+    if not validator.is_file():
+        raise RuntimeError(f"trusted governance validator missing: {validator}")
+    result = run_command(
+        [sys.executable, str(validator), str(policy)],
+        cwd=repo,
+        timeout=min(timeout, 180),
+    )
+    if not result["ok"]:
+        raise RuntimeError(
+            "trusted governance validation failed:\n" + result["output"][-8000:]
+        )
+    return {
+        "exit_code": result["exit_code"],
+        "output_tail": result["output"][-4000:],
+        "validator": str(validator),
+    }
+
+
 def evaluate(
     candidate_repo: Path,
     baseline_manifest: Path,
@@ -193,6 +225,7 @@ def evaluate(
         scripts_dir = repo / "scripts"
         compile_candidate(app, scripts_dir)
         shell = shell_checks(repo, timeout)
+        governance = trusted_governance_check(repo, baseline, timeout)
 
         env = dict(os.environ)
         entries = [str(app), str(repo)]
@@ -216,6 +249,7 @@ def evaluate(
             "trusted_existing_tests": len(trusted_tests),
             "structured_files": structured,
             "shell_scripts": len(shell),
+            "trusted_governance": governance,
             "unittest": {
                 "exit_code": tests["exit_code"],
                 "output_tail": tests["output"][-10_000:],
