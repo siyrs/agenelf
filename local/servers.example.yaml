@@ -21,6 +21,19 @@ servers:
       - compose_deploy
       - service_restart
       - docker_install
+    allowed_docker_operations:
+      - get_docker_logs
+      - inspect_docker_container
+      - run_docker_check
+      - restart_docker_container
+    # Optional: omit allowed_containers to permit any syntactically valid name.
+    # allowed_containers:
+    #   - sing-box
+    # Optional: model selects only the alias; Runner owns the exact argv below.
+    # docker_checks:
+    #   sing-box-config:
+    #     container: sing-box
+    #     argv: [sing-box, check, -c, /etc/sing-box/config.json]
     allowed_services:
       - docker
       - nginx
