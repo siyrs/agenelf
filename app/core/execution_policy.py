@@ -73,6 +73,13 @@ _EXPLICIT: dict[str, ToolExecutionContract] = {
     "update_apt_index": _contract("update_apt_index", "server.operations", "apt_update", "change", "queued_runner"),
     "install_docker": _contract("install_docker", "server.operations", "docker_install", "privileged", "queued_runner"),
     "deploy_compose_project": _contract("deploy_compose_project", "server.operations", "compose_deploy", "change", "queued_runner"),
+    # Structured remote Docker operations.
+    "list_docker_runtime": _contract("list_docker_runtime", "docker.operations", "catalog", "read", "pure"),
+    "get_docker_operation": _contract("get_docker_operation", "docker.operations", "get_result", "read", "pure"),
+    "get_docker_logs": _contract("get_docker_logs", "docker.operations", "get_docker_logs", "read", "queued_runner"),
+    "inspect_docker_container": _contract("inspect_docker_container", "docker.operations", "inspect_docker_container", "read", "queued_runner"),
+    "run_docker_check": _contract("run_docker_check", "docker.operations", "run_docker_check", "read", "queued_runner"),
+    "restart_docker_container": _contract("restart_docker_container", "docker.operations", "restart_docker_container", "change", "queued_runner"),
     # Validation.
     "list_validation_checks": _contract("list_validation_checks", "software.validation", "catalog", "read", "pure"),
     "run_validation_check": _contract("run_validation_check", "software.validation", "run_check", "read", "queued_runner"),
@@ -90,6 +97,12 @@ _EXPLICIT: dict[str, ToolExecutionContract] = {
     "workflow_update_step": _contract("workflow_update_step", "agent.workflow", "update_step", "change", "local_state"),
     "workflow_add_evidence": _contract("workflow_add_evidence", "agent.workflow", "add_evidence", "change", "local_state"),
     "workflow_next_action": _contract("workflow_next_action", "agent.workflow", "next_action", "read", "pure"),
+    # Restart-safe local continuation state.
+    "checkpoint_task_continuation": _contract("checkpoint_task_continuation", "agent.task_continuation", "checkpoint", "change", "local_state"),
+    "task_continuation_status": _contract("task_continuation_status", "agent.task_continuation", "status", "read", "pure"),
+    "complete_task_continuation": _contract("complete_task_continuation", "agent.task_continuation", "complete", "change", "local_state"),
+    "retry_task_continuation": _contract("retry_task_continuation", "agent.task_continuation", "retry", "change", "local_state"),
+    "cancel_task_continuation": _contract("cancel_task_continuation", "agent.task_continuation", "cancel", "change", "local_state"),
     # Owner context and memory.
     "get_local_context_status": _contract("get_local_context_status", "owner.context", "status", "read", "pure"),
     "reload_local_context": _contract("reload_local_context", "owner.context", "reload", "read", "local_state"),

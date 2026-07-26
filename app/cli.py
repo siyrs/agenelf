@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from rich.console import Console
@@ -14,6 +15,7 @@ from rich.table import Table
 from core import operations
 from core.agent import Agent
 from core.configuration import load_config as load_shared_config
+from resume import run_once as resume_pending_task
 
 console = Console()
 _APP_DIR = Path(__file__).resolve().parent
@@ -264,6 +266,16 @@ def main() -> int:
     config = load_config(arguments.config)
     if arguments.mock:
         config["mock"] = True
+
+    # Direct invocations such as
+    # `docker compose exec agenelf python /agenelf/app-fork/cli.py` must preserve
+    # the same restart-continuation semantics as `make chat`.
+    if os.environ.get("AGENELF_SKIP_AUTO_RESUME", "0") != "1":
+        resume_pending_task(
+            config_loader=lambda **_: dict(config),
+            emit=lambda text: console.print(str(text)),
+        )
+
     agent = Agent(config)
     console.print(
         Panel(

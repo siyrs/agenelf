@@ -8,13 +8,14 @@ from pathlib import Path
 from core.policy import PolicyEngine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+EXPECTED_POLICY_VERSION = "1.1.0"
 
 
 class PolicyEngineLoadingTest(unittest.TestCase):
     def test_real_policy_loads_successfully(self):
         engine = PolicyEngine(PROJECT_ROOT / "policy")
         self.assertFalse(engine.degraded)
-        self.assertEqual(engine.policy_version, "1.0.0")
+        self.assertEqual(engine.policy_version, EXPECTED_POLICY_VERSION)
 
     def test_default_probe_uses_repo_root(self):
         engine = PolicyEngine()
@@ -33,7 +34,7 @@ class PolicyEngineEvaluateTest(unittest.TestCase):
         self.assertEqual(result["risk"], "read")
         self.assertEqual(result["approval"], "none")
         self.assertTrue(result["auto_execute"])
-        self.assertEqual(result["policy_version"], "1.0.0")
+        self.assertEqual(result["policy_version"], EXPECTED_POLICY_VERSION)
 
     def test_change_operation_requires_owner_exact(self):
         result = self.engine.evaluate("server", "apt_update")

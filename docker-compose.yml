@@ -47,7 +47,7 @@ services:
 
   ops-runner:
     build: .
-    command: ["python", "/agenelf/scripts/ops_runner.py", "--interval", "1"]
+    command: ["python", "/agenelf/scripts/unified_ops_runner.py", "--interval", "1"]
     env_file: .ops-runner.env
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
