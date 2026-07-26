@@ -8,7 +8,7 @@ from pathlib import Path
 from core.policy import PolicyEngine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_POLICY_VERSION = "1.1.0"
+EXPECTED_POLICY_VERSION = "1.2.0"
 
 
 class PolicyEngineLoadingTest(unittest.TestCase):
@@ -131,7 +131,10 @@ class PolicyEngineQueryTest(unittest.TestCase):
             self.engine.approval_requirements("owner_exact"),
             ["exact_payload_fingerprint", "expiration", "single_use"],
         )
-        self.assertIn("second_confirmation", self.engine.approval_requirements("owner_irreversible"))
+        self.assertIn(
+            "second_confirmation",
+            self.engine.approval_requirements("owner_irreversible"),
+        )
         self.assertEqual(self.engine.approval_requirements("nonexistent_mode"), [])
 
     def test_forbidden_behaviors_content(self):
