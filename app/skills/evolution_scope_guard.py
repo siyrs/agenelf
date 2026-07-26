@@ -41,19 +41,50 @@ TOOLS: list[dict[str, Any]] = []
 # These patterns identify goals that cannot succeed in the ordinary app-only sandbox.
 # They trigger an authorization request rather than a permanent denial.
 _PROTECTED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("authorization_control", re.compile(r"(?i)审批(?:逻辑|通道|权限)|authorization|approval|auth-decisions|owner_approval|permissions\.py")),
-    ("runners", re.compile(r"(?i)\b(?:ops|approval|validation|repair|self[-_ ]?upgrade)[-_ ]?runner\b|执行器|runner")),
-    ("compose", re.compile(r"(?i)(?:docker\s+compose|compose)[-_ ]?(?:down|stop|up|deploy)|docker-compose\.ya?ml|compose\s+拓扑|挂载(?:点|目录)|network_mode|docker\s+socket")),
-    ("policy", re.compile(r"(?i)安全策略|权限策略|policy|execution[_ -]?policy|治理规则")),
-    ("ci", re.compile(r"(?i)\.github/workflows|github actions|codeql|供应链|\bCI\b")),
-    ("runners", re.compile(r"(?i)scripts/|gate_check|promote\.sh|宿主机脚本")),
-    ("app_runtime", re.compile(r"(?i)core/(?:registry|policy|permissions|operations|autonomy|continuous_chat|reasoning_trace)|核心运行时|工具注册表|对话运行时")),
+    (
+        "authorization_control",
+        re.compile(
+            r"(?i)审批(?:逻辑|通道|权限)|authorization|approval|auth-decisions|owner_approval|permissions\.py"
+        ),
+    ),
+    (
+        "runners",
+        re.compile(
+            r"(?i)\b(?:ops|approval|validation|repair|self[-_ ]?upgrade)[-_ ]?runner\b|执行器|runner"
+        ),
+    ),
+    (
+        "compose",
+        re.compile(
+            r"(?i)docker\s+compose|compose[-_ ]?(?:down|stop|up|deploy)|docker-compose\.ya?ml|compose\s+拓扑|挂载(?:点|目录)|network_mode|docker\s+socket"
+        ),
+    ),
+    (
+        "policy",
+        re.compile(r"(?i)安全策略|权限策略|policy|execution[_ -]?policy|治理规则"),
+    ),
+    (
+        "ci",
+        re.compile(r"(?i)\.github/workflows|github actions|codeql|供应链|\bCI\b"),
+    ),
+    (
+        "runners",
+        re.compile(r"(?i)scripts/|gate_check|promote\.sh|宿主机脚本"),
+    ),
+    (
+        "app_runtime",
+        re.compile(
+            r"(?i)core/(?:registry|policy|permissions|operations|autonomy|continuous_chat|reasoning_trace)|核心运行时|工具注册表|对话运行时"
+        ),
+    ),
 )
 
 
 def classify_goal(goal: str) -> list[str]:
     text = str(goal or "")
-    return sorted({scope for scope, pattern in _PROTECTED_PATTERNS if pattern.search(text)})
+    return sorted(
+        {scope for scope, pattern in _PROTECTED_PATTERNS if pattern.search(text)}
+    )
 
 
 def _authorized_cycle(agent: Any, goal: str, scopes: list[str]) -> dict[str, Any]:
@@ -93,7 +124,11 @@ def configure_runtime(*, agent: Any, **_: Any) -> None:
     agent._agenelf_evolution_scope_guard_bound = True
     agent._agenelf_unscoped_autonomy_cycle = original
 
-    def guarded(self: Any, goal: str = "", apply_changes: bool = False) -> dict[str, Any]:
+    def guarded(
+        self: Any,
+        goal: str = "",
+        apply_changes: bool = False,
+    ) -> dict[str, Any]:
         scopes = classify_goal(goal)
         if apply_changes and scopes:
             return _authorized_cycle(self, str(goal or "").strip(), scopes)
