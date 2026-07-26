@@ -16,6 +16,13 @@ from core import operations
 from core.agent import Agent
 from core.cli_approval import handle_owner_decision, show_pending
 from core.configuration import load_config as load_shared_config
+from core.interactive_prompt import (
+    InteractivePrompt,
+    canonical_command,
+    close_command_matches,
+    command_hint,
+    command_rows,
+)
 from resume import run_once as resume_pending_task
 
 console = Console()
@@ -36,6 +43,17 @@ def _dispatch_json(agent: Agent, tool_name: str, args: dict | None = None):
         return json.loads(text)
     except json.JSONDecodeError:
         return {"error": text}
+
+
+def cmd_help() -> None:
+    table = Table(title="Agenelf 斜杠命令", show_lines=False)
+    table.add_column("命令", style="bold cyan", no_wrap=True)
+    table.add_column("用法", style="green")
+    table.add_column("说明")
+    for name, usage, description in command_rows():
+        table.add_row(name, usage, description)
+    console.print(table)
+    console.print("[dim]输入 / 自动打开菜单；↑↓ 选择，Tab 补全，Enter 执行。[/dim]")
 
 
 def cmd_skills(agent: Agent) -> None:
@@ -259,6 +277,12 @@ def cmd_remember(agent: Agent, arguments: str) -> None:
     _json_panel(agent.remember_owner(parts[0], parts[1]), "主人记忆")
 
 
+def _unknown_command(command: str) -> None:
+    matches = close_command_matches(command)
+    suggestion = f"；你可能想输入：{'、'.join(matches)}" if matches else "；输入 /help 查看命令"
+    console.print(f"[red]未知命令 {command}[/red][dim]{suggestion}[/dim]")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agenelf CLI")
     parser.add_argument("--mock", action="store_true", help="强制使用 MockLLM")
@@ -278,17 +302,18 @@ def main() -> int:
         )
 
     agent = Agent(config)
+    prompt = InteractivePrompt(agent=agent, console=console, config=config)
     console.print(
         Panel(
             f"模型：[cyan]{agent.llm.model}[/cyan] | 技能：[green]{len(agent.registry.skills)}[/green] | 能力域：[green]{len(agent.registry.capability_catalog())}[/green]\n"
-            "命令：/self /assess /scorecard /roadmap /mind /reflect [--deep] /intentions /intend /pursue /validate /autonomy /local /remember /recall /ops /approvals /approve /deny /skills /capabilities /quit",
+            + command_hint(),
             title="Agenelf",
         )
     )
 
     while True:
         try:
-            user_input = console.input("[bold blue]你 > [/bold blue]").strip()
+            user_input = prompt.read().strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[yellow]再见！[/yellow]")
             break
@@ -307,12 +332,14 @@ def main() -> int:
 
         if user_input.startswith("/"):
             parts = user_input.split(maxsplit=1)
-            command = parts[0].lower()
+            command = canonical_command(parts[0].lower())
             rest = parts[1] if len(parts) > 1 else ""
             if command == "/quit":
                 console.print("[yellow]再见！[/yellow]")
                 break
-            if command == "/skills":
+            if command in {"/", "/help"}:
+                cmd_help()
+            elif command == "/skills":
                 cmd_skills(agent)
             elif command == "/capabilities":
                 cmd_capabilities(agent)
@@ -365,7 +392,7 @@ def main() -> int:
                 else:
                     cmd_autonomy(agent, rest, force_apply=True)
             else:
-                console.print(f"[red]未知命令 {command}[/red]")
+                _unknown_command(command)
             continue
         with console.status("Agenelf 思考中..."):
             reply = agent.chat(user_input, subject="cli")
