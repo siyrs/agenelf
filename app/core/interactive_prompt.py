@@ -162,6 +162,11 @@ class SlashCommandCompleter(Completer):
         except Exception:
             return []
 
+    # Compatibility extension point retained for tests and downstream custom completers.
+    # It now returns both operation and authorization requests.
+    def _pending_operations(self) -> list[tuple[str, str]]:
+        return self._pending_requests()
+
     @staticmethod
     def _recent_operations() -> list[tuple[str, str]]:
         try:
@@ -222,7 +227,7 @@ class SlashCommandCompleter(Completer):
         prior: list[str],
     ) -> list[tuple[str, str]]:
         if command in {"/approve", "/deny"}:
-            return self._pending_requests()
+            return self._pending_operations()
         if command == "/ops":
             return self._recent_operations()
         if command == "/upgrade":
