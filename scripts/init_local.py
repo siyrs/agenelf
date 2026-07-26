@@ -72,6 +72,7 @@ def _ensure_runtime_directories(actions: list[str]) -> None:
         ROOT / "data" / "self-upgrade-results",
         ROOT / "data" / "self-upgrade-locks",
         ROOT / "data" / "self-upgrade-backups",
+        ROOT / "data" / "runner-health",
         ROOT / "data" / "tasks",
         ROOT / "data" / "channel-requests",
         ROOT / "data" / "promote-requests",
@@ -218,6 +219,7 @@ def status() -> dict:
         "self_upgrade_queue": (ROOT / "data" / "self-upgrade-requests").is_dir(),
         "self_upgrade_results": (ROOT / "data" / "self-upgrade-results").is_dir(),
         "self_upgrade_backups": (ROOT / "data" / "self-upgrade-backups").is_dir(),
+        "runner_health": (ROOT / "data" / "runner-health").is_dir(),
     }
 
 

@@ -31,6 +31,14 @@ cli:
   # 原始终端审批会等待独立 approval-runner 返回，并在批准后继续原任务。
   approval_wait_seconds: 8
   approval_auto_continue: true
+runtime_health:
+  stale_after_seconds: 15
+  expected_runners:
+    - ops-runner
+    - approval-runner
+    - self-upgrade-runner
+    - validation-runner
+    - repair-runner
 local_context:
   prompt_max_chars: 12000
   file_max_chars: 20000
@@ -51,6 +59,7 @@ autonomy:
     default_max_changed_lines: 1200
     hard_max_files: 20
     hard_max_changed_lines: 4000
+    max_generation_attempts: 3
     intent_ttl_seconds: 900
     candidate_ttl_seconds: 900
     backup_before_apply: true

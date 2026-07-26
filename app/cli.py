@@ -56,6 +56,19 @@ def cmd_help() -> None:
     console.print("[dim]输入 / 自动打开菜单；↑↓ 选择，Tab 补全，Enter 执行。[/dim]")
 
 
+def cmd_doctor(agent: Agent) -> None:
+    value = _dispatch_json(agent, "runtime_doctor")
+    status = str(value.get("status", "unknown")) if isinstance(value, dict) else "unknown"
+    border = "green" if status == "healthy" else "yellow" if status == "degraded" else "red"
+    console.print(
+        Panel(
+            json.dumps(value, ensure_ascii=False, indent=2),
+            title="Agenelf 运行时体检",
+            border_style=border,
+        )
+    )
+
+
 def cmd_skills(agent: Agent) -> None:
     table = Table(title="已加载技能")
     table.add_column("技能", style="cyan")
@@ -363,6 +376,8 @@ def main() -> int:
                 break
             if command in {"/", "/help"}:
                 cmd_help()
+            elif command == "/doctor":
+                cmd_doctor(agent)
             elif command == "/skills":
                 cmd_skills(agent)
             elif command == "/capabilities":
