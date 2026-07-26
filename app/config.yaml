@@ -19,6 +19,9 @@ cli:
   # 展示供应商明确返回的 reasoning_content；不返回该字段的模型不会伪造内容。
   show_reasoning: true
   reasoning_max_chars: 60000
+  # 输入 / 自动显示命令菜单；↑↓ 选择，Tab 接受补全。
+  interactive_completion: true
+  command_menu_rows: 12
   # 原始终端审批会等待独立 approval-runner 返回，并在批准后继续原任务。
   approval_wait_seconds: 8
   approval_auto_continue: true
