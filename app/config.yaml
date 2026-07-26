@@ -5,12 +5,18 @@ llm:
   temperature: 0.6
   # 仅当交互终端安装了 reasoning listener 时使用流式响应；API/后台仍走非流式。
   stream_reasoning: true
+  # reasoning 流断开后先回退非流式，再做有界重试；最终失败由任务检查点接管。
+  transport_retry_attempts: 2
+  transport_retry_backoff_seconds: 0.4
+  stream_fallback_non_stream: true
 agent:
   name: "Agenelf"
   # 单个工具段的模型轮次数；复杂任务会在同一上下文中自动进入下一段。
   max_tool_rounds: 16
   # 总预算 = max_tool_rounds × max_tool_segments，默认最多 64 个模型轮次。
   max_tool_segments: 4
+  # 相同工具参数与相同归一化结果连续出现 3 次即停止循环并保存续跑检查点。
+  no_progress_repeat_limit: 3
   history_max_messages: 12
   memory_prompt_limit: 50
   memory_prompt_max_chars: 8000
