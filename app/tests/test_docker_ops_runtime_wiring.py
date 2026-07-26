@@ -23,12 +23,11 @@ class DockerOpsRuntimeWiringTest(unittest.TestCase):
         self.assertFalse(any("local/memory" in item for item in volumes))
         self.assertFalse(any("local/self" in item for item in volumes))
 
-    def test_chat_entrypoint_attempts_resume_before_interactive_cli(self) -> None:
+    def test_chat_entrypoint_delegates_single_resume_attempt_to_cli(self) -> None:
         script = (PROJECT_ROOT / "scripts" / "chat.sh").read_text(encoding="utf-8")
-        resume_index = script.index("/agenelf/app-fork/resume.py")
-        cli_index = script.index("/agenelf/app-fork/cli.py")
-        self.assertLess(resume_index, cli_index)
-        self.assertIn("AGENELF_SKIP_AUTO_RESUME", script)
+        self.assertIn("/agenelf/app-fork/cli.py", script)
+        self.assertNotIn("/agenelf/app-fork/resume.py", script)
+        self.assertIn('-e AGENELF_SKIP_AUTO_RESUME=', script)
 
     def test_direct_cli_invocation_also_attempts_resume(self) -> None:
         source = (PROJECT_ROOT / "app" / "cli.py").read_text(encoding="utf-8")
