@@ -33,7 +33,17 @@ class AuthorizedUpgradeWiringTest(unittest.TestCase):
         self.assertNotIn("local/profile", joined)
         self.assertNotIn("local/memory", joined)
         self.assertNotIn("docker.sock", joined)
-        self.assertNotIn("/.git", joined)
+        # .github, .gitignore and .gitleaks are reviewed repository fixtures; only the
+        # actual .git metadata directory is forbidden.
+        self.assertFalse(
+            any(
+                item.startswith("./.git:/")
+                or item.startswith(".git:/")
+                or ":/agenelf/upgrade-target/.git:" in item
+                or ":/agenelf/repo-source/.git:" in item
+                for item in volumes
+            )
+        )
         self.assertNotIn("/.env:/", joined)
         self.assertIn("./app-tmp:/agenelf/app-tmp:ro", volumes)
         self.assertIn(
@@ -114,8 +124,14 @@ class AuthorizedUpgradeWiringTest(unittest.TestCase):
         self.assertTrue(upgrade["execution"]["rollback_on_partial_failure"])
         redlines = set(upgrade["permanent_redlines"])
         self.assertIn("no_self_approval_or_forged_owner_decision", redlines)
-        self.assertIn("no_access_to_env_local_secrets_ssh_keys_or_approval_key", redlines)
-        self.assertIn("no_direct_push_or_merge_main_from_autonomous_runtime", redlines)
+        self.assertIn(
+            "no_access_to_env_local_secrets_ssh_keys_or_approval_key",
+            redlines,
+        )
+        self.assertIn(
+            "no_direct_push_or_merge_main_from_autonomous_runtime",
+            redlines,
+        )
 
 
 if __name__ == "__main__":
