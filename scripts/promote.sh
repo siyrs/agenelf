@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# promote.sh — promote an exact, gate-approved app-tmp tree into app/.
+# promote.sh — promote an exact, gate-approved candidate app into app/.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_DIR="${ROOT_DIR}/app"
 APP_TMP="${ROOT_DIR}/app-tmp"
+if [[ -d "${APP_TMP}/repo/app" ]]; then
+    CANDIDATE_APP="${APP_TMP}/repo/app"
+else
+    CANDIDATE_APP="${APP_TMP}"
+fi
 LOG_FILE="${ROOT_DIR}/logs/evolution.log"
 BACKUP_DIR="${ROOT_DIR}/data/app-backups"
 TREE_DIGEST="${SCRIPT_DIR}/tree_digest.py"
@@ -30,6 +35,7 @@ log() {
 }
 
 log "[promote] ===== 开始晋升，请求ID：${REQ_ID} ====="
+log "[promote] 候选 app：${CANDIDATE_APP}"
 if [[ ! -f "${REQ_DIR}/READY" ]]; then
     log "[promote] 错误：${REQ_DIR}/READY 不存在"
     exit 1
@@ -42,6 +48,10 @@ if [[ ! -f "${REQ_DIR}/candidate.sha256" ]]; then
     log "[promote] 错误：candidate.sha256 缺失，旧版或不完整 READY 不可晋升"
     exit 1
 fi
+if [[ ! -d "${CANDIDATE_APP}" ]] || [[ -z "$(ls -A "${CANDIDATE_APP}" 2>/dev/null)" ]]; then
+    log "[promote] 错误：候选 app 不存在或为空"
+    exit 1
+fi
 EXPECTED_SHA="$(tr -d '[:space:]' < "${REQ_DIR}/candidate.sha256")"
 if [[ ! "${EXPECTED_SHA}" =~ ^[0-9a-f]{64}$ ]]; then
     log "[promote] 错误：候选摘要格式非法：${EXPECTED_SHA}"
@@ -51,7 +61,7 @@ if [[ ! -f "${TREE_DIGEST}" ]]; then
     log "[promote] 错误：可信摘要脚本不存在：${TREE_DIGEST}"
     exit 1
 fi
-CURRENT_SHA="$(python3 "${TREE_DIGEST}" "${APP_TMP}")"
+CURRENT_SHA="$(python3 "${TREE_DIGEST}" "${CANDIDATE_APP}")"
 if [[ "${CURRENT_SHA}" != "${EXPECTED_SHA}" ]]; then
     log "[promote] 错误：候选代码在 gate 通过后发生变化"
     log "[promote] gate=${EXPECTED_SHA} current=${CURRENT_SHA}；拒绝时间差晋升"
@@ -63,8 +73,6 @@ log "[promote] READY、报告与候选摘要全部校验通过：${CURRENT_SHA}"
 
 TS="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="${BACKUP_DIR}/${TS}.tar.gz"
-# 排除易变的 __pycache__；tar 退出码 1（读取期间文件变化，如 .pyc 抖动）视为可接受警告，
-# 仅 0/1 放行，其余视为致命错误（set -e 下需显式捕获）
 tar_rc=0
 tar -czf "${BACKUP_FILE}" --exclude='__pycache__' --exclude='*.pyc' \
     --warning=no-file-changed -C "${ROOT_DIR}" app || tar_rc=$?
@@ -80,10 +88,20 @@ rollback() {
     log "[promote] 回滚完成，app/ 已恢复到晋升前状态"
 }
 
-log "[promote] 同步已绑定摘要的 app-tmp/ -> app/"
-if ! rsync -a --delete --exclude='__pycache__' --exclude='*.pyc' "${APP_TMP}/" "${APP_DIR}/"; then
-    rollback
-    exit 1
+log "[promote] 同步已绑定摘要的候选 app -> app/"
+if command -v rsync >/dev/null 2>&1; then
+    if ! rsync -a --delete --exclude='__pycache__' --exclude='*.pyc' "${CANDIDATE_APP}/" "${APP_DIR}/"; then
+        rollback
+        exit 1
+    fi
+else
+    log "[promote] 未找到 rsync，使用 tar 镜像兜底"
+    if ! (find "${APP_DIR}" -mindepth 1 -delete && \
+        (cd "${CANDIDATE_APP}" && tar cf - --exclude='__pycache__' --exclude='*.pyc' .) \
+        | (cd "${APP_DIR}" && tar xf -)); then
+        rollback
+        exit 1
+    fi
 fi
 if ! bash "${SCRIPT_DIR}/sync_fork.sh" >> "${LOG_FILE}" 2>&1; then
     log "[promote] sync_fork.sh 执行失败"
@@ -91,7 +109,7 @@ if ! bash "${SCRIPT_DIR}/sync_fork.sh" >> "${LOG_FILE}" 2>&1; then
     bash "${SCRIPT_DIR}/sync_fork.sh" >> "${LOG_FILE}" 2>&1 || true
     exit 1
 fi
-log "[promote] 运行时副本 app-fork/ 已刷新"
+log "[promote] 运行时兼容副本 app-fork/ 已刷新"
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     if (cd "${ROOT_DIR}" && docker compose restart); then
@@ -109,6 +127,7 @@ rm -rf "${EVIDENCE_DIR}"
 cp -a "${REQ_DIR}" "${EVIDENCE_DIR}"
 printf '%s\n' "${CURRENT_SHA}" > "${EVIDENCE_DIR}/promoted.sha256"
 printf '%s\n' "$(date --iso-8601=seconds)" > "${EVIDENCE_DIR}/promoted_at"
+printf '%s\n' "${CANDIDATE_APP}" > "${EVIDENCE_DIR}/candidate-app-path.txt"
 log "[promote] 已保存晋升证据：${EVIDENCE_DIR}"
 
 log "[promote] ===== 晋升完成：${REQ_ID}（备份：${BACKUP_FILE}）====="
