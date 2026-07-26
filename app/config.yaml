@@ -7,7 +7,10 @@ llm:
   stream_reasoning: true
 agent:
   name: "Agenelf"
+  # 单个工具段的模型轮次数；复杂任务会在同一上下文中自动进入下一段。
   max_tool_rounds: 16
+  # 总预算 = max_tool_rounds × max_tool_segments，默认最多 64 个模型轮次。
+  max_tool_segments: 4
   history_max_messages: 12
   memory_prompt_limit: 50
   memory_prompt_max_chars: 8000
