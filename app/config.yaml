@@ -3,6 +3,8 @@ llm:
   api_key: ""
   model: "kimi-k2-0905-preview"
   temperature: 0.6
+  # 仅当交互终端安装了 reasoning listener 时使用流式响应；API/后台仍走非流式。
+  stream_reasoning: true
 agent:
   name: "Agenelf"
   max_tool_rounds: 16
@@ -10,6 +12,10 @@ agent:
   memory_prompt_limit: 50
   memory_prompt_max_chars: 8000
   memory_max_entries: 1000
+cli:
+  # 展示供应商明确返回的 reasoning_content；不返回该字段的模型不会伪造内容。
+  show_reasoning: true
+  reasoning_max_chars: 60000
 local_context:
   prompt_max_chars: 12000
   file_max_chars: 20000
