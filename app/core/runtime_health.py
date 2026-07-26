@@ -161,12 +161,6 @@ def runner_health(
     }
 
 
-def _count_files(path: Path, pattern: str) -> int:
-    if not path.is_dir():
-        return 0
-    return sum(1 for _ in path.glob(pattern))
-
-
 def _queue_snapshot(root: Path) -> dict[str, Any]:
     data = root / "data"
     pending_ops = 0
@@ -204,7 +198,7 @@ def _queue_snapshot(root: Path) -> dict[str, Any]:
         "pending_approvals": pending_approvals,
         "active_authorized_upgrades": active_upgrades,
         "failed_authorized_upgrades": failed_upgrades,
-        "task_continuation_exists": (data / "continuations" / "active.json").is_file(),
+        "task_continuation_exists": (data / "continuations" / "pending.json").is_file(),
     }
 
 
