@@ -134,12 +134,14 @@ protected_paths:
   - app/core/reasoning_trace.py
   - app/core/evolution_workspace.py
   - app/core/authorized_upgrade.py
+  - app/core/upgrade_redlines.py
   - app/core/approval_catalog.py
   - app/core/self_development.py
   - app/core/self_optimization.py
   - app/core/validation.py
   - app/core/capability_health.py
   - app/skills/authorized_self_upgrade.py
+  - app/skills/authorized_upgrade_redlines.py
   - app/skills/evolution_ops.py
   - app/skills/evolution_scope_guard.py
   - app/skills/compose_lifecycle.py
