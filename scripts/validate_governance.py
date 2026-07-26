@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Validate Agenelf's machine-readable governance baseline.
 
-The validator is dependency-light, deterministic and intended for local use and CI.
-It rejects policies that omit mandatory risk levels, weaken forbidden behavior,
-allow autonomous main-branch promotion, fail to bind owner authorization to an exact
-operation payload, or weaken the two-stage owner-authorized self-upgrade contract.
+The validator is deterministic and intended for local use and CI. It rejects policies
+that omit mandatory risk levels, weaken forbidden behavior, allow autonomous main
+promotion, fail to bind owner authorization to an exact payload, or weaken the
+owner-authorized self-upgrade contract.
 """
 from __future__ import annotations
 
@@ -186,9 +186,7 @@ def validate_owner_authorized_upgrade(root: dict[str, Any], errors: list[str]) -
     )
     missing_scopes = REQUIRED_UPGRADE_SCOPES - scopes
     if missing_scopes:
-        errors.append(
-            "授权升级范围缺失：" + ", ".join(sorted(missing_scopes))
-        )
+        errors.append("授权升级范围缺失：" + ", ".join(sorted(missing_scopes)))
 
     redlines = _string_set(
         upgrade.get("permanent_redlines"),
@@ -244,11 +242,7 @@ def validate_policy(policy: Any) -> list[str]:
     ) != "impossible":
         errors.append("forbidden 风险必须不可授权")
 
-    authorization = _mapping(
-        root.get("owner_authorization"),
-        "owner_authorization",
-        errors,
-    )
+    authorization = _mapping(root.get("owner_authorization"), "owner_authorization", errors)
     if authorization.get("never_overrides_forbidden") is not True:
         errors.append("owner_authorization.never_overrides_forbidden 必须为 true")
     fields = _string_set(
@@ -259,20 +253,12 @@ def validate_policy(policy: Any) -> list[str]:
     missing_fields = REQUIRED_BINDING_FIELDS - fields
     if missing_fields:
         errors.append(f"授权绑定字段缺失：{', '.join(sorted(missing_fields))}")
-    modes = _mapping(
-        authorization.get("modes"),
-        "owner_authorization.modes",
-        errors,
-    )
+    modes = _mapping(authorization.get("modes"), "owner_authorization.modes", errors)
     for mode in ("owner_exact", "owner_elevated", "owner_irreversible"):
         if mode not in modes:
             errors.append(f"缺少授权模式：{mode}")
 
-    forbidden = _string_set(
-        root.get("forbidden_behaviors"),
-        "forbidden_behaviors",
-        errors,
-    )
+    forbidden = _string_set(root.get("forbidden_behaviors"), "forbidden_behaviors", errors)
     missing_forbidden = REQUIRED_FORBIDDEN - forbidden
     if missing_forbidden:
         errors.append(f"永久禁止行为缺失：{', '.join(sorted(missing_forbidden))}")
@@ -301,7 +287,12 @@ def validate_policy(policy: Any) -> list[str]:
         "modify_delete_or_monkey_patch_existing_tests",
     ):
         if behavior not in forbidden_evolution:
-            errors.append(f"自进化永久禁止行为缺失：{behavior}")
+            if behavior == "autonomously_merge_main":
+                errors.append(
+                    "自进化永久禁止行为缺失：autonomously_merge_main（禁止自主合并 main）"
+                )
+            else:
+                errors.append(f"自进化永久禁止行为缺失：{behavior}")
     limits = _mapping(
         evolution.get("candidate_limits"),
         "self_evolution.candidate_limits",
