@@ -1,5 +1,5 @@
 # Agenelf operator commands
-.PHONY: help init local mind models workflow validation repair start stop restart build chat test backup promote watch logs status ops evolution autonomy approve clean
+.PHONY: help init local mind models workflow validation repair start stop restart build chat test backup promote watch logs status ops approvals evolution autonomy approve deny clean
 
 help: ## Show commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -11,6 +11,7 @@ init: ## Create/migrate private config, task/evidence queues and isolated worksp
 	@mkdir -p logs workspace/scratch app-space/skills app-tmp app-fork code-workspaces repair-space \
 		data/auth-requests data/auth-decisions data/auth-consumed \
 		data/ops-requests data/ops-results data/ops-locks \
+		data/approval-commands data/approval-results data/approval-locks \
 		data/validation-requests data/validation-results data/validation-locks \
 		data/repair-requests data/repair-results data/repair-locks \
 		data/tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles
@@ -41,6 +42,7 @@ start: ## Sync runtime fork and start Agent plus deterministic runners
 	@test -d local/memory || (echo "缺少 local/memory，请先 make init"; exit 1)
 	@test -d local/self || (echo "缺少 local/self，请先 make init"; exit 1)
 	@test -d local/secrets || (echo "缺少 local/secrets，请先 make init"; exit 1)
+	@mkdir -p data/approval-commands data/approval-results data/approval-locks data/auth-decisions
 	bash scripts/sync_fork.sh
 	docker compose up -d --build
 
@@ -78,9 +80,18 @@ evolution: ## Show evolution requests and immutable promotion evidence
 autonomy: ## Show recent controlled autonomy-cycle records
 	@ls -lt data/autonomy-cycles 2>/dev/null | head -20 || echo "暂无自主循环记录"
 
-approve: ## Approve an exact server operation: make approve REQ=<op-id>
+approve: ## Cross-platform exact approval: make approve REQ=<op-id>
 	@test -n "$(REQ)" || (echo "用法：make approve REQ=op-..."; exit 2)
-	bash scripts/approve.sh $(REQ) approve
+	python3 scripts/approve.py $(REQ) approve
+
+deny: ## Cross-platform exact denial: make deny REQ=<op-id> REASON='...'
+	@test -n "$(REQ)" || (echo "用法：make deny REQ=op-... REASON='...'"; exit 2)
+	python3 scripts/approve.py $(REQ) deny "$(REASON)"
+
+approvals: ## Show signed owner approval commands, decisions and broker results
+	@echo "== commands =="; ls -lt data/approval-commands 2>/dev/null | head -20 || true
+	@echo "== decisions =="; ls -lt data/auth-decisions 2>/dev/null | head -20 || true
+	@echo "== broker results =="; ls -lt data/approval-results 2>/dev/null | head -20 || true
 
 ops: ## Show recent operation requests and results
 	@echo "== requests =="; ls -lt data/ops-requests 2>/dev/null | head -20 || true
@@ -99,7 +110,7 @@ repair: ## Show code repair aliases, queues and evidence
 	@echo "== repair artifacts =="; ls -lt repair-space 2>/dev/null | head -20 || true
 
 logs: ## Follow Agent and deterministic runners
-	docker compose logs -f --tail=100 agenelf ops-runner validation-runner repair-runner
+	docker compose logs -f --tail=100 agenelf approval-runner ops-runner validation-runner repair-runner
 
 status: ## Show containers, local state and all controlled queues
 	-docker compose ps
@@ -108,6 +119,7 @@ status: ## Show containers, local state and all controlled queues
 	@$(MAKE) --no-print-directory models
 	@$(MAKE) --no-print-directory workflow
 	@$(MAKE) --no-print-directory ops
+	@$(MAKE) --no-print-directory approvals
 	@$(MAKE) --no-print-directory validation
 	@$(MAKE) --no-print-directory repair
 	@$(MAKE) --no-print-directory autonomy
@@ -115,6 +127,7 @@ status: ## Show containers, local state and all controlled queues
 clean: ## Clear transient queues; preserve owner data and trusted result evidence
 	@echo "将清空 app-tmp、未完成请求和锁，5 秒内 Ctrl+C 取消..."; sleep 5
 	rm -rf app-tmp/* data/ops-requests/* data/ops-locks/* \
+		data/approval-commands/* data/approval-locks/* \
 		data/validation-requests/* data/validation-locks/* \
 		data/repair-requests/* data/repair-locks/*
 	@echo "已清空；local/、结果证据、repair-space、自主循环、裁决与晋升证据均保留。"
