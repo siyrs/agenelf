@@ -60,3 +60,74 @@ jobs:
           while IFS= read -r -d '' script; do
             bash -n "$script"
           done < <(find scripts -maxdepth 1 -type f -name '*.sh' -print0)
+
+  windows-approval:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+      - name: Install minimal runtime dependency
+        run: python -m pip install pyyaml
+      - name: Create a request with a deliberately stale app-fork
+        shell: pwsh
+        run: |
+          python scripts/init_local.py --no-migrate | Out-Null
+          New-Item -ItemType Directory -Path app-fork/core -Force | Out-Null
+          'raise RuntimeError("stale app-fork was imported")' |
+            Set-Content -Path app-fork/core/owner_approval.py -Encoding UTF8
+          @'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, str(Path("app").resolve()))
+          from core import operations
+          request = operations.submit_operation(
+              "server.operations",
+              "apt_update",
+              "windows-ci",
+              {},
+              "change",
+              "Windows approval smoke test",
+              root=Path(".").resolve(),
+          )
+          Path("windows-request-id.txt").write_text(request["id"], encoding="utf-8")
+          '@ | Set-Content -Path create-windows-request.py -Encoding UTF8
+          python create-windows-request.py
+      - name: Approve through the real PowerShell entrypoint
+        shell: pwsh
+        run: |
+          $RequestId = (Get-Content windows-request-id.txt -Raw).Trim()
+          .\scripts\approve.ps1 $RequestId approve -As windows-ci
+      - name: Verify exact decision used app source, not stale app-fork
+        shell: pwsh
+        run: |
+          $RequestId = (Get-Content windows-request-id.txt -Raw).Trim()
+          $Decision = Get-Content "data/auth-decisions/$RequestId.json" -Raw |
+            ConvertFrom-Json
+          if ($Decision.decision -ne "approve") {
+            throw "Expected approve decision, got $($Decision.decision)"
+          }
+          if ($Decision.decided_by -ne "windows-ci") {
+            throw "Unexpected approver: $($Decision.decided_by)"
+          }
+      - name: Run native Windows app-fork synchronization
+        shell: pwsh
+        run: .\scripts\sync_fork.ps1 -Quiet
+      - name: Verify PowerShell sync mirrored the source tree
+        shell: pwsh
+        run: |
+          $Source = (Get-FileHash app/core/owner_approval.py).Hash
+          $Runtime = (Get-FileHash app-fork/core/owner_approval.py).Hash
+          if ($Source -ne $Runtime) {
+            throw "app-fork owner_approval.py does not match app source"
+          }
+          if (Get-ChildItem app-fork -Recurse -Directory -Filter __pycache__) {
+            throw "sync_fork.ps1 copied __pycache__"
+          }
+          if (Get-ChildItem app-fork -Recurse -File -Filter *.pyc) {
+            throw "sync_fork.ps1 copied pyc files"
+          }
