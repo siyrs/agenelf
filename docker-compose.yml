@@ -74,6 +74,7 @@ services:
       - ./data/validation-results:/agenelf/data/validation-results:ro
       - ./data/repair-results:/agenelf/data/repair-results:ro
       - ./data/self-upgrade-results:/agenelf/data/self-upgrade-results:ro
+      - ./data/runner-health:/agenelf/data/runner-health:ro
       - ./logs:/agenelf/logs:rw
       - ./workspace:/agenelf/workspace:rw
       - ./app-space:/agenelf/app-space:rw
@@ -97,7 +98,18 @@ services:
 
   ops-runner:
     build: .
-    command: ["python", "/agenelf/scripts/unified_ops_runner.py", "--interval", "1"]
+    command:
+      - python
+      - /agenelf/scripts/runner_supervisor.py
+      - --name
+      - ops-runner
+      - --heartbeat-interval
+      - "1"
+      - --
+      - python
+      - /agenelf/scripts/unified_ops_runner.py
+      - --interval
+      - "1"
     env_file: .ops-runner.env
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
@@ -116,6 +128,7 @@ services:
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:rw
       - ./data/ops-locks:/agenelf/data/ops-locks:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
       - ./logs:/agenelf/logs:rw
     read_only: true
     tmpfs:
@@ -127,7 +140,18 @@ services:
 
   approval-runner:
     build: .
-    command: ["python", "/agenelf/scripts/approval_runner.py", "--interval", "0.25"]
+    command:
+      - python
+      - /agenelf/scripts/runner_supervisor.py
+      - --name
+      - approval-runner
+      - --heartbeat-interval
+      - "0.5"
+      - --
+      - python
+      - /agenelf/scripts/approval_runner.py
+      - --interval
+      - "0.25"
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     depends_on:
       approval-key-init:
@@ -145,6 +169,7 @@ services:
       - ./data/auth-decisions:/agenelf/data/auth-decisions:rw
       - ./data/approval-results:/agenelf/data/approval-results:rw
       - ./data/approval-locks:/agenelf/data/approval-locks:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
       - ./logs:/agenelf/logs:rw
       - approval-key:/agenelf/approval:ro
     network_mode: none
@@ -160,7 +185,18 @@ services:
 
   self-upgrade-runner:
     build: .
-    command: ["python", "/agenelf/scripts/self_upgrade_runner_entry.py", "--interval", "1"]
+    command:
+      - python
+      - /agenelf/scripts/runner_supervisor.py
+      - --name
+      - self-upgrade-runner
+      - --heartbeat-interval
+      - "1"
+      - --
+      - python
+      - /agenelf/scripts/self_upgrade_runner_entry.py
+      - --interval
+      - "1"
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
       AGENELF_ROOT: /agenelf
@@ -180,6 +216,7 @@ services:
       - ./data/auth-requests:/agenelf/data/auth-requests:ro
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/auth-consumed:/agenelf/data/auth-consumed:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
       - ./logs:/agenelf/logs:rw
       # Explicit repository targets. No .git, .env, local/, secrets, data or Docker socket.
       - ./app:/agenelf/upgrade-target/app:rw
@@ -208,7 +245,18 @@ services:
 
   validation-runner:
     build: .
-    command: ["python", "/agenelf/scripts/validation_runner.py", "--interval", "1"]
+    command:
+      - python
+      - /agenelf/scripts/runner_supervisor.py
+      - --name
+      - validation-runner
+      - --heartbeat-interval
+      - "1"
+      - --
+      - python
+      - /agenelf/scripts/validation_runner.py
+      - --interval
+      - "1"
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
       AGENELF_ROOT: /agenelf
@@ -223,6 +271,7 @@ services:
       - ./data/validation-requests:/agenelf/data/validation-requests:ro
       - ./data/validation-results:/agenelf/data/validation-results:rw
       - ./data/validation-locks:/agenelf/data/validation-locks:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
       - ./logs:/agenelf/logs:rw
     read_only: true
     tmpfs:
@@ -234,7 +283,18 @@ services:
 
   repair-runner:
     build: .
-    command: ["python", "/agenelf/scripts/repair_runner.py", "--interval", "1"]
+    command:
+      - python
+      - /agenelf/scripts/runner_supervisor.py
+      - --name
+      - repair-runner
+      - --heartbeat-interval
+      - "1"
+      - --
+      - python
+      - /agenelf/scripts/repair_runner.py
+      - --interval
+      - "1"
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
       AGENELF_ROOT: /agenelf
@@ -252,6 +312,7 @@ services:
       - ./data/repair-requests:/agenelf/data/repair-requests:ro
       - ./data/repair-results:/agenelf/data/repair-results:rw
       - ./data/repair-locks:/agenelf/data/repair-locks:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
       - ./logs:/agenelf/logs:rw
     network_mode: none
     read_only: true
