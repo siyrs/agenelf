@@ -191,17 +191,30 @@ Runner 返回日志或 inspect 结果前会脱敏：
 
 当主人要求“先完善 Docker 技能、重载后继续修复 VPN”时，Agent 必须先调用 `checkpoint_task_continuation` 保存脱敏、带过期和幂等键的续跑检查点，再进入 autonomy/evolution/restart。
 
-`make chat` 的启动顺序是：
+无论通过 `make chat`，还是直接执行下面这条原有命令：
 
-1. 运行 `app/resume.py`，最多认领一个 `pending` 检查点；
-2. 自动续跑一次；
+```bash
+docker compose exec agenelf python /agenelf/app-fork/cli.py
+```
+
+都由 `cli.py` 统一执行同一套启动顺序：
+
+1. 在创建新的交互 Agent 前，最多认领一个 `pending` 检查点；
+2. 自动续跑一次，已认领的检查点不会被同一启动过程重复执行；
 3. 打开交互 CLI；
-4. 原任务真实完成后，凭运维/测试证据标记 `completed`。
+4. 原任务真实完成后，凭运维、测试或晋升证据标记 `completed`。
 
 自动续跑不会继承新的远程变更授权；新的容器重启仍需精确审批。需要跳过一次自动续跑时：
 
 ```bash
 AGENELF_SKIP_AUTO_RESUME=1 make chat
+```
+
+直接启动容器 CLI 时可使用：
+
+```bash
+docker compose exec -e AGENELF_SKIP_AUTO_RESUME=1 agenelf \
+  python /agenelf/app-fork/cli.py
 ```
 
 ## 9. Compose 安全红线
