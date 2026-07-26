@@ -214,6 +214,9 @@ self_evolution:
     - disable_audit
     - autonomously_merge_main
   candidate_limits:
+    # Stable keys consumed by the ordinary sandbox and existing policy API.
+    max_files: 10
+    max_changed_lines: 500
     ordinary_max_files: 10
     ordinary_max_changed_lines: 500
     authorized_default_max_files: 8
