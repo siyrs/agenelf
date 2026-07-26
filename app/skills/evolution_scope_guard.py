@@ -44,7 +44,7 @@ _PROTECTED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "authorization_control",
         re.compile(
-            r"(?i)审批(?:逻辑|通道|权限)|authorization|approval|auth-decisions|owner_approval|permissions\.py"
+            r"(?i)审批(?:逻辑|通道|权限|策略|控制面)?|authorization|approval|auth-decisions|owner_approval|permissions\.py"
         ),
     ),
     (
