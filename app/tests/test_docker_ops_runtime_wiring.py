@@ -30,6 +30,13 @@ class DockerOpsRuntimeWiringTest(unittest.TestCase):
         self.assertLess(resume_index, cli_index)
         self.assertIn("AGENELF_SKIP_AUTO_RESUME", script)
 
+    def test_direct_cli_invocation_also_attempts_resume(self) -> None:
+        source = (PROJECT_ROOT / "app" / "cli.py").read_text(encoding="utf-8")
+        resume_index = source.index("resume_pending_task(")
+        agent_index = source.index("agent = Agent(config)")
+        self.assertLess(resume_index, agent_index)
+        self.assertIn("AGENELF_SKIP_AUTO_RESUME", source)
+
     def test_default_tool_round_budget_supports_multi_step_recovery(self) -> None:
         config = yaml.safe_load(
             (PROJECT_ROOT / "app" / "config.yaml").read_text(encoding="utf-8")
