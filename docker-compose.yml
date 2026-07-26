@@ -1,9 +1,30 @@
 # Agenelf split-runtime deployment with private owner data and deterministic runners.
 services:
+  approval-key-init:
+    build: .
+    command: ["python", "/agenelf/scripts/init_approval_key.py"]
+    user: "0:0"
+    environment:
+      AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
+    volumes:
+      - ./scripts:/agenelf/scripts:ro
+      - approval-key:/agenelf/approval:rw
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
   agenelf:
     build: .
     env_file: .env
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    depends_on:
+      approval-key-init:
+        condition: service_completed_successfully
     environment:
       AGENELF_ROOT: /agenelf
       AGENELF_LOCAL_DIR: /agenelf/local
@@ -13,6 +34,7 @@ services:
       AGENELF_MODELS_FILE: /agenelf/local/models.yaml
       AGENELF_REPOSITORIES_FILE: /agenelf/local/repositories.yaml
       AGENELF_SCRATCH_DIR: /agenelf/workspace/scratch
+      AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -22,6 +44,8 @@ services:
       - ./data:/agenelf/data:rw
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:ro
+      - ./data/approval-results:/agenelf/data/approval-results:ro
+      - ./data/approval-locks:/agenelf/data/approval-locks:ro
       - ./data/validation-results:/agenelf/data/validation-results:ro
       - ./data/repair-results:/agenelf/data/repair-results:ro
       - ./logs:/agenelf/logs:rw
@@ -36,6 +60,7 @@ services:
       - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
       - ./local/memory:/agenelf/local/memory:rw
       - ./local/self:/agenelf/local/self:rw
+      - approval-key:/agenelf/approval:ro
     read_only: true
     tmpfs:
       - /tmp
@@ -69,6 +94,38 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  approval-runner:
+    build: .
+    command: ["python", "/agenelf/scripts/approval_runner.py", "--interval", "0.25"]
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    depends_on:
+      approval-key-init:
+        condition: service_completed_successfully
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
+    volumes:
+      - ./app-fork:/agenelf/app-fork:ro
+      - ./scripts:/agenelf/scripts:ro
+      - ./data/ops-requests:/agenelf/data/ops-requests:ro
+      - ./data/auth-requests:/agenelf/data/auth-requests:ro
+      - ./data/approval-commands:/agenelf/data/approval-commands:ro
+      - ./data/auth-decisions:/agenelf/data/auth-decisions:rw
+      - ./data/approval-results:/agenelf/data/approval-results:rw
+      - ./data/approval-locks:/agenelf/data/approval-locks:rw
+      - ./logs:/agenelf/logs:rw
+      - approval-key:/agenelf/approval:ro
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    pids_limit: 64
+    mem_limit: 256m
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true
@@ -129,3 +186,6 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+
+volumes:
+  approval-key:

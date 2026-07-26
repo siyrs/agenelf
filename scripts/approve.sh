@@ -1,21 +1,16 @@
 #!/usr/bin/env bash
-# approve.sh — host-only decision gate for exact Agenelf operation requests.
+# Cross-platform compatibility entrypoint.
 #
-# Usage:
-#   bash scripts/approve.sh <op-or-auth-id> [approve|deny] [reason] [--as <name>]
-#
-# The script never edits the Agent-writable request.  It creates a separate
-# decision document in data/auth-decisions/.  That directory must be mounted
-# read-only into the Agent container and read-only into the ops runner.
-#
-# 多票（双签）请求（请求 JSON 含 required_approvers>1）：
-#   每次 approve 向裁决文件的 approvals 数组追加一票（decided_by 取 $USER
-#   或 --as <name>）；不同批准人票数达到 required_approvers 才把 decision
-#   翻为 approved 并刷新 expires_at；同一批准人重复投票退出码 3；
-#   deny 任意时刻一票即决。单签请求行为与历史版本完全一致。
+# Normal repository deployments delegate to approve.py so Windows, macOS and Linux
+# share the same implementation. Some existing tests and older installations copy
+# this file alone; when approve.py is absent, retain the audited standalone fallback.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/approve.py" ]]; then
+  exec python3 "${SCRIPT_DIR}/approve.py" "$@"
+fi
+
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REQUEST_ID=""
 ACTION="approve"
@@ -136,7 +131,6 @@ now = datetime.now().astimezone()
 reason = os.environ.get("REASON", "").strip()
 
 if action == "deny":
-    # deny 任意时刻一票即决；可终止仍在收集票数的多票请求。
     decision = {
         "schema_version": 1,
         "request_id": request_id,
@@ -153,7 +147,6 @@ if action == "deny":
         handle.write("\n")
     os.chmod(decision_path, 0o600)
 elif required_approvers > 1:
-    # 多票（双签）：逐票累计，达到法定人数才翻为 approved 并刷新 expires_at。
     approvals = []
     if existing:
         approvals = [
@@ -196,7 +189,6 @@ elif required_approvers > 1:
         handle.write("\n")
     os.chmod(decision_path, 0o600)
 else:
-    # 单签：与历史版本完全一致，独占创建、禁止覆盖。
     decision = {
         "schema_version": 1,
         "request_id": request_id,

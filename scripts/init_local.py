@@ -45,6 +45,40 @@ def _write_json_if_missing(path: Path, value, actions: list[str]) -> None:
     actions.append(f"创建 {path.relative_to(ROOT)}")
 
 
+def _ensure_runtime_directories(actions: list[str]) -> None:
+    directories = (
+        ROOT / "logs",
+        ROOT / "workspace" / "scratch",
+        ROOT / "app-space" / "skills",
+        ROOT / "app-tmp",
+        ROOT / "app-fork",
+        ROOT / "data" / "auth-requests",
+        ROOT / "data" / "auth-decisions",
+        ROOT / "data" / "auth-consumed",
+        ROOT / "data" / "ops-requests",
+        ROOT / "data" / "ops-results",
+        ROOT / "data" / "ops-locks",
+        ROOT / "data" / "approval-commands",
+        ROOT / "data" / "approval-results",
+        ROOT / "data" / "approval-locks",
+        ROOT / "data" / "validation-requests",
+        ROOT / "data" / "validation-results",
+        ROOT / "data" / "validation-locks",
+        ROOT / "data" / "repair-requests",
+        ROOT / "data" / "repair-results",
+        ROOT / "data" / "repair-locks",
+        ROOT / "data" / "tasks",
+        ROOT / "data" / "channel-requests",
+        ROOT / "data" / "promote-requests",
+        ROOT / "data" / "promotion-history",
+        ROOT / "data" / "autonomy-cycles",
+    )
+    for directory in directories:
+        if not directory.exists():
+            directory.mkdir(parents=True, exist_ok=True)
+            actions.append(f"创建 {directory.relative_to(ROOT)}/")
+
+
 def initialize(migrate: bool = True) -> dict:
     actions: list[str] = []
     directories = (
@@ -62,6 +96,7 @@ def initialize(migrate: bool = True) -> dict:
         if not directory.exists():
             directory.mkdir(parents=True, exist_ok=True)
             actions.append(f"创建 {directory.relative_to(ROOT)}/")
+    _ensure_runtime_directories(actions)
 
     profile_sources = []
     servers_sources = []
@@ -172,6 +207,8 @@ def status() -> dict:
         )
         if (LOCAL / "secrets").is_dir()
         else 0,
+        "approval_queue": (ROOT / "data" / "approval-commands").is_dir(),
+        "approval_results": (ROOT / "data" / "approval-results").is_dir(),
     }
 
 
