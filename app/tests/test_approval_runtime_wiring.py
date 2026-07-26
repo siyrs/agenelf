@@ -36,11 +36,31 @@ class ApprovalRuntimeWiringTest(unittest.TestCase):
             "./data/approval-results:/agenelf/data/approval-results:rw",
             broker_volumes,
         )
+        self.assertIn(
+            "./data/runner-health:/agenelf/data/runner-health:rw",
+            broker_volumes,
+        )
+        self.assertIn(
+            "./data/runner-health:/agenelf/data/runner-health:ro",
+            agent_volumes,
+        )
         self.assertEqual(broker["network_mode"], "none")
         self.assertFalse(any("local/secrets" in item for item in broker_volumes))
         self.assertEqual(
             broker["command"],
-            ["python", "/agenelf/scripts/approval_runner.py", "--interval", "0.25"],
+            [
+                "python",
+                "/agenelf/scripts/runner_supervisor.py",
+                "--name",
+                "approval-runner",
+                "--heartbeat-interval",
+                "0.5",
+                "--",
+                "python",
+                "/agenelf/scripts/approval_runner.py",
+                "--interval",
+                "0.25",
+            ],
         )
 
     def test_key_init_is_isolated_and_shared_read_only(self):
