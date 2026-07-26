@@ -22,6 +22,17 @@ servers:
       - compose_deploy
       - service_restart
       - docker_install
+    allowed_docker_operations:
+      - get_docker_logs
+      - inspect_docker_container
+      - run_docker_check
+      - restart_docker_container
+    # Optional least-privilege examples:
+    # allowed_containers: [sing-box]
+    # docker_checks:
+    #   sing-box-config:
+    #     container: sing-box
+    #     argv: [sing-box, check, -c, /etc/sing-box/config.json]
     allowed_services:
       - docker
       - nginx
