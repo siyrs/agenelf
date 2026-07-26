@@ -71,6 +71,25 @@ class ApprovalRuntimeWiringTest(unittest.TestCase):
         self.assertLess(shell.index("approve.py"), shell.index("DECISIONS_DIR"))
         self.assertIn('if [[ -f "${SCRIPT_DIR}/approve.py" ]]', shell)
 
+    def test_host_approval_prefers_app_source_over_stale_runtime_copy(self):
+        script = (ROOT / "scripts/approve.py").read_text(encoding="utf-8")
+        self.assertIn('SOURCE_APP = ROOT / "app"', script)
+        self.assertIn('RUNTIME_APP = ROOT / "app-fork"', script)
+        self.assertIn(
+            "APP_DIR = SOURCE_APP if SOURCE_APP.is_dir() else RUNTIME_APP",
+            script,
+        )
+        self.assertLess(script.index("SOURCE_APP"), script.index("RUNTIME_APP"))
+
+    def test_native_windows_sync_mirrors_app_and_handles_robocopy_exit_codes(self):
+        script = (ROOT / "scripts/sync_fork.ps1").read_text(encoding="utf-8")
+        self.assertIn('Join-Path $Root "app"', script)
+        self.assertIn('Join-Path $Root "app-fork"', script)
+        self.assertIn('"/MIR"', script)
+        self.assertIn('"/XD", "__pycache__"', script)
+        self.assertIn('"/XF", "*.pyc"', script)
+        self.assertIn("if ($Code -ge 8)", script)
+
     def test_approval_key_init_is_persistent(self):
         script = ROOT / "scripts/init_approval_key.py"
         spec = importlib.util.spec_from_file_location(
