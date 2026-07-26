@@ -23,7 +23,9 @@ _REDLINE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "新增凭据读取",
         re.compile(
-            r"local/secrets|(?:read_text|read_bytes|open)\([^\n]{0,180}(?:\.env|approval/key)|"
+            r"local/secrets|"
+            r"(?:read_text|read_bytes|open)\([^\n]{0,180}(?:\.env|approval/key)|"
+            r"(?:\.env|approval/key)[^\n]{0,180}(?:read_text|read_bytes|open)|"
             r"AGENELF_APPROVAL_KEY[^\n]{0,180}(?:read|open)|"
             r"auth-decisions[^\n]{0,180}(?:write_text|write_bytes|open\([^)]*['\"]w)",
             re.I,
@@ -154,7 +156,9 @@ def scan_redlines(path: str, content: str) -> None:
     additions = added_text(before, str(content or ""))
     for label, pattern in _REDLINE_PATTERNS:
         if pattern.search(additions):
-            raise RuntimeError(f"候选 {normalized} 新增代码命中永久安全红线：{label}")
+            raise RuntimeError(
+                f"候选 {normalized} 新增代码命中永久安全红线：{label}"
+            )
 
     required = _REQUIRED_TOKENS_BY_PATH.get(normalized, ())
     missing = [token for token in required if token not in str(content or "")]
@@ -167,5 +171,15 @@ def scan_redlines(path: str, content: str) -> None:
 def install(module: Any) -> None:
     """Install this scanner into the already imported authorized-upgrade module."""
 
-    module.scan_redlines = scan_redlines
+    domain_error = getattr(module, "AuthorizedUpgradeError", None)
+    if isinstance(domain_error, type) and issubclass(domain_error, Exception):
+        def domain_scanner(path: str, content: str) -> None:
+            try:
+                scan_redlines(path, content)
+            except RuntimeError as exc:
+                raise domain_error(str(exc)) from exc
+
+        module.scan_redlines = domain_scanner
+    else:
+        module.scan_redlines = scan_redlines
     module._agenelf_diff_redlines_installed = True
