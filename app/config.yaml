@@ -5,7 +5,7 @@ llm:
   temperature: 0.6
 agent:
   name: "Agenelf"
-  max_tool_rounds: 8
+  max_tool_rounds: 16
   history_max_messages: 12
   memory_prompt_limit: 50
   memory_prompt_max_chars: 8000
