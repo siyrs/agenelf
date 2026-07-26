@@ -25,8 +25,22 @@ TOOLS: list[dict[str, Any]] = []
 
 
 def configure_runtime(*, agent: Any, **_: Any) -> None:
-    del agent
     upgrade_redlines.install(authorized_upgrade)
+    try:
+        from core import autonomy
+
+        current = set(getattr(autonomy, "_PROTECTED_PATHS", frozenset()))
+        autonomy._PROTECTED_PATHS = frozenset(
+            current
+            | {
+                "core/upgrade_redlines.py",
+                "skills/authorized_upgrade_redlines.py",
+            }
+        )
+    except Exception:
+        # The host gate and governance validator independently enforce the same rule.
+        pass
+    del agent
 
 
 def execute(tool_name: str, args: dict[str, Any]) -> str:
