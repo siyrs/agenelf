@@ -20,6 +20,7 @@ servers:
       - service_status
       - apt_update
       - compose_deploy
+      - compose_down
       - service_restart
       - docker_install
     allowed_docker_operations:

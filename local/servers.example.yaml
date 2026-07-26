@@ -19,6 +19,9 @@ servers:
       - service_status
       - apt_update
       - compose_deploy
+      # Safe inverse lifecycle action. It never removes volumes or images and still
+      # requires an exact owner approval for every target/project/parameter set.
+      - compose_down
       - service_restart
       - docker_install
     allowed_docker_operations:

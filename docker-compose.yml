@@ -1,7 +1,8 @@
 # Agenelf split-runtime deployment with private owner data and deterministic runners.
-# app/ is mounted read-only at the historical /agenelf/app-fork path so git pull
-# updates are immediately visible after container recreation; app-fork/ remains a
-# legacy export/backup directory and is no longer a runtime source of truth.
+# Current app/ is mounted read-only at the historical /agenelf/app-fork path.
+# app-tmp/ is the only writable code-candidate bind and is visible to host gate/promote.
+# repo-source/ is assembled from explicit non-secret fixtures only; local secrets and
+# owner-specific configuration are never included in an evolution workspace.
 services:
   approval-key-init:
     build: .
@@ -43,8 +44,29 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./app:/agenelf/app-fork:ro
+      - ./app-tmp:/agenelf/app-tmp:rw
       - ./scripts:/agenelf/scripts:ro
       - ./policy:/agenelf/policy:ro
+      # Safe repository fixtures used only to stage app-tmp/repo for full tests.
+      - ./.github:/agenelf/repo-source/.github:ro
+      - ./docs:/agenelf/repo-source/docs:ro
+      - ./Dockerfile:/agenelf/repo-source/Dockerfile:ro
+      - ./Makefile:/agenelf/repo-source/Makefile:ro
+      - ./README.md:/agenelf/repo-source/README.md:ro
+      - ./docker-compose.yml:/agenelf/repo-source/docker-compose.yml:ro
+      - ./.env.example:/agenelf/repo-source/.env.example:ro
+      - ./.ops-runner.env.example:/agenelf/repo-source/.ops-runner.env.example:ro
+      - ./.gitignore:/agenelf/repo-source/.gitignore:ro
+      - ./.gitleaks.toml:/agenelf/repo-source/.gitleaks.toml:ro
+      - ./config/servers.example.yaml:/agenelf/repo-source/config/servers.example.yaml:ro
+      - ./local/profile.example.yaml:/agenelf/repo-source/local/profile.example.yaml:ro
+      - ./local/preferences.example.yaml:/agenelf/repo-source/local/preferences.example.yaml:ro
+      - ./local/servers.example.yaml:/agenelf/repo-source/local/servers.example.yaml:ro
+      - ./local/validation.example.yaml:/agenelf/repo-source/local/validation.example.yaml:ro
+      - ./local/models.example.yaml:/agenelf/repo-source/local/models.example.yaml:ro
+      - ./local/repositories.example.yaml:/agenelf/repo-source/local/repositories.example.yaml:ro
+      - ./local/context.example.md:/agenelf/repo-source/local/context.example.md:ro
+      - ./local/self/intentions.template.json:/agenelf/repo-source/local/self/intentions.template.json:ro
       - ./data:/agenelf/data:rw
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:ro
@@ -68,7 +90,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-      - /agenelf/app-tmp:uid=1000,gid=1000,mode=755
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true

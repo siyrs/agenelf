@@ -5,9 +5,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_TMP="${ROOT_DIR}/app-tmp"
-APP_FORK="${ROOT_DIR}/app-fork"
+BASE_APP="${ROOT_DIR}/app"
+[[ -d "${BASE_APP}" ]] || BASE_APP="${ROOT_DIR}/app-fork"
+if [[ -d "${APP_TMP}/repo/app" ]]; then
+    CANDIDATE_APP="${APP_TMP}/repo/app"
+    CANDIDATE_REPO="${APP_TMP}/repo"
+else
+    CANDIDATE_APP="${APP_TMP}"
+    CANDIDATE_REPO="${ROOT_DIR}"
+fi
 LOG_FILE="${ROOT_DIR}/logs/evolution.log"
 TREE_DIGEST="${SCRIPT_DIR}/tree_digest.py"
+TEST_RUNNER="${SCRIPT_DIR}/run_candidate_tests.py"
 REQ_ID="${1:-req-$(date +%Y%m%d-%H%M%S)}"
 
 if [[ ! "${REQ_ID}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
@@ -36,11 +45,13 @@ fail() {
 }
 
 log "[gate] ===== 开始底线检查，请求ID：${REQ_ID} ====="
-if [[ ! -d "${APP_TMP}" ]] || [[ -z "$(ls -A "${APP_TMP}" 2>/dev/null)" ]]; then
-    fail "app-tmp/ 为空，没有可检查的改动"
+log "[gate] 基线 app：${BASE_APP}"
+log "[gate] 候选 app：${CANDIDATE_APP}（repo=${CANDIDATE_REPO}）"
+if [[ ! -d "${CANDIDATE_APP}" ]] || [[ -z "$(ls -A "${CANDIDATE_APP}" 2>/dev/null)" ]]; then
+    fail "候选 app 为空，没有可检查的改动"
 fi
-if [[ ! -d "${APP_FORK}" ]] || [[ -z "$(ls -A "${APP_FORK}" 2>/dev/null)" ]]; then
-    fail "app-fork/ 为空，无法对比基线，请先运行 scripts/sync_fork.sh"
+if [[ ! -d "${BASE_APP}" ]] || [[ -z "$(ls -A "${BASE_APP}" 2>/dev/null)" ]]; then
+    fail "当前 app 基线为空，无法对比"
 fi
 if [[ ! -f "${TREE_DIGEST}" ]]; then
     fail "可信摘要脚本不存在：${TREE_DIGEST}"
@@ -52,10 +63,10 @@ ADDED_LINES="$(mktemp)"
 TEST_LOG=""
 trap 'rm -f "${PATTERN_FILE}" "${PROTECTED_PATTERNS}" "${ADDED_LINES}" ${TEST_LOG:+"${TEST_LOG}"}' EXIT
 
-diff -ruN --exclude='__pycache__' "${APP_FORK}" "${APP_TMP}" 2>/dev/null \
+diff -ruN --exclude='__pycache__' --exclude='*.pyc' "${BASE_APP}" "${CANDIDATE_APP}" 2>/dev/null \
     | grep -E '^\+' | grep -vE '^\+\+\+' | sed 's/^+//' > "${ADDED_LINES}" || true
 
-log "[gate] 检查 a/6：新增代码危险模式"
+log "[gate] 检查 a/7：新增代码危险模式"
 cat > "${PATTERN_FILE}" <<'PATTERNS_EOF'
 rm[[:space:]]+-rf[[:space:]]+/([[:space:]"';|&)]|$)
 mkfs
@@ -73,7 +84,7 @@ if HITS="$(grep -EnI -f "${PATTERN_FILE}" "${ADDED_LINES}" 2>/dev/null)"; then
 fi
 pass "新增代码未发现危险模式"
 
-log "[gate] 检查 b/6：受保护宿主机与主人配置写入意图"
+log "[gate] 检查 b/7：受保护宿主机与主人配置写入意图"
 cat > "${PROTECTED_PATTERNS}" <<'PROTECTED_EOF'
 open\([^)]*(scripts/|\.env([^a-zA-Z]|$)|docker-compose|local/(profile|preferences|servers|memory|self)|local/(validation|models|repositories)|local/secrets|code-workspaces|repair-space)[^)]*['"][wax]
 (shutil\.(copy|copyfile|copytree|move)|os\.(remove|rename|replace|unlink|chmod|rmdir))\([^)]*(scripts/|\.env|docker-compose|local/(profile|preferences|servers|memory|self)|local/(validation|models|repositories)|local/secrets|code-workspaces|repair-space)
@@ -89,7 +100,7 @@ if [[ -n "${PROTECTED_HITS}" ]]; then
 fi
 pass "受保护路径检查通过"
 
-log "[gate] 检查 c/6：安全关键应用模块不可由 Agent 自主修改"
+log "[gate] 检查 c/7：安全关键应用模块不可由 Agent 自主修改"
 PROTECTED_APP_FILES=(
     "core/autonomy.py"
     "core/operations.py"
@@ -110,20 +121,26 @@ PROTECTED_APP_FILES=(
     "core/model_router.py"
     "core/channel_envelope.py"
     "core/self_optimization.py"
+    "core/continuous_chat.py"
+    "core/reasoning_trace.py"
+    "core/evolution_workspace.py"
     "skills/code_repair.py"
     "skills/code_writer.py"
     "skills/skill_forge.py"
     "skills/workflow_tasks.py"
     "skills/model_routing.py"
     "skills/evolution_ops.py"
+    "skills/evolution_scope_guard.py"
     "skills/server_ops.py"
+    "skills/compose_lifecycle.py"
+    "skills/zz_transport_resilience.py"
     "skills/local_context.py"
     "skills/self_development.py"
     "skills/software_validation.py"
 )
 for rel in "${PROTECTED_APP_FILES[@]}"; do
-    baseline="${APP_FORK}/${rel}"
-    candidate="${APP_TMP}/${rel}"
+    baseline="${BASE_APP}/${rel}"
+    candidate="${CANDIDATE_APP}/${rel}"
     if [[ -e "${baseline}" || -e "${candidate}" ]]; then
         if [[ ! -e "${baseline}" || ! -e "${candidate}" ]] || ! cmp -s "${baseline}" "${candidate}"; then
             fail "安全关键模块发生变化：${rel}；只能通过人类主导的仓库变更修改"
@@ -132,11 +149,27 @@ for rel in "${PROTECTED_APP_FILES[@]}"; do
 done
 pass "安全关键模块与基线一致"
 
-log "[gate] 检查 d/6：改动规模限值（文件数 <= 10，总行数 <= 500）"
+log "[gate] 检查 d/7：既有测试和测试夹具不可删除或修改"
+if [[ ! -d "${BASE_APP}/tests" ]] || [[ ! -d "${CANDIDATE_APP}/tests" ]]; then
+    fail "基线或候选缺少 tests/ 目录"
+fi
+while IFS= read -r -d '' baseline_test; do
+    rel="${baseline_test#${BASE_APP}/}"
+    candidate_test="${CANDIDATE_APP}/${rel}"
+    if [[ ! -f "${candidate_test}" ]]; then
+        fail "既有测试被删除：${rel}"
+    fi
+    if ! cmp -s "${baseline_test}" "${candidate_test}"; then
+        fail "既有测试被修改：${rel}；禁止削弱测试或 monkey-patch 门禁"
+    fi
+done < <(find "${BASE_APP}/tests" -type f ! -path '*/__pycache__/*' ! -name '*.pyc' -print0)
+pass "既有测试全部保持字节级一致；候选只能新增 test_*.py"
+
+log "[gate] 检查 e/7：改动规模限值（文件数 <= 10，总行数 <= 500）"
 MAX_FILES=10
 MAX_LINES=500
-CHANGED_FILES="$(diff -rq --exclude='__pycache__' "${APP_FORK}" "${APP_TMP}" | wc -l | tr -d ' ' || true)"
-CHANGED_LINES="$(diff -ruN --exclude='__pycache__' "${APP_FORK}" "${APP_TMP}" | grep -E '^[+-]' | grep -cvE '^(\+\+\+|---)' || true)"
+CHANGED_FILES="$(diff -rq --exclude='__pycache__' --exclude='*.pyc' "${BASE_APP}" "${CANDIDATE_APP}" | wc -l | tr -d ' ' || true)"
+CHANGED_LINES="$(diff -ruN --exclude='__pycache__' --exclude='*.pyc' "${BASE_APP}" "${CANDIDATE_APP}" | grep -E '^[+-]' | grep -cvE '^(\+\+\+|---)' || true)"
 CHANGED_LINES="${CHANGED_LINES//[^0-9]/}"
 : "${CHANGED_LINES:=0}"
 log "变更文件数：${CHANGED_FILES}（上限 ${MAX_FILES}），变更行数：${CHANGED_LINES}（上限 ${MAX_LINES}）"
@@ -144,28 +177,31 @@ if (( CHANGED_FILES > MAX_FILES )); then fail "变更文件数 ${CHANGED_FILES} 
 if (( CHANGED_LINES > MAX_LINES )); then fail "变更行数 ${CHANGED_LINES} 超过上限 ${MAX_LINES}"; fi
 pass "改动规模在限值内"
 
-log "[gate] 检查 e/6：运行全部单元测试"
-if [[ ! -d "${APP_TMP}/tests" ]]; then fail "app-tmp/ 中缺少 tests/ 目录，无法验证正确性"; fi
+log "[gate] 检查 f/7：可信基线与候选新增测试分离执行"
 TEST_LOG="$(mktemp)"
-if (cd "${APP_TMP}" && python3 -m pytest --version >/dev/null 2>&1); then
-    TEST_CMD="python3 -m pytest tests -q"
+if [[ -f "${TEST_RUNNER}" ]]; then
+    TEST_CMD=(python3 "${TEST_RUNNER}" --baseline "${BASE_APP}" --candidate "${CANDIDATE_APP}" --phase candidate --timeout 300)
+    log "测试命令：${TEST_CMD[*]}"
+    if ! "${TEST_CMD[@]}" > "${TEST_LOG}" 2>&1; then
+        log "测试输出（末尾 80 行）："
+        tail -n 80 "${TEST_LOG}" | while IFS= read -r line; do log "  ${line}"; done
+        fail "可信基线或候选新增测试未通过，拒绝晋升"
+    fi
 else
-    TEST_CMD='for t in tests/test_*.py; do python3 "${t}" || exit 1; done'
+    log "兼容模式：run_candidate_tests.py 不存在，执行 legacy unittest discover"
+    if ! (cd "${CANDIDATE_APP}" && export PYTHONPATH="${CANDIDATE_APP}:${CANDIDATE_REPO}${PYTHONPATH:+:${PYTHONPATH}}" && python3 -m unittest discover -s tests -v) > "${TEST_LOG}" 2>&1; then
+        tail -n 80 "${TEST_LOG}" | while IFS= read -r line; do log "  ${line}"; done
+        fail "单元测试未通过，拒绝晋升"
+    fi
 fi
-log "测试命令：${TEST_CMD}"
-# 注入 PYTHONPATH，保证不带 sys.path 引导的测试文件也能直接 import core/skills
-if ! (cd "${APP_TMP}" && export PYTHONPATH="${APP_TMP}${PYTHONPATH:+:${PYTHONPATH}}" && eval "${TEST_CMD}") > "${TEST_LOG}" 2>&1; then
-    log "测试输出（末尾 50 行）："
-    tail -n 50 "${TEST_LOG}" | while IFS= read -r line; do log "  ${line}"; done
-    fail "单元测试未通过，拒绝晋升"
-fi
-TEST_SUMMARY="$(tail -n 3 "${TEST_LOG}" | tr '\n' ' ')"
-pass "单元测试全部通过（${TEST_SUMMARY}）"
+TEST_SUMMARY="$(tail -n 5 "${TEST_LOG}" | tr '\n' ' ')"
+pass "测试全部通过（${TEST_SUMMARY}）"
 
-log "[gate] 检查 f/6：生成候选代码树完整性摘要"
-if ! CANDIDATE_SHA="$(python3 "${TREE_DIGEST}" "${APP_TMP}")"; then fail "无法计算候选代码树摘要"; fi
+log "[gate] 检查 g/7：生成候选 app 树完整性摘要"
+if ! CANDIDATE_SHA="$(python3 "${TREE_DIGEST}" "${CANDIDATE_APP}")"; then fail "无法计算候选代码树摘要"; fi
 if [[ ! "${CANDIDATE_SHA}" =~ ^[0-9a-f]{64}$ ]]; then fail "候选摘要格式异常：${CANDIDATE_SHA}"; fi
 printf '%s\n' "${CANDIDATE_SHA}" > "${REQ_DIR}/candidate.sha256"
+printf '%s\n' "${CANDIDATE_APP}" > "${REQ_DIR}/candidate-app-path.txt"
 pass "候选摘要：${CANDIDATE_SHA}"
 printf '全部底线检查通过。候选摘要：%s。可执行 scripts/promote.sh %s\n' "${CANDIDATE_SHA}" "${REQ_ID}" > "${REQ_DIR}/READY"
 log "[gate] ===== 全部检查通过，READY 已绑定候选摘要 ====="
