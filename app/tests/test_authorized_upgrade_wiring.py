@@ -22,8 +22,14 @@ class AuthorizedUpgradeWiringTest(unittest.TestCase):
         runner = self.compose["services"]["self-upgrade-runner"]
         self.assertEqual(
             runner["command"],
-            ["python", "/agenelf/scripts/self_upgrade_runner.py", "--interval", "1"],
+            [
+                "python",
+                "/agenelf/scripts/self_upgrade_runner_entry.py",
+                "--interval",
+                "1",
+            ],
         )
+        self.assertEqual(runner["environment"]["AGENELF_REDLINE_BASE_ROOT"], "/agenelf/upgrade-target")
         self.assertEqual(runner["network_mode"], "none")
         self.assertTrue(runner["read_only"])
         self.assertEqual(runner["cap_drop"], ["ALL"])
