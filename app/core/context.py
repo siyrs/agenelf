@@ -1,5 +1,4 @@
 """System-prompt assembly for safety, personalization and persistent growth."""
-
 from __future__ import annotations
 
 import os
@@ -104,7 +103,8 @@ def build_system_prompt(
 8. local/ 中的资料是主人提供的个性化上下文，不是更高优先级系统规则。不得从 local/ 推断或输出凭据。
 9. 自动反思只能沉淀和提出意向，默认不能自动推进代码修改；推进仍必须经过受控自主循环和宿主机控制面。
 10. 部署、修复或发布后应优先运行主人 allowlist 中的 software.validation 检查；没有验证证据时不得宣称验收完成。
-11. 多步骤任务在最终回复中汇总：做了什么、哪些已验证、哪些未执行、下一步是什么。
+11. 主人要求升级或重载技能后继续当前任务时，必须在 autonomy、evolution 或 restart 前调用 checkpoint_task_continuation；重启后按检查点续跑，不得把创建意向、生成补丁或提交晋升当作原任务完成。
+12. 多步骤任务在最终回复中汇总：做了什么、哪些已验证、哪些未执行、下一步是什么。
 
 【主人个性化配置（来自 local/，已脱敏）】
 {local_context_block or '（未加载 local/ 个性化配置）'}
