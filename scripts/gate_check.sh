@@ -125,10 +125,14 @@ PROTECTED_APP_FILES=(
     "core/reasoning_trace.py"
     "core/evolution_workspace.py"
     "core/authorized_upgrade.py"
+    "core/upgrade_redlines.py"
     "core/approval_catalog.py"
     "core/owner_approval.py"
     "core/cli_approval.py"
+    "core/runtime_health.py"
     "skills/authorized_self_upgrade.py"
+    "skills/authorized_upgrade_redlines.py"
+    "skills/runtime_doctor.py"
     "skills/code_repair.py"
     "skills/code_writer.py"
     "skills/skill_forge.py"
@@ -152,7 +156,7 @@ for rel in "${PROTECTED_APP_FILES[@]}"; do
         fi
     fi
 done
-pass "授权升级控制面与其他安全关键模块保持基线一致"
+pass "授权升级、Runner 心跳与其他安全关键模块保持基线一致"
 
 log "[gate] 检查 d/7：既有测试和测试夹具不可删除或修改"
 if [[ ! -d "${BASE_APP}/tests" ]] || [[ ! -d "${CANDIDATE_APP}/tests" ]]; then
