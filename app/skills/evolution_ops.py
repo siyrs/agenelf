@@ -1,7 +1,7 @@
 """Controlled self-evolution tools backed by a repository-shaped candidate workspace.
 
-The runtime code remains read-only.  Every candidate is staged inside ``app-tmp`` and
-is visible to the host gate through a bind mount.  Existing tests are immutable:
+The runtime code remains read-only. Every candidate is staged inside ``app-tmp`` and
+is visible to the host gate through a bind mount. Existing tests are immutable:
 a candidate may add a new ``tests/test_*.py`` file, but it cannot modify or delete any
 trusted baseline test to make a broken implementation appear green.
 """
@@ -27,7 +27,6 @@ from core.evolution_workspace import (
     baseline_test_manifest,
     candidate_app,
     candidate_path,
-    candidate_repo,
     clear_tree_contents,
     stage_workspace,
     validate_relative_app_path,
@@ -189,7 +188,9 @@ def _now() -> str:
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(value, handle, ensure_ascii=False, indent=2)
@@ -235,7 +236,9 @@ def _workspace_lock(root: Path) -> Iterator[None]:
     try:
         descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
-        raise EvolutionWorkspaceError("已有自我迭代正在准备候选，请先查看 evolution_status") from exc
+        raise EvolutionWorkspaceError(
+            "已有自我迭代正在准备候选，请先查看 evolution_status"
+        ) from exc
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(f"pid={os.getpid()} at={_now()}\n")
@@ -246,14 +249,21 @@ def _workspace_lock(root: Path) -> Iterator[None]:
 
 def _bash() -> str:
     if os.name == "nt":
-        candidate = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
+        candidate = (
+            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+            / "Git"
+            / "bin"
+            / "bash.exe"
+        )
         if candidate.is_file():
             return str(candidate)
     return "bash"
 
 
 def _safe_output(process: subprocess.CompletedProcess[str]) -> str:
-    output = "\n".join(part.strip() for part in (process.stdout, process.stderr) if part and part.strip())
+    output = "\n".join(
+        part.strip() for part in (process.stdout, process.stderr) if part and part.strip()
+    )
     return output[-8000:] if len(output) > 8000 else output
 
 
@@ -281,7 +291,9 @@ def _fallback_unittest(candidate: Path) -> tuple[int, str]:
     return process.returncode, _safe_output(process)
 
 
-def _run_candidate_tests(root: Path, session: dict[str, Any], phase: str) -> tuple[int, str]:
+def _run_candidate_tests(
+    root: Path, session: dict[str, Any], phase: str
+) -> tuple[int, str]:
     script = root / "scripts" / "run_candidate_tests.py"
     candidate = Path(str(session["candidate_app"]))
     baseline = _source_app(root)
@@ -334,7 +346,10 @@ def evolution_begin(goal: str) -> str:
             marker = stage_workspace(root, source)
             session: dict[str, Any] = {
                 "schema_version": 2,
-                "id": f"evo-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}",
+                "id": (
+                    f"evo-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-"
+                    f"{uuid.uuid4().hex[:6]}"
+                ),
                 "goal": goal,
                 "started_at": _now(),
                 "updated_at": _now(),
@@ -361,7 +376,8 @@ def evolution_begin(goal: str) -> str:
                 _save_session(root, session)
                 return (
                     f"自我迭代已阻断（ID：{session['id']}）：基线预检失败。\n"
-                    "这属于运行环境或当前仓库基线问题，不会进入模型补丁阶段，也不会修改测试绕过门禁。\n"
+                    "这属于运行环境或当前仓库基线问题，不会进入模型补丁阶段，"
+                    "也不会修改测试绕过门禁。\n"
                     f"候选布局：{session['layout']}\n输出：\n{output or '（无输出）'}"
                 )
             session["status"] = "editing"
@@ -393,7 +409,9 @@ def evolution_write_file(path: str, content: str) -> str:
     try:
         relative = validate_relative_app_path(path)
         if relative in _PROTECTED_APP_PATHS:
-            raise EvolutionWorkspaceError(f"安全关键模块只能由人类主导仓库变更修改：{relative}")
+            raise EvolutionWorkspaceError(
+                f"安全关键模块只能由人类主导仓库变更修改：{relative}"
+            )
         if relative.startswith("tests/"):
             if not Path(relative).name.startswith("test_"):
                 raise EvolutionWorkspaceError("自主候选只能新增 tests/test_*.py")
@@ -406,7 +424,9 @@ def evolution_write_file(path: str, content: str) -> str:
         destination = candidate_path(root, relative)
         destination.parent.mkdir(parents=True, exist_ok=True)
         safe = content.replace("\ud800", "\\ud800").replace("\udfff", "\\udfff")
-        destination.write_text(safe if safe.endswith("\n") else safe + "\n", encoding="utf-8")
+        destination.write_text(
+            safe if safe.endswith("\n") else safe + "\n", encoding="utf-8"
+        )
         manifest = session.get("baseline_tests", {})
         if isinstance(manifest, dict):
             assert_trusted_tests_unchanged(candidate_app(root), manifest)
@@ -451,10 +471,15 @@ def evolution_run_tests() -> str:
     }
     _save_session(root, session)
     verdict = "通过" if passed else "未通过"
-    guidance = "" if passed else (
-        "\n请修复候选实现或新增测试；既有测试、CI、策略和 gate 不属于可绕过对象。"
+    guidance = (
+        ""
+        if passed
+        else "\n请修复候选实现或新增测试；既有测试、CI、策略和 gate 不属于可绕过对象。"
     )
-    return f"候选测试{verdict}（退出码 {code}）。\n输出：\n{output or '（无输出）'}{guidance}"
+    return (
+        f"候选测试{verdict}（退出码 {code}）。\n"
+        f"输出：\n{output or '（无输出）'}{guidance}"
+    )
 
 
 def evolution_request_promotion() -> str:
@@ -465,14 +490,21 @@ def evolution_request_promotion() -> str:
     if session.get("status") == "promotion_requested":
         return f"晋升请求已提交过（会话 {session.get('id')}），请查看 evolution_status"
     if not session.get("tests_passed"):
-        return "晋升请求被拒绝：可信基线与候选新增测试尚未全部通过"
+        return (
+            "晋升请求被拒绝：测试尚未通过"
+            "（可信基线与候选新增测试必须全部通过）"
+        )
 
     gate = root / "scripts" / "gate_check.sh"
     if not gate.is_file():
         return f"晋升请求被拒绝：安全脚本不存在：{gate}"
     try:
         process = subprocess.run(
-            [_bash(), gate.as_posix() if os.name == "nt" else str(gate), str(session["id"])],
+            [
+                _bash(),
+                gate.as_posix() if os.name == "nt" else str(gate),
+                str(session["id"]),
+            ],
             cwd=root,
             capture_output=True,
             text=True,
@@ -526,11 +558,15 @@ def evolution_status() -> str:
             f"  最近更新：{session.get('updated_at')}"
         )
     requests = _data(root) / "promote-requests"
-    entries = sorted(
-        (item for item in requests.iterdir() if item.is_dir()),
-        key=lambda item: item.stat().st_mtime,
-        reverse=True,
-    ) if requests.is_dir() else []
+    entries = (
+        sorted(
+            (item for item in requests.iterdir() if item.is_dir()),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        if requests.is_dir()
+        else []
+    )
     if entries:
         lines.append("最近晋升请求：")
         for entry in entries[:5]:
