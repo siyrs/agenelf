@@ -14,6 +14,7 @@ from rich.table import Table
 
 from core import operations
 from core.agent import Agent
+from core.cli_approval import handle_owner_decision, show_pending
 from core.configuration import load_config as load_shared_config
 from resume import run_once as resume_pending_task
 
@@ -280,7 +281,7 @@ def main() -> int:
     console.print(
         Panel(
             f"模型：[cyan]{agent.llm.model}[/cyan] | 技能：[green]{len(agent.registry.skills)}[/green] | 能力域：[green]{len(agent.registry.capability_catalog())}[/green]\n"
-            "命令：/self /assess /scorecard /roadmap /mind /reflect [--deep] /intentions /intend /pursue /validate /autonomy /local /remember /recall /ops /skills /capabilities /quit",
+            "命令：/self /assess /scorecard /roadmap /mind /reflect [--deep] /intentions /intend /pursue /validate /autonomy /local /remember /recall /ops /approvals /approve /deny /skills /capabilities /quit",
             title="Agenelf",
         )
     )
@@ -293,6 +294,17 @@ def main() -> int:
             break
         if not user_input:
             continue
+
+        # This is evaluated before Agent.chat. Only raw terminal input can authorize an
+        # exact request; assistant output and tool calls never reach this branch.
+        if handle_owner_decision(
+            agent=agent,
+            raw_input=user_input,
+            console=console,
+            config=config,
+        ):
+            continue
+
         if user_input.startswith("/"):
             parts = user_input.split(maxsplit=1)
             command = parts[0].lower()
@@ -339,6 +351,8 @@ def main() -> int:
                 cmd_validation(agent, rest)
             elif command == "/ops":
                 cmd_operations(rest)
+            elif command == "/approvals":
+                show_pending(console)
             elif command == "/reload":
                 cmd_reload(agent, rest)
             elif command == "/newskill":
