@@ -133,10 +133,13 @@ protected_paths:
   - app/core/continuous_chat.py
   - app/core/reasoning_trace.py
   - app/core/evolution_workspace.py
+  - app/core/authorized_upgrade.py
+  - app/core/approval_catalog.py
   - app/core/self_development.py
   - app/core/self_optimization.py
   - app/core/validation.py
   - app/core/capability_health.py
+  - app/skills/authorized_self_upgrade.py
   - app/skills/evolution_ops.py
   - app/skills/evolution_scope_guard.py
   - app/skills/compose_lifecycle.py
@@ -168,7 +171,6 @@ owner_authorized_upgrade:
     - skills
     - tests
     - runners
-    - host_scripts
     - policy
     - compose
     - ci
