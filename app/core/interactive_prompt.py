@@ -1,7 +1,7 @@
 """Interactive slash-command palette for the Agenelf terminal.
 
 The command catalogue is the single source for the startup hint, help table and
-prompt-toolkit completion menu.  Typing ``/`` opens the menu; arrow keys use
+prompt-toolkit completion menu. Typing ``/`` opens the menu; arrow keys use
 prompt-toolkit's native selection handling and Tab accepts the selected item.
 """
 from __future__ import annotations
@@ -10,7 +10,6 @@ import difflib
 import os
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable
 
 from prompt_toolkit import PromptSession
@@ -46,14 +45,15 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/pursue", "推进指定改进意向", "/pursue <intent-id> [--apply]"),
     SlashCommand("/validate", "运行软件验证", "/validate [check|suite|result] ..."),
     SlashCommand("/autonomy", "运行受控自主改进", "/autonomy [--plan-only] [目标]"),
+    SlashCommand("/upgrade", "查看或继续主人授权升级", "/upgrade [status|scopes|upgrade-id|目标]"),
     SlashCommand("/local", "查看本地个性化配置状态"),
     SlashCommand("/local-reload", "重新加载本地上下文"),
     SlashCommand("/remember", "记录主人事实或偏好", "/remember <fact|preference> <内容>"),
     SlashCommand("/recall", "检索主人记忆", "/recall <关键词>"),
     SlashCommand("/ops", "查看运维请求或指定请求结果", "/ops [op-id]"),
-    SlashCommand("/approvals", "列出等待主人审批的请求"),
-    SlashCommand("/approve", "批准精确绑定的请求", "/approve [op-id]"),
-    SlashCommand("/deny", "拒绝精确绑定的请求", "/deny [op-id] [原因]"),
+    SlashCommand("/approvals", "列出等待主人审批的运维与授权请求"),
+    SlashCommand("/approve", "批准精确绑定的请求", "/approve [op-id|auth-id]"),
+    SlashCommand("/deny", "拒绝精确绑定的请求", "/deny [op-id|auth-id] [原因]"),
     SlashCommand("/reload", "重载指定技能", "/reload <技能名>"),
     SlashCommand("/newskill", "生成新技能候选", "/newskill <描述>"),
     SlashCommand("/memory", "查看长期记忆摘要"),
@@ -89,11 +89,19 @@ def command_spec(value: str) -> SlashCommand | None:
 
 def close_command_matches(value: str, limit: int = 3) -> list[str]:
     raw = str(value or "").strip().lower()
-    return difflib.get_close_matches(raw, command_names(include_aliases=True), n=limit, cutoff=0.45)
+    return difflib.get_close_matches(
+        raw,
+        command_names(include_aliases=True),
+        n=limit,
+        cutoff=0.45,
+    )
 
 
 def command_hint() -> str:
-    return "命令：输入 [bold cyan]/[/bold cyan] 打开菜单；[cyan]↑↓[/cyan] 选择，Tab 补全，Enter 执行；/help 查看完整清单"
+    return (
+        "命令：输入 [bold cyan]/[/bold cyan] 打开菜单；"
+        "[cyan]↑↓[/cyan] 选择，Tab 补全，Enter 执行；/help 查看完整清单"
+    )
 
 
 def command_rows() -> list[tuple[str, str, str]]:
@@ -112,7 +120,14 @@ def _truthy(value: object, default: bool = False) -> bool:
         return default
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() not in {"", "0", "false", "off", "no", "disabled"}
+    return str(value).strip().lower() not in {
+        "",
+        "0",
+        "false",
+        "off",
+        "no",
+        "disabled",
+    }
 
 
 def _value_fragment(text: str) -> tuple[list[str], str]:
@@ -131,16 +146,17 @@ class SlashCommandCompleter(Completer):
         self.agent = agent
 
     @staticmethod
-    def _pending_operations() -> list[tuple[str, str]]:
+    def _pending_requests() -> list[tuple[str, str]]:
         try:
-            from core import owner_approval
+            from core import approval_catalog
 
             return [
                 (
                     str(item.get("id", "")),
-                    f"{item.get('operation', '')} · {item.get('target', '')} · {str(item.get('summary', ''))[:80]}",
+                    f"{item.get('kind', '')} · {item.get('operation', '')} · "
+                    f"{str(item.get('summary', ''))[:80]}",
                 )
-                for item in owner_approval.list_pending_operations()
+                for item in approval_catalog.list_pending_requests()
                 if item.get("id")
             ]
         except Exception:
@@ -164,10 +180,27 @@ class SlashCommandCompleter(Completer):
                 values.append(
                     (
                         path.stem,
-                        f"{state.get('status', '')} · {request.get('operation', '')} · {request.get('target', '')}",
+                        f"{state.get('status', '')} · {request.get('operation', '')} · "
+                        f"{request.get('target', '')}",
                     )
                 )
             return values
+        except Exception:
+            return []
+
+    @staticmethod
+    def _upgrade_sessions() -> list[tuple[str, str]]:
+        try:
+            from core import authorized_upgrade
+
+            return [
+                (
+                    str(item.get("id", "")),
+                    f"{item.get('status', '')} · {str(item.get('goal', ''))[:90]}",
+                )
+                for item in authorized_upgrade.list_sessions(limit=20)
+                if item.get("id")
+            ]
         except Exception:
             return []
 
@@ -184,12 +217,17 @@ class SlashCommandCompleter(Completer):
         return values
 
     def _argument_options(
-        self, command: str, prior: list[str]
+        self,
+        command: str,
+        prior: list[str],
     ) -> list[tuple[str, str]]:
         if command in {"/approve", "/deny"}:
-            return self._pending_operations()
+            return self._pending_requests()
         if command == "/ops":
             return self._recent_operations()
+        if command == "/upgrade":
+            fixed = [("status", "查看最近升级"), ("scopes", "查看可授权范围与永久红线")]
+            return fixed + self._upgrade_sessions()
         if command == "/reload":
             return self._skill_names()
         if command == "/reflect" and not prior:
@@ -210,7 +248,11 @@ class SlashCommandCompleter(Completer):
             ]
         return []
 
-    def get_completions(self, document: Document, complete_event: Any) -> Iterable[Completion]:
+    def get_completions(
+        self,
+        document: Document,
+        complete_event: Any,
+    ) -> Iterable[Completion]:
         del complete_event
         text = document.text_before_cursor
         if not text.startswith("/"):
