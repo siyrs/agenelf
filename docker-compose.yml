@@ -1,4 +1,7 @@
 # Agenelf split-runtime deployment with private owner data and deterministic runners.
+# app/ is mounted read-only at the historical /agenelf/app-fork path so git pull
+# updates are immediately visible after container recreation; app-fork/ remains a
+# legacy export/backup directory and is no longer a runtime source of truth.
 services:
   approval-key-init:
     build: .
@@ -35,10 +38,11 @@ services:
       AGENELF_REPOSITORIES_FILE: /agenelf/local/repositories.yaml
       AGENELF_SCRATCH_DIR: /agenelf/workspace/scratch
       AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
+      AGENELF_RUNTIME_SOURCE: app-bind
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
-      - ./app-fork:/agenelf/app-fork:ro
+      - ./app:/agenelf/app-fork:ro
       - ./scripts:/agenelf/scripts:ro
       - ./policy:/agenelf/policy:ro
       - ./data:/agenelf/data:rw
@@ -80,8 +84,9 @@ services:
       AGENELF_LOCAL_DIR: /agenelf/local
       AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
       AGENELF_SECRETS_DIR: /agenelf/local/secrets
+      AGENELF_RUNTIME_SOURCE: app-bind
     volumes:
-      - ./app-fork:/agenelf/app-fork:ro
+      - ./app:/agenelf/app-fork:ro
       - ./scripts:/agenelf/scripts:ro
       - ./policy:/agenelf/policy:ro
       - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
@@ -109,8 +114,9 @@ services:
     environment:
       AGENELF_ROOT: /agenelf
       AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
+      AGENELF_RUNTIME_SOURCE: app-bind
     volumes:
-      - ./app-fork:/agenelf/app-fork:ro
+      - ./app:/agenelf/app-fork:ro
       - ./scripts:/agenelf/scripts:ro
       - ./data/ops-requests:/agenelf/data/ops-requests:ro
       - ./data/auth-requests:/agenelf/data/auth-requests:ro
@@ -139,8 +145,9 @@ services:
       AGENELF_ROOT: /agenelf
       AGENELF_LOCAL_DIR: /agenelf/local
       AGENELF_VALIDATION_FILE: /agenelf/local/validation.yaml
+      AGENELF_RUNTIME_SOURCE: app-bind
     volumes:
-      - ./app-fork:/agenelf/app-fork:ro
+      - ./app:/agenelf/app-fork:ro
       - ./scripts:/agenelf/scripts:ro
       - ./policy:/agenelf/policy:ro
       - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
@@ -165,8 +172,9 @@ services:
       AGENELF_REPOSITORIES_FILE: /agenelf/local/repositories.yaml
       AGENELF_CODE_WORKSPACES: /agenelf/code-workspaces
       AGENELF_REPAIR_SPACE: /agenelf/repair-space
+      AGENELF_RUNTIME_SOURCE: app-bind
     volumes:
-      - ./app-fork:/agenelf/app-fork:ro
+      - ./app:/agenelf/app-fork:ro
       - ./scripts:/agenelf/scripts:ro
       - ./policy:/agenelf/policy:ro
       - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
