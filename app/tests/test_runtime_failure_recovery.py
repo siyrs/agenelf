@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from core.agent import Agent
 from skills import (
@@ -134,7 +135,10 @@ class RuntimeFailureRecoveryTest(unittest.TestCase):
                 raise ValueError("invalid request")
 
         llm = InvalidLLM()
-        agent = SimpleNamespace(llm=llm, config={"llm": {"transport_retry_attempts": 4}})
+        agent = SimpleNamespace(
+            llm=llm,
+            config={"llm": {"transport_retry_attempts": 4}},
+        )
         zz_transport_resilience.configure_runtime(agent=agent, config=agent.config)
         with self.assertRaises(ValueError):
             llm.chat([])
@@ -163,7 +167,7 @@ class RuntimeFailureRecoveryTest(unittest.TestCase):
         self.assertEqual(agent.llm.calls, 3)
         self.assertEqual(state["reason"], "automatic_no_progress_loop")
 
-    def test_host_controlled_goal_is_classified_before_sandbox(self):
+    def test_protected_goal_is_classified_into_owner_authorized_upgrade(self):
         calls: list[tuple[str, bool]] = []
 
         class FakeAgent:
@@ -175,17 +179,32 @@ class RuntimeFailureRecoveryTest(unittest.TestCase):
 
         fake = FakeAgent()
         evolution_scope_guard.configure_runtime(agent=fake)
-        result = fake.run_autonomy_cycle(
-            "为 docker compose down 修改 ops runner 和审批策略",
+        routed = {
+            "id": "upgrade-20260726-120000-12345678",
+            "status": "awaiting_intent_approval",
+            "next_action": "/approve auth-123456789abc",
+        }
+        with patch(
+            "skills.authorized_self_upgrade.route_goal",
+            return_value=routed,
+        ) as route:
+            result = fake.run_autonomy_cycle(
+                "为 docker compose down 修改 ops runner 和审批策略",
+                apply_changes=True,
+            )
+
+        self.assertEqual(result["status"], "awaiting_intent_approval")
+        self.assertNotEqual(result["status"], "host_review_required")
+        self.assertIn("runners", result["matched_protected_scopes"])
+        self.assertIn("compose", result["matched_protected_scopes"])
+        self.assertIn("authorization_control", result["matched_protected_scopes"])
+        self.assertFalse(calls)
+        route.assert_called_once()
+
+        normal = fake.run_autonomy_cycle(
+            "改进一个非保护的文本格式化技能",
             apply_changes=True,
         )
-        self.assertEqual(result["status"], "host_review_required")
-        self.assertIn("runner", result["matched_host_controlled_scopes"])
-        self.assertFalse(calls)
-        saved = self.root / "data" / "autonomy-cycles" / f"{result['id']}.json"
-        self.assertTrue(saved.is_file())
-
-        normal = fake.run_autonomy_cycle("改进一个非保护的文本格式化技能", apply_changes=True)
         self.assertEqual(normal["status"], "promotion_requested")
         self.assertEqual(len(calls), 1)
 

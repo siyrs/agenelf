@@ -44,3 +44,14 @@ self_development:
   allow_llm_reflection: true
 autonomy:
   allow_code_changes: true
+  # 普通改动走 app-tmp 沙盒；受保护运行时/Runner/策略/Compose/CI 改动走两阶段主人授权。
+  owner_authorized_upgrade:
+    enabled: true
+    default_max_files: 8
+    default_max_changed_lines: 1200
+    hard_max_files: 20
+    hard_max_changed_lines: 4000
+    intent_ttl_seconds: 900
+    candidate_ttl_seconds: 900
+    backup_before_apply: true
+    rollback_on_partial_failure: true

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Validate Agenelf's machine-readable governance baseline.
 
-The validator is dependency-light, deterministic and intended for local use and CI.
-It rejects policies that omit mandatory risk levels, weaken forbidden behavior,
-allow autonomous main-branch promotion, or fail to bind owner authorization to an
-exact operation payload.
+The validator is deterministic and intended for local use and CI. It rejects policies
+that omit mandatory risk levels, weaken forbidden behavior, allow autonomous main
+promotion, fail to bind owner authorization to an exact payload, or weaken the
+owner-authorized self-upgrade contract.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -48,6 +47,9 @@ REQUIRED_PROTECTED_PREFIXES = {
     "app/core/permissions.py",
     "app/core/operations.py",
     "app/core/autonomy.py",
+    "app/core/authorized_upgrade.py",
+    "app/core/approval_catalog.py",
+    "app/skills/authorized_self_upgrade.py",
 }
 REQUIRED_GATES = {
     "policy_schema_valid",
@@ -55,6 +57,30 @@ REQUIRED_GATES = {
     "exact_authorization_binding_verified",
     "trusted_evidence_archived",
     "documentation_updated",
+    "authorized_upgrade_intent_binding_verified",
+    "authorized_upgrade_candidate_binding_verified",
+    "authorized_upgrade_runner_isolated",
+    "backup_and_rollback_evidence_archived",
+}
+REQUIRED_UPGRADE_REDLINE = {
+    "owner_authorization_cannot_be_generated_by_model_output",
+    "no_self_approval_or_forged_owner_decision",
+    "no_access_to_env_local_secrets_ssh_keys_or_approval_key",
+    "no_write_to_auth_decisions_audit_evidence_or_git_metadata",
+    "no_test_gate_policy_or_audit_weakening_to_force_success",
+    "no_docker_socket_or_model_generated_arbitrary_shell",
+    "no_direct_push_or_merge_main_from_autonomous_runtime",
+}
+REQUIRED_UPGRADE_SCOPES = {
+    "app_runtime",
+    "skills",
+    "tests",
+    "runners",
+    "policy",
+    "compose",
+    "ci",
+    "docs",
+    "authorization_control",
 }
 
 
@@ -70,6 +96,121 @@ def _string_set(value: Any, path: str, errors: list[str]) -> set[str]:
         errors.append(f"{path} 必须是字符串数组")
         return set()
     return {item.strip() for item in value if item.strip()}
+
+
+def _bool_true(value: Any, path: str, errors: list[str]) -> None:
+    if value is not True:
+        errors.append(f"{path} 必须为 true")
+
+
+def validate_owner_authorized_upgrade(root: dict[str, Any], errors: list[str]) -> None:
+    upgrade = _mapping(
+        root.get("owner_authorized_upgrade"),
+        "owner_authorized_upgrade",
+        errors,
+    )
+    _bool_true(upgrade.get("enabled"), "owner_authorized_upgrade.enabled", errors)
+    _bool_true(
+        upgrade.get("default_for_protected_paths"),
+        "owner_authorized_upgrade.default_for_protected_paths",
+        errors,
+    )
+
+    stages = upgrade.get("stages")
+    if not isinstance(stages, list):
+        errors.append("owner_authorized_upgrade.stages 必须是数组")
+        stage_map: dict[str, dict[str, Any]] = {}
+    else:
+        stage_map = {
+            str(item.get("name", "")): item
+            for item in stages
+            if isinstance(item, dict) and item.get("name")
+        }
+    for name in ("intent_scope_approval", "tested_candidate_approval"):
+        stage = _mapping(
+            stage_map.get(name),
+            f"owner_authorized_upgrade.stages.{name}",
+            errors,
+        )
+        _bool_true(stage.get("single_use"), f"upgrade stage {name}.single_use", errors)
+        _bool_true(stage.get("expires"), f"upgrade stage {name}.expires", errors)
+        binds = _string_set(stage.get("binds"), f"upgrade stage {name}.binds", errors)
+        if name == "intent_scope_approval":
+            required = {
+                "goal_sha256",
+                "scopes",
+                "allowed_paths",
+                "max_files",
+                "max_changed_lines",
+                "redline_policy",
+            }
+        else:
+            required = {
+                "session_id",
+                "intent_auth_id",
+                "changed_file_hashes",
+                "candidate_tree_sha256",
+                "test_report_sha256",
+                "baseline_manifest_sha256",
+            }
+        missing = required - binds
+        if missing:
+            errors.append(
+                f"升级阶段 {name} 绑定字段缺失：{', '.join(sorted(missing))}"
+            )
+
+    execution = _mapping(
+        upgrade.get("execution"),
+        "owner_authorized_upgrade.execution",
+        errors,
+    )
+    if execution.get("candidate_workspace") != "app-tmp/repo":
+        errors.append("授权升级候选必须位于 app-tmp/repo")
+    if execution.get("runner") != "self-upgrade-runner":
+        errors.append("授权升级必须由 self-upgrade-runner 应用")
+    if execution.get("runner_network") != "none":
+        errors.append("self-upgrade-runner 必须无网络")
+    for key in (
+        "backup_before_apply",
+        "rollback_on_partial_failure",
+        "stale_target_hash_rejected",
+        "skill_hot_reload_when_safe",
+        "restart_checkpoint_for_core_or_runner_changes",
+    ):
+        _bool_true(execution.get(key), f"owner_authorized_upgrade.execution.{key}", errors)
+
+    scopes = _string_set(
+        upgrade.get("allowed_scopes"),
+        "owner_authorized_upgrade.allowed_scopes",
+        errors,
+    )
+    missing_scopes = REQUIRED_UPGRADE_SCOPES - scopes
+    if missing_scopes:
+        errors.append("授权升级范围缺失：" + ", ".join(sorted(missing_scopes)))
+
+    redlines = _string_set(
+        upgrade.get("permanent_redlines"),
+        "owner_authorized_upgrade.permanent_redlines",
+        errors,
+    )
+    missing_redlines = REQUIRED_UPGRADE_REDLINE - redlines
+    if missing_redlines:
+        errors.append(
+            "授权升级永久红线缺失：" + ", ".join(sorted(missing_redlines))
+        )
+
+    tests = _mapping(
+        upgrade.get("tests"),
+        "owner_authorized_upgrade.tests",
+        errors,
+    )
+    for key in (
+        "existing_tests_immutable",
+        "new_regression_test_required_for_code_change",
+        "complete_suite_required",
+        "candidate_revalidated_by_runner",
+    ):
+        _bool_true(tests.get(key), f"owner_authorized_upgrade.tests.{key}", errors)
 
 
 def validate_policy(policy: Any) -> list[str]:
@@ -127,19 +268,50 @@ def validate_policy(policy: Any) -> list[str]:
     if missing_paths:
         errors.append(f"受保护路径缺失：{', '.join(sorted(missing_paths))}")
 
+    validate_owner_authorized_upgrade(root, errors)
+
     evolution = _mapping(root.get("self_evolution"), "self_evolution", errors)
     if evolution.get("auto_pursue") is not False:
         errors.append("self_evolution.auto_pursue 必须为 false")
+    if evolution.get("protected_mode") != "owner_authorized_two_stage":
+        errors.append("受保护自进化必须使用 owner_authorized_two_stage")
     forbidden_evolution = _string_set(
-        evolution.get("forbidden"), "self_evolution.forbidden", errors
+        evolution.get("forbidden"),
+        "self_evolution.forbidden",
+        errors,
     )
-    if "autonomously_merge_main" not in forbidden_evolution:
-        errors.append("自进化必须禁止自主合并 main")
-    limits = _mapping(evolution.get("candidate_limits"), "self_evolution.candidate_limits", errors)
+    for behavior in (
+        "autonomously_merge_main",
+        "modify_owner_decisions",
+        "modify_or_read_secrets",
+        "modify_delete_or_monkey_patch_existing_tests",
+    ):
+        if behavior not in forbidden_evolution:
+            if behavior == "autonomously_merge_main":
+                errors.append(
+                    "自进化永久禁止行为缺失：autonomously_merge_main（禁止自主合并 main）"
+                )
+            else:
+                errors.append(f"自进化永久禁止行为缺失：{behavior}")
+    limits = _mapping(
+        evolution.get("candidate_limits"),
+        "self_evolution.candidate_limits",
+        errors,
+    )
     if limits.get("tests_required") is not True or limits.get("full_suite_required") is not True:
         errors.append("自主候选必须要求测试和完整测试套件")
     if limits.get("immutable_digest_required") is not True:
         errors.append("自主候选必须绑定不可变摘要")
+    if limits.get("max_files") != 10 or limits.get("max_changed_lines") != 500:
+        errors.append("普通沙盒兼容上限必须保持 max_files=10、max_changed_lines=500")
+    if not isinstance(limits.get("authorized_hard_max_files"), int) or int(
+        limits.get("authorized_hard_max_files", 0)
+    ) > 20:
+        errors.append("授权升级文件硬上限不得超过 20")
+    if not isinstance(limits.get("authorized_hard_max_changed_lines"), int) or int(
+        limits.get("authorized_hard_max_changed_lines", 0)
+    ) > 4000:
+        errors.append("授权升级变更行硬上限不得超过 4000")
 
     model = _mapping(root.get("model_governance"), "model_governance", errors)
     if model.get("model_is_untrusted_planner") is not True:
@@ -156,7 +328,6 @@ def validate_policy(policy: Any) -> list[str]:
     return errors
 
 
-
 def validate_execution_modes(policy: Any) -> list[str]:
     errors: list[str] = []
     root = _mapping(policy, "execution_modes_root", errors)
@@ -168,7 +339,14 @@ def validate_execution_modes(policy: Any) -> list[str]:
     if defaults.get("arguments_in_audit") is not False:
         errors.append("执行审计不得记录工具参数")
     modes = _mapping(root.get("execution_modes"), "execution_modes", errors)
-    required = {"pure", "local_state", "queued_runner", "controlled_sandbox", "host_controlled", "forbidden"}
+    required = {
+        "pure",
+        "local_state",
+        "queued_runner",
+        "controlled_sandbox",
+        "host_controlled",
+        "forbidden",
+    }
     missing = required - set(modes)
     if missing:
         errors.append(f"execution_mode 缺失：{', '.join(sorted(missing))}")
@@ -176,6 +354,7 @@ def validate_execution_modes(policy: Any) -> list[str]:
     if forbidden.get("approval") != "impossible":
         errors.append("forbidden execution_mode 必须不可授权")
     return errors
+
 
 def load_policy(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
