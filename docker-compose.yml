@@ -160,11 +160,12 @@ services:
 
   self-upgrade-runner:
     build: .
-    command: ["python", "/agenelf/scripts/self_upgrade_runner.py", "--interval", "1"]
+    command: ["python", "/agenelf/scripts/self_upgrade_runner_entry.py", "--interval", "1"]
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
       AGENELF_ROOT: /agenelf
       AGENELF_UPGRADE_TARGET: /agenelf/upgrade-target
+      AGENELF_REDLINE_BASE_ROOT: /agenelf/upgrade-target
       AGENELF_RUNTIME_SOURCE: app-bind
     volumes:
       # Trusted current control code and candidate are read-only to the runner.
