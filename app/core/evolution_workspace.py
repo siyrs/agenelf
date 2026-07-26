@@ -1,9 +1,9 @@
 """Deterministic repository-shaped workspaces for controlled self-evolution.
 
-The Agent may write only inside ``app-tmp``.  A real candidate nevertheless needs the
+The Agent may write only inside ``app-tmp``. A real candidate nevertheless needs the
 same repository fixtures as CI (``.github/``, policy, scripts, Compose topology, docs
 and examples), otherwise repository-contract tests fail for environmental reasons and
-the model is tempted to "repair" trusted tests.  This module stages a safe, explicitly
+the model is tempted to "repair" trusted tests. This module stages a safe, explicitly
 mounted repository snapshot and records hashes for every pre-existing test file.
 """
 from __future__ import annotations
@@ -45,7 +45,7 @@ def uses_repository_layout(root: Path) -> bool:
     """Real containers expose safe repository fixtures at ``repo-source``.
 
     Isolated legacy unit tests do not, so they retain the historic direct ``app-tmp``
-    layout.  This compatibility path keeps old integrity tests meaningful while real
+    layout. This compatibility path keeps old integrity tests meaningful while real
     deployments receive a repository-shaped candidate.
     """
 
@@ -69,8 +69,8 @@ def _ignored(path: Path) -> bool:
 def clear_tree_contents(path: Path, retries: int = 5) -> None:
     """Clear a directory without deleting its root mount point.
 
-    ``app-tmp`` is a bind mount in production.  Deleting the mount root is invalid and
-    caused the previous ``File exists`` loop.  Contents are removed with verification
+    ``app-tmp`` is a bind mount in production. Deleting the mount root is invalid and
+    caused the previous ``File exists`` loop. Contents are removed with verification
     and bounded retries instead.
     """
 
@@ -78,7 +78,6 @@ def clear_tree_contents(path: Path, retries: int = 5) -> None:
 
     path.mkdir(parents=True, exist_ok=True)
     for attempt in range(max(1, retries)):
-        failures: list[str] = []
         for item in list(path.iterdir()):
             try:
                 if item.is_symlink() or item.is_file():
@@ -87,8 +86,8 @@ def clear_tree_contents(path: Path, retries: int = 5) -> None:
                     shutil.rmtree(item)
                 else:
                     item.unlink(missing_ok=True)
-            except OSError as exc:
-                failures.append(f"{item.name}: {exc}")
+            except OSError:
+                pass
         remaining = list(path.iterdir())
         if not remaining:
             return
@@ -154,15 +153,17 @@ def baseline_test_manifest(source_app: Path) -> dict[str, str]:
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.write("\n")
-        os.replace(temporary, path)
+        os.replace(temp_name, path)
     except Exception:
         try:
-            os.unlink(temporary)
+            os.unlink(temp_name)
         except OSError:
             pass
         raise
@@ -223,10 +224,12 @@ def load_workspace_marker(root: Path) -> dict[str, Any] | None:
 def validate_relative_app_path(raw: str) -> str:
     value = str(raw or "").replace("\\", "/").strip()
     if not value or value.startswith("/"):
-        raise EvolutionWorkspaceError("候选路径必须是 app 根目录下的相对路径")
+        raise EvolutionWorkspaceError(
+            "候选路径必须是 app-tmp 候选 app 根目录下的相对路径"
+        )
     parts = [part for part in value.split("/") if part not in {"", "."}]
     if not parts or any(part == ".." for part in parts):
-        raise EvolutionWorkspaceError(f"候选路径逃逸：{raw!r}")
+        raise EvolutionWorkspaceError(f"候选路径逃逸 app-tmp：{raw!r}")
     normalized = "/".join(parts)
     if not normalized.startswith(("core/", "skills/", "tests/")):
         raise EvolutionWorkspaceError("候选只能修改 core/、skills/ 或新增 tests/test_*.py")
@@ -240,7 +243,7 @@ def candidate_path(root: Path, relative: str) -> Path:
     app = candidate_app(root).resolve()
     destination = (app / normalized).resolve()
     if not destination.is_relative_to(app):
-        raise EvolutionWorkspaceError(f"候选路径逃逸：{relative!r}")
+        raise EvolutionWorkspaceError(f"候选路径逃逸 app-tmp：{relative!r}")
     return destination
 
 
