@@ -43,7 +43,11 @@ jobs:
       - name: Prepare private-path fixtures
         run: |
           cp .env.example .env
-          printf '\nAGENELF_API_TOKEN=node-ci-token\n' >> .env
+          {
+            printf '\nAGENELF_API_TOKEN=node-ci-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
           cp .ops-runner.env.example .ops-runner.env
           python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
           cp local/node-runner.example.json local/node-runner.json
