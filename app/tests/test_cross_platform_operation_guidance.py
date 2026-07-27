@@ -55,7 +55,8 @@ class CrossPlatformOperationGuidanceTest(unittest.TestCase):
         self.assertIn("审批通过 op-", text)
         self.assertIn("approve.ps1", text)
         self.assertIn("scripts/approve.py", text)
-        self.assertNotIn("bash scripts/approve.sh", text)
+        self.assertIn("bash scripts/approve.sh", text)
+        self.assertLess(text.index("approve.ps1"), text.index("bash scripts/approve.sh"))
         self.assertIn("请求有效期至", text)
 
     def test_server_change_uses_cross_platform_guidance_and_reuses_request(self) -> None:
