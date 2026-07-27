@@ -56,7 +56,7 @@ import_staging_requests() {
             continue
         fi
         if validate_staging_request "${req_dir}"; then
-            rm -rf "${REQUESTS_DIR}/${req_id}"
+            rm -rf -- "${REQUESTS_DIR:?}/${req_id}"
             if mv "${req_dir}" "${REQUESTS_DIR}/${req_id}"; then
                 log "[watcher] 暂存请求 ${req_id} 复核通过，已移入可信队列 data/promote-requests"
             else
@@ -66,7 +66,7 @@ import_staging_requests() {
             printf '拒绝原因：暂存产物不完整或校验失败（READY/report/摘要），宿主 watcher 拒绝导入\n' \
                 > "${req_dir}/REJECTED"
             rm -f "${req_dir}/READY"
-            rm -rf "${REQUESTS_DIR}/${req_id}"
+            rm -rf -- "${REQUESTS_DIR:?}/${req_id}"
             if mv "${req_dir}" "${REQUESTS_DIR}/${req_id}"; then
                 log "[watcher] 暂存请求 ${req_id} 未通过宿主机复核，已标记 REJECTED 并移出暂存区"
             fi
