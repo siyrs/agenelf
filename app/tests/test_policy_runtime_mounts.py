@@ -25,6 +25,21 @@ class PolicyRuntimeMountTest(unittest.TestCase):
         ):
             self.assertIn(path, text)
 
+    def test_entrypoints_and_model_modules_are_host_gate_protected(self):
+        text = (ROOT / "scripts" / "gate_check.sh").read_text(encoding="utf-8")
+        for path in (
+            "api.py",
+            "cli.py",
+            "core/agent.py",
+            "core/llm.py",
+            "core/interactive_prompt.py",
+            "core/context.py",
+            "skills/docker_ops.py",
+            "skills/authorized_upgrade_recovery.py",
+            "skills/self_optimize.py",
+        ):
+            self.assertIn(path, text)
+
 
 if __name__ == "__main__":
     unittest.main()

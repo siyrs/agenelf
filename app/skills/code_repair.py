@@ -91,11 +91,25 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 _AGENT: Any | None = None
+_REGISTRY: Any | None = None
 
 
-def configure_runtime(*, agent: Any = None, **_: Any) -> None:
-    global _AGENT
+def configure_runtime(*, agent: Any = None, registry: Any = None, **_: Any) -> None:
+    global _AGENT, _REGISTRY
     _AGENT = agent
+    # 优先把绑定状态写到 Registry 实例的 per-instance 上下文，
+    # 模块级全局仅作未传入 registry 时的兼容兜底
+    if registry is not None and hasattr(registry, "bind_state"):
+        _REGISTRY = registry
+        registry.bind_state("code_repair", agent=agent)
+
+
+def _bound_agent() -> Any | None:
+    if _REGISTRY is not None and hasattr(_REGISTRY, "get_state"):
+        agent = _REGISTRY.get_state("code_repair").get("agent")
+        if agent is not None:
+            return agent
+    return _AGENT
 
 
 def _root() -> Path:
@@ -132,7 +146,8 @@ def _wait(value: object, default: int = 5) -> int:
 
 
 def _observe(state: dict[str, Any]) -> None:
-    if _AGENT is None or not isinstance(state.get("result"), dict):
+    agent = _bound_agent()
+    if agent is None or not isinstance(state.get("result"), dict):
         return
     result = state["result"]
     if str(result.get("status")) != "failed":
@@ -140,7 +155,7 @@ def _observe(state: dict[str, Any]) -> None:
     repository = str(result.get("repository") or "unknown")
     summary = str(result.get("summary") or "代码修复测试失败")[:1000]
     try:
-        _AGENT.create_improvement_intention(
+        agent.create_improvement_intention(
             title=f"分析并修复代码修复失败：{repository}",
             rationale=summary,
             priority="P1",
@@ -151,7 +166,7 @@ def _observe(state: dict[str, Any]) -> None:
                 "不绕过源码只读、无网络和不自动合并边界",
             ],
         )
-        _AGENT.reflect_and_sediment(
+        agent.reflect_and_sediment(
             note=f"代码修复 {state.get('id')} 在仓库 {repository} 上失败：{summary}",
             deep=False,
         )

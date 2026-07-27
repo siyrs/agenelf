@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -76,6 +77,28 @@ class SkillRegistry:
         self._origins: dict[str, str] = {}
         self.policy_engine = policy_engine
         self._contracts: dict[str, Any | None] = {}
+        # 技能名 -> 当前加载模块在 sys.modules 中的唯一键，用于替换/卸载时清理
+        self._module_keys: dict[str, str] = {}
+        # per-instance 运行时状态：技能名 -> configure_runtime 绑定的状态，
+        # 替代技能模块级全局变量，避免同进程多 Agent 实例互相污染
+        self.runtime_context: dict[str, dict[str, Any]] = {}
+
+    # ------------------------------------------------------------------
+    # per-instance 运行时状态（configure_runtime 兼容层）
+    # ------------------------------------------------------------------
+    def bind_state(self, skill_name: str, **state: Any) -> None:
+        """把技能 configure_runtime 绑定的运行时状态写到本实例。
+
+        多次绑定合并更新；技能执行时应优先读这里，而非模块级全局变量。
+        """
+
+        current = self.runtime_context.setdefault(str(skill_name), {})
+        current.update(state)
+
+    def get_state(self, skill_name: str) -> dict[str, Any]:
+        """读取技能在本实例上绑定的运行时状态；未绑定时返回空 dict。"""
+
+        return self.runtime_context.get(str(skill_name), {})
 
     @staticmethod
     def _skill_name_from_file(filename: str) -> str:
@@ -83,14 +106,46 @@ class SkillRegistry:
 
     def _load_module(self, path: str):
         name = self._skill_name_from_file(path)
-        module_key = f"agenelf_skill_{name}"
+        # 每次加载使用唯一模块键：多 Registry 实例并存或 reload 时互不覆盖；
+        # 被替换/卸载的旧键由 _track_module/_untrack_module 清理，不泄漏 sys.modules
+        module_key = f"agenelf_skill_{name}_{uuid.uuid4().hex[:8]}"
         spec = importlib.util.spec_from_file_location(module_key, path)
         if spec is None or spec.loader is None:
             raise ImportError(f"无法为技能 {name} 创建加载规格")
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_key] = module
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_key, None)
+            raise
         return module
+
+    @staticmethod
+    def _discard_module(module) -> None:
+        """Best-effort 移除已加载但未成功注册模块的 sys.modules 键。"""
+
+        key = getattr(module, "__name__", None)
+        if key:
+            sys.modules.pop(key, None)
+
+    def _track_module(self, name: str, module) -> None:
+        """登记技能当前的 sys.modules 键，并清理被替换掉的旧键。"""
+
+        new_key = getattr(module, "__name__", None)
+        if not new_key:
+            return
+        old_key = self._module_keys.get(name)
+        self._module_keys[name] = new_key
+        if old_key is not None and old_key != new_key:
+            sys.modules.pop(old_key, None)
+
+    def _untrack_module(self, name: str) -> None:
+        """移除技能的 sys.modules 键并遗忘跟踪记录（卸载时调用）。"""
+
+        key = self._module_keys.pop(name, None)
+        if key is not None:
+            sys.modules.pop(key, None)
 
     @staticmethod
     def _validate_module(module) -> None:
@@ -132,7 +187,9 @@ class SkillRegistry:
             else:
                 self.skills[name] = old
             self._rebuild_tool_index()
+            self._discard_module(module)
             raise
+        self._track_module(name, module)
         self.errors.pop(name, None)
 
     def _rebuild_tool_index(self) -> None:
@@ -183,8 +240,12 @@ class SkillRegistry:
             path = os.path.join(directory, filename)
             try:
                 module = self._load_module(path)
-                self._validate_module(module)
-                self._register_module(name, module)
+                try:
+                    self._validate_module(module)
+                    self._register_module(name, module)
+                except Exception:
+                    self._discard_module(module)
+                    raise
                 self._origins[name] = origin
             except Exception:
                 self.errors[name] = traceback.format_exc(limit=5)
@@ -218,8 +279,12 @@ class SkillRegistry:
         old_origin = self._origins.get(name)
         try:
             module = self._load_module(path)
-            self._validate_module(module)
-            self._register_module(name, module)
+            try:
+                self._validate_module(module)
+                self._register_module(name, module)
+            except Exception:
+                self._discard_module(module)
+                raise
             self._origins[name] = origin
             return True
         except Exception:
@@ -314,6 +379,7 @@ class SkillRegistry:
 
         os.makedirs(self.skills_dir, exist_ok=True)
         written = False
+        module = None
         try:
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(source_code)
@@ -324,6 +390,8 @@ class SkillRegistry:
             self._register_module(name, module)
             return True, f"技能 {name} 注册成功"
         except Exception as exc:
+            if module is not None:
+                self._discard_module(module)
             if written and os.path.exists(path):
                 os.remove(path)
             return False, f"技能注册失败: {exc}"
@@ -525,6 +593,7 @@ class SkillRegistry:
         try:
             os.makedirs(target_dir, exist_ok=True)
             written = False
+            module = None
             try:
                 with open(path, "w", encoding="utf-8") as handle:
                     handle.write(source_code)
@@ -534,6 +603,8 @@ class SkillRegistry:
                 self._register_module(name, module)
                 self._origins[name] = ORIGIN_APP_SPACE
             except Exception as exc:
+                if module is not None:
+                    self._discard_module(module)
                 if written and os.path.exists(path):
                     os.remove(path)
                 return False, f"技能注册失败: {exc}"
@@ -554,6 +625,8 @@ class SkillRegistry:
         self.skills.pop(name, None)
         self._origins.pop(name, None)
         self.errors.pop(name, None)
+        self.runtime_context.pop(name, None)
+        self._untrack_module(name)
         # 一并清理 tested 旁车标记（best-effort，不存在或无权限都忽略）
         if self.extra_skills_dirs:
             marker = self._tested_marker_path(self.extra_skills_dirs[0], name)

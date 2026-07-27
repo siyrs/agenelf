@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgenElf 控制台</title>
+  <meta name="description" content="AgenElf 自进化代理 Web 控制台" />
+  <link rel="stylesheet" href="./assets/app.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23c06b3e'/%3E%3Ctext x='16' y='22' font-size='17' text-anchor='middle' fill='%23faf6f0' font-family='serif'%3EA%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <!-- 窄屏顶部栏（宽屏隐藏） -->
+  <header class="topbar" id="topbar">
+    <button class="topbar__menu-btn" id="menu-toggle" aria-label="打开导航" aria-expanded="false">☰</button>
+    <div class="topbar__brand">
+      <span class="brand-mark">A</span>
+      <span class="brand-name">AgenElf</span>
+    </div>
+    <span class="conn-dot" id="conn-dot-top" title="连接状态"></span>
+  </header>
+
+  <div class="shell">
+    <!-- 左侧固定导航 -->
+    <nav class="sidenav" id="sidenav" aria-label="主导航">
+      <div class="sidenav__brand">
+        <span class="brand-mark">A</span>
+        <div class="brand-text">
+          <span class="brand-name">AgenElf</span>
+          <span class="brand-sub">Web 控制台</span>
+        </div>
+      </div>
+
+      <div class="conn-pill" id="conn-pill" title="后端连接状态">
+        <span class="conn-dot" id="conn-dot"></span>
+        <span class="conn-text" id="conn-text">检测中…</span>
+      </div>
+
+      <ul class="nav-list" id="nav-list">
+        <li><a href="#/chat"       data-route="chat">       <span class="nav-ico">💬</span>对话</a></li>
+        <li><a href="#/status"     data-route="status">     <span class="nav-ico">📊</span>状态总览</a></li>
+        <li><a href="#/growth"     data-route="growth">     <span class="nav-ico">🌱</span>自我成长</a></li>
+        <li><a href="#/memory"     data-route="memory">     <span class="nav-ico">🧠</span>记忆</a></li>
+        <li><a href="#/tasks"      data-route="tasks">      <span class="nav-ico">🗂️</span>任务</a></li>
+        <li><a href="#/autonomy"   data-route="autonomy">   <span class="nav-ico">⚙️</span>自治与进化</a></li>
+        <li><a href="#/approvals"  data-route="approvals">  <span class="nav-ico">🛡️</span>审批中心</a></li>
+        <li><a href="#/validation" data-route="validation"> <span class="nav-ico">🧪</span>验证与修复</a></li>
+        <li class="nav-sep"></li>
+        <li><a href="#/settings"   data-route="settings">   <span class="nav-ico">🔧</span>设置</a></li>
+      </ul>
+
+      <div class="sidenav__footer">
+        <span class="muted small">零构建 · 原生 ES 模块</span>
+      </div>
+    </nav>
+    <div class="sidenav-mask" id="sidenav-mask"></div>
+
+    <!-- 内容区 -->
+    <main class="content" id="content" tabindex="-1">
+      <noscript><p class="empty-state">此控制台需要启用 JavaScript。</p></noscript>
+    </main>
+  </div>
+
+  <!-- 全局 Toast 容器 -->
+  <div class="toast-root" id="toast-root" aria-live="polite"></div>
+
+  <!-- 全局抽屉 -->
+  <div class="drawer-mask" id="drawer-mask" hidden></div>
+  <aside class="drawer" id="drawer" hidden aria-label="详情">
+    <div class="drawer__head">
+      <h3 class="drawer__title" id="drawer-title">详情</h3>
+      <button class="btn btn--ghost" id="drawer-close" aria-label="关闭">✕</button>
+    </div>
+    <div class="drawer__body" id="drawer-body"></div>
+  </aside>
+
+  <!-- 全局确认框 -->
+  <div class="modal-mask" id="modal-mask" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h3 class="modal__title" id="modal-title">确认操作</h3>
+      <p class="modal__text" id="modal-text"></p>
+      <div class="modal__actions">
+        <button class="btn" id="modal-cancel">取消</button>
+        <button class="btn btn--danger" id="modal-ok">确认执行</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./assets/app.js"></script>
+</body>
+</html>

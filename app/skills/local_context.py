@@ -76,17 +76,28 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 _agent = None
+_registry = None
 
 
-def configure_runtime(*, agent=None, **_: Any) -> None:
-    global _agent
+def configure_runtime(*, agent=None, registry=None, **_: Any) -> None:
+    global _agent, _registry
     _agent = agent
+    # 优先把绑定状态写到 Registry 实例的 per-instance 上下文，
+    # 模块级全局仅作未传入 registry 时的兼容兜底
+    if registry is not None and hasattr(registry, "bind_state"):
+        _registry = registry
+        registry.bind_state("local_context", agent=agent)
 
 
 def _require_agent():
-    if _agent is None:
+    agent = None
+    if _registry is not None and hasattr(_registry, "get_state"):
+        agent = _registry.get_state("local_context").get("agent")
+    if agent is None:
+        agent = _agent
+    if agent is None:
         raise RuntimeError("local_context 技能尚未绑定 Agent 运行时")
-    return _agent
+    return agent
 
 
 def execute(tool_name: str, args: dict) -> str:

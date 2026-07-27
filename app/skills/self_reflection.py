@@ -122,17 +122,28 @@ TOOLS = [
 ]
 
 _AGENT: Any | None = None
+_REGISTRY: Any | None = None
 
 
-def configure_runtime(*, agent: Any, **_: Any) -> None:
-    global _AGENT
+def configure_runtime(*, agent: Any, registry: Any = None, **_: Any) -> None:
+    global _AGENT, _REGISTRY
     _AGENT = agent
+    # 优先把绑定状态写到 Registry 实例的 per-instance 上下文，
+    # 模块级全局仅作未传入 registry 时的兼容兜底
+    if registry is not None and hasattr(registry, "bind_state"):
+        _REGISTRY = registry
+        registry.bind_state("self_reflection", agent=agent)
 
 
 def _agent() -> Any:
-    if _AGENT is None:
+    agent = None
+    if _REGISTRY is not None and hasattr(_REGISTRY, "get_state"):
+        agent = _REGISTRY.get_state("self_reflection").get("agent")
+    if agent is None:
+        agent = _AGENT
+    if agent is None:
         raise RuntimeError("self_reflection 尚未绑定 Agent 运行时")
-    return _AGENT
+    return agent
 
 
 def _dump(data: Any) -> str:

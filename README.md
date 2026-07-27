@@ -152,36 +152,103 @@ Agenelf 现在维护稳定的 `continuity_id`，并持久化：
 
 ### CLI
 
+完整斜杠命令目录（catalog 唯一来源：`app/core/interactive_prompt.py`，`/help` 可随时查看）：
+
 | 命令 | 作用 |
 |---|---|
-| `/self` | 查看完整可观测自我模型 |
-| `/assess` | 查看当前 P0/P1/P2/P3 能力评估 |
-| `/mind` | 查看持久化成长状态 |
-| `/reflect [说明]` | 确定性反思并沉淀 |
-| `/reflect --deep [说明]` | LLM 辅助结构化复盘 |
-| `/intentions [状态]` | 查看改进意向 |
-| `/intend [P0-P3] <目标>` | 建立改进意向 |
-| `/pursue <intent-id>` | 为意向生成受控计划 |
-| `/pursue <intent-id> --apply` | 进入沙盒、测试和晋升申请 |
-| `/autonomy --plan-only <目标>` | 不持久化意向，直接生成计划 |
-| `/autonomy <目标>` | 执行一次受控沙盒迭代 |
-| `/evolve <目标>` | `/autonomy` 的兼容入口 |
+| `/help` | 显示全部命令、用途和参数（别名 `/commands`） |
+| `/doctor` | 检查运行时、Runner、队列、挂载与技能健康 |
+| `/self` | 查看可观测自我模型 |
+| `/assess` | 评估当前能力与缺口（P0/P1/P2/P3） |
+| `/scorecard` | 查看可信能力健康评分 |
+| `/roadmap` | 查看证据驱动改进路线图 |
+| `/mind` | 查看持续成长状态 |
+| `/reflect [--deep]` | 执行反思与沉淀（`--deep` 为 LLM 辅助结构化复盘） |
+| `/intentions [status]` | 列出改进意向 |
+| `/intend [P0-P3] <目标>` | 创建改进意向 |
+| `/pursue <intent-id> [--apply]` | 推进指定改进意向（`--apply` 进入沙盒、测试和晋升申请） |
+| `/validate [check\|suite\|result] ...` | 运行软件验证 |
+| `/autonomy [--plan-only] [目标]` | 运行受控自主改进 |
+| `/upgrade [status\|scopes\|upgrade-id\|目标]` | 查看或继续主人授权升级 |
+| `/local` | 查看本地个性化配置状态 |
+| `/local-reload` | 重新加载本地上下文 |
+| `/remember <fact\|preference> <内容>` | 记录主人事实或偏好 |
+| `/recall <关键词>` | 检索主人记忆 |
+| `/ops [op-id]` | 查看运维请求或指定请求结果 |
+| `/approvals` | 列出等待主人审批的运维与授权请求 |
+| `/approve [op-id\|auth-id]` | 批准精确绑定的请求 |
+| `/deny [op-id\|auth-id] [原因]` | 拒绝精确绑定的请求 |
+| `/reload <技能名>` | 重载指定技能 |
+| `/newskill <描述>` | 生成新技能候选 |
+| `/memory` | 查看长期记忆摘要 |
+| `/evolve <目标>` | 执行受控自主迭代（`/autonomy` 的兼容入口） |
+| `/skills` | 列出已加载技能 |
+| `/capabilities` | 列出能力域与操作风险 |
+| `/quit` | 退出交互终端（别名 `/exit`） |
 
 `operational_commitment` 是优先级映射，不是情绪强度。开放意向可以影响规划，但不能凌驾于主人当前指令、安全规则或审批。
 
 ### HTTP API
 
-```text
-GET  /self
-GET  /self/assessment
-GET  /self/development
-POST /self/reflections
-GET  /self/reflections
-GET  /self/intentions
-POST /self/intentions
-GET  /self/intentions/{id}
-POST /self/intentions/{id}/pursue
-```
+鉴权规则：`/health` 为无鉴权存活探针（只返回 `status` 与 `version`）；其余端点都要求
+`X-Agenelf-Token` 头匹配 `AGENELF_API_TOKEN`。未配置 token 时 API fail-closed，
+受保护端点一律返回 503（仅本地开发可显式设 `AGENELF_API_ALLOW_INSECURE=1` 绕过）。
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|---|---|---|:--:|
+| GET | `/` | 重定向到 `/ui/`（仅重定向，不含数据） | 否 |
+| GET | `/ui/*` | 内嵌 Web 控制台静态资源（`web/`，见下文托管说明） | 否 |
+| GET | `/health` | 存活探针（status + version） | 否 |
+| GET | `/status` | 详细运行状态（技能数、模型、能力健康、意向统计等） | 是 |
+| POST | `/chat` | 对话（channel：`cli/http/web/mobile/voice`，`mobile_device` 为废弃别名；可选 `session_id` 选择会话桶，缺省为默认桶） | 是 |
+| POST | `/chat/stream` | SSE 流式对话（请求体同 `/chat`，含可选 `session_id`；事件序列 `status` → `message` 增量 ×N → `done`，异常为 `error` 事件） | 是 |
+| GET | `/chat/history` | 会话历史最近 N 条（`limit` 默认 50、上限 200；可选 `session_id` 按桶读取，历史按 session_id 分桶实现多会话隔离） | 是 |
+| DELETE | `/chat/history` | 清空指定会话桶（可选 `session_id`；无参清默认桶，不影响其它桶） | 是 |
+| GET | `/tasks` | 只读合并列出任务板（`board`，workspace/tasks/board.json）与治理引擎（`engine`，data/tasks/）任务，可 `status` 过滤 | 是 |
+| GET | `/tasks/{task_id}` | 单任务完整记录（engine 任务含 events/evidence 审计历史；非法 ID 400、不存在 404） | 是 |
+| GET | `/approvals` | 只读列出待审批操作/授权请求（含 hint；决策只能走 CLI `/approve` 或宿主机 `scripts/approve.sh`） | 是 |
+| GET | `/capabilities` | 能力目录 | 是 |
+| GET | `/validation/catalog` | 验证检查/套件目录 | 是 |
+| POST | `/validation/checks/{check}` | 运行单个验证检查 | 是 |
+| POST | `/validation/suites/{suite}` | 运行验证套件 | 是 |
+| GET | `/validation/results/{validation_id}` | 查询验证结果 | 是 |
+| GET | `/code-repair/catalog` | 代码修复仓库目录 | 是 |
+| POST | `/code-repair/requests` | 提交隔离补丁修复请求 | 是 |
+| GET | `/code-repair/requests/{repair_id}` | 查询修复请求结果 | 是 |
+| GET | `/local/status` | 本地个性化上下文加载状态 | 是 |
+| POST | `/local/reload` | 热重载 local 上下文 | 是 |
+| POST | `/memory` | 记录主人事实或偏好 | 是 |
+| GET | `/memory/search` | 检索主人长期记忆 | 是 |
+| GET | `/self` | 可观测自我模型 | 是 |
+| GET | `/self/assessment` | 能力自评估 | 是 |
+| GET | `/self/capability-health` | 能力健康评分卡 | 是 |
+| GET | `/self/roadmap` | 证据驱动改进路线图 | 是 |
+| GET | `/self/development` | 持续成长/自我发展状态 | 是 |
+| POST | `/self/reflections` | 执行反思与沉淀 | 是 |
+| GET | `/self/reflections` | 列出历史反思 | 是 |
+| GET | `/self/intentions` | 列出改进意向 | 是 |
+| POST | `/self/intentions` | 创建改进意向 | 是 |
+| GET | `/self/intentions/{intention_id}` | 查看指定改进意向 | 是 |
+| POST | `/self/intentions/{intention_id}/pursue` | 推进改进意向 | 是 |
+| GET | `/self/optimization` | 自我优化状态 | 是 |
+| POST | `/self/optimization/apply` | 应用白名单参数微调 | 是 |
+| POST | `/self/optimization/rollback` | 回滚优化参数 | 是 |
+| POST | `/self/optimization/auto` | 证据驱动自动调优 | 是 |
+| POST | `/autonomy/cycles` | 运行一次受控自主循环 | 是 |
+| GET | `/autonomy/cycles` | 列出自主循环 | 是 |
+| GET | `/autonomy/cycles/{cycle_id}` | 查询指定自主循环 | 是 |
+| GET | `/operations/{operation_id}` | 查询运维操作状态 | 是 |
+| GET | `/evolution/status` | 进化会话与晋升管道状态（合并 `app-tmp/promote-requests` 候选区与 `data/promote-requests` 已晋升区，每条标注 `source: candidate\|promoted`） | 是 |
+
+`session_id`（`/chat`、`/chat/stream` 请求体与 `/chat/history` 查询参数可选）用于把对话历史按会话分桶隔离：只能包含字母、数字、点、下划线、连字符，以字母或数字开头，长度 1-64；省略或传空白时使用默认桶（与旧版单一历史行为一致）。
+
+### 内嵌 Web 控制台托管
+
+仓库根目录的 `web/`（`index.html` + `assets/`）由 API 进程通过 `StaticFiles` 托管在 `/ui`（`html=True`），`GET /` 直接 307 重定向到 `/ui/`。目录查找顺序：`$AGENELF_ROOT/web` → `app/../web` → `/agenelf/web`，取第一个存在的；都不存在时只记 warning，不影响 API 启动。
+
+静态资源本身不鉴权，但控制台调用的所有数据端点仍要求 `X-Agenelf-Token`。
+
+容器部署：compose 中 `./app` 挂在 `/agenelf/app-fork`，因此容器内预期路径为 `/agenelf/web`；需要把 `./web` 以**只读**方式挂进 Agent 容器（由部署侧在 compose 中配置 `./web:/agenelf/web:ro`）。
 
 示例：
 

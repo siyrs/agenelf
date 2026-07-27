@@ -116,11 +116,25 @@ TOOLS: list[dict[str, Any]] = [
 
 _ALIAS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 _AGENT: Any | None = None
+_REGISTRY: Any | None = None
 
 
-def configure_runtime(*, agent: Any, **_: Any) -> None:
-    global _AGENT
+def configure_runtime(*, agent: Any, registry: Any = None, **_: Any) -> None:
+    global _AGENT, _REGISTRY
     _AGENT = agent
+    # 优先把绑定状态写到 Registry 实例的 per-instance 上下文，
+    # 模块级全局仅作未传入 registry 时的兼容兜底
+    if registry is not None and hasattr(registry, "bind_state"):
+        _REGISTRY = registry
+        registry.bind_state("software_validation", agent=agent)
+
+
+def _bound_agent() -> Any | None:
+    if _REGISTRY is not None and hasattr(_REGISTRY, "get_state"):
+        agent = _REGISTRY.get_state("software_validation").get("agent")
+        if agent is not None:
+            return agent
+    return _AGENT
 
 
 def _root() -> Path:
@@ -212,7 +226,8 @@ def _wait(value: object, default: int, maximum: int) -> int:
 
 
 def _observe(state: dict[str, Any]) -> None:
-    if _AGENT is None or not isinstance(state.get("result"), dict):
+    agent = _bound_agent()
+    if agent is None or not isinstance(state.get("result"), dict):
         return
     result = state["result"]
     if str(result.get("status")) != "failed":
@@ -221,7 +236,7 @@ def _observe(state: dict[str, Any]) -> None:
     target = str(request.get("target") or result.get("target") or "unknown")
     summary = str(result.get("summary") or result.get("reason") or "验证失败")[:1000]
     try:
-        _AGENT.create_improvement_intention(
+        agent.create_improvement_intention(
             title=f"分析并修复软件验证失败：{target}",
             rationale=summary,
             priority="P1",
@@ -232,7 +247,7 @@ def _observe(state: dict[str, Any]) -> None:
                 "不绕过网络、凭据、测试或晋升安全边界",
             ],
         )
-        _AGENT.reflect_and_sediment(
+        agent.reflect_and_sediment(
             note=f"软件验证 {target} 失败；证据 {state.get('id')}；摘要：{summary}",
             deep=False,
         )

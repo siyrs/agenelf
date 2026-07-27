@@ -126,6 +126,25 @@ class EvolutionWorkspaceTest(unittest.TestCase):
         self.assertEqual(result["status"], "baseline_tests_tampered")
         self.assertIn("tests/test_example.py", result["changed"])
 
+    def test_candidate_runner_uses_minimal_environment_allowlist(self):
+        secret_name = "AGENELF_TEST_SECRET_TOKEN"
+        old = os.environ.get(secret_name)
+        os.environ[secret_name] = "super-secret"
+        try:
+            env = candidate_runner._environment(self.root / "app-tmp")
+        finally:
+            if old is None:
+                os.environ.pop(secret_name, None)
+            else:
+                os.environ[secret_name] = old
+        self.assertNotIn(secret_name, env)
+        for leaked in ("AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY"):
+            self.assertNotIn(leaked, env)
+        self.assertIn("PATH", env)
+        self.assertIn("PYTHONPATH", env)
+        self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertIn(str(self.root / "app-tmp"), env["PYTHONPATH"])
+
     def test_helper_detects_direct_test_mutation(self):
         marker = stage_workspace(self.root, self.root / "app-fork")
         app = Path(marker["candidate_app"])

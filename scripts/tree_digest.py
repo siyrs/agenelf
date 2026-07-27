@@ -9,6 +9,10 @@ from pathlib import Path
 
 _EXCLUDED_DIRS = {"__pycache__", ".pytest_cache"}
 _EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
+# gate 的暂存请求队列（PROMOTE_REQUESTS_DIR 默认 app-tmp/promote-requests）在
+# 扁平布局下位于候选树顶层；它是流程产物而非候选代码，只对顶层条目豁免，
+# 更深层级的同名目录仍参与摘要，防止模型借此藏匿代码。
+_EXCLUDED_TOP_LEVEL = {"promote-requests"}
 
 
 def tree_digest(root: str | Path) -> str:
@@ -21,6 +25,8 @@ def tree_digest(root: str | Path) -> str:
         if not path.is_file():
             continue
         relative = path.relative_to(base)
+        if relative.parts[0] in _EXCLUDED_TOP_LEVEL:
+            continue
         if any(part in _EXCLUDED_DIRS for part in relative.parts):
             continue
         if path.suffix in _EXCLUDED_SUFFIXES:

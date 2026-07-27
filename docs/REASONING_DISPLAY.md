@@ -13,6 +13,15 @@ Agenelf 的交互终端会显示模型供应商明确返回的 `reasoning_conten
 
 终端只能控制颜色、粗体、斜体、明暗等字符样式，不能可靠地为单个面板切换操作系统字体文件。因此这里使用 Rich 的 `italic dim bright_cyan` 字符样式，实现和最终答案的清晰视觉区分。
 
+## 安装方式（有序钩子管线）
+
+推理捕获不再通过 `MethodType` 包装 `llm.chat`：`reasoning_trace` 技能在
+`configure_runtime` 中通过 `Agent.add_llm_wrapper(priority=100)` 注册为显式
+有序钩子；`zz_transport_resilience` 以 `priority=1000` 注册为**最外层**重试
+包装器（数值越大越外层），保留旧的“最后加载=最外层”语义但不再依赖技能
+文件名排序。同名注册覆盖旧实现，因此技能重复加载不会叠加包装层；
+`Agent.list_hooks()` 可按应用顺序（最外层在前）列出全部钩子用于诊断。
+
 ## 默认配置
 
 `app/config.yaml`：

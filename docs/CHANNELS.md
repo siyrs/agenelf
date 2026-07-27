@@ -2,13 +2,20 @@
 
 ## 原则
 
-CLI、HTTP、Web、Mobile 和 Voice 只是输入渠道，不是新的权限系统。所有渠道必须先生成同一结构的命令信封，再进入 Task Engine、Policy、审批、Runner 和 Evidence。
+CLI、HTTP、Web、Mobile 和 Voice 只是输入渠道，不是新的权限系统。目标架构是：所有渠道先生成同一结构的命令信封，再进入 Task Engine、Policy、审批、Runner 和 Evidence。
+
+> **实现现状（如实描述）**：命令信封机制已实现于 `app/core/channel_envelope.py`
+> 的 `CommandEnvelopeStore`（含持久化、幂等防重放、脱敏、授权引用校验，并有单元测试覆盖）。
+> 但目前 CLI 与 HTTP API **尚未接线**到信封存储——它们仍沿用各自的直接入口；
+> 全渠道统一走命令信封属于路线图项（见文末"手机和语音实现顺序"）。
+> 渠道枚举的唯一来源是 `channel_envelope.CHANNELS = {"cli", "http", "web", "mobile", "voice"}`；
+> HTTP API 的 `/chat` 端点从该模块导入校验，`mobile_device` 为已废弃别名，兼容映射到 `mobile`。
 
 ```text
 CLI / HTTP / Web / Mobile / Voice
                 |
                 v
-        CommandEnvelopeStore
+        CommandEnvelopeStore        （已实现，全渠道接线为路线图项）
                 |
                 v
        Task Engine + Policy

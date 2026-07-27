@@ -145,6 +145,10 @@ def configure_runtime(*, agent: Any = None, registry: Any = None, **_: Any) -> N
     global _AGENT, _REGISTRY
     _AGENT = agent
     _REGISTRY = registry
+    # 优先把绑定状态写到 Registry 实例的 per-instance 上下文，
+    # 模块级全局仅作未传入 registry 时的兼容兜底
+    if registry is not None and hasattr(registry, "bind_state"):
+        registry.bind_state("skill_forge", agent=agent, registry=registry)
 
 
 def _enabled() -> bool:
@@ -155,9 +159,14 @@ def _enabled() -> bool:
 
 
 def _registry() -> Any:
-    if _REGISTRY is None:
+    registry = _REGISTRY
+    if registry is not None and hasattr(registry, "get_state"):
+        bound = registry.get_state("skill_forge").get("registry")
+        if bound is not None:
+            return bound
+    if registry is None:
         raise RuntimeError("skill_forge 尚未绑定技能注册表")
-    return _REGISTRY
+    return registry
 
 
 def _dump(value: Any) -> str:
@@ -235,12 +244,17 @@ def _static_policy(source: str, label: str) -> str | None:
 
 
 def _after_change(name: str | None = None) -> None:
-    if _AGENT is None:
+    agent = None
+    if _REGISTRY is not None and hasattr(_REGISTRY, "get_state"):
+        agent = _REGISTRY.get_state("skill_forge").get("agent")
+    if agent is None:
+        agent = _AGENT
+    if agent is None:
         return
     try:
         if name:
-            _AGENT.configure_skill_runtimes(name)
-        _AGENT._refresh_system_prompt()
+            agent.configure_skill_runtimes(name)
+        agent._refresh_system_prompt()
     except Exception:
         pass
 

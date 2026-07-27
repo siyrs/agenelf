@@ -1,9 +1,14 @@
-"""Install bounded multi-segment continuation for long tool-driven tasks."""
+"""Configure bounded multi-segment continuation for long tool-driven tasks.
+
+分段续跑主回路已并入 ``core.agent.Agent.chat``（单一主回路）。本技能不再
+替换 ``agent.chat``，只是配置壳：把预算参数写入 agent 配置属性与 registry
+per-instance 状态；重复 ``configure_runtime`` 幂等。
+"""
 from __future__ import annotations
 
 from typing import Any
 
-from core.continuous_chat import install_continuous_chat
+from core.continuous_chat import configured_no_progress_limit, configured_segments
 
 SKILL_META = {
     "name": "tool_budget_continuation",
@@ -38,10 +43,29 @@ TOOLS: list[dict[str, Any]] = []
 def configure_runtime(
     *,
     agent: Any,
+    registry: Any | None = None,
     config: dict[str, Any] | None = None,
     **_: Any,
 ) -> None:
-    install_continuous_chat(agent, config or getattr(agent, "config", {}))
+    """把分段预算写入 agent 配置属性与 registry per-instance 状态（幂等）。"""
+
+    full = config if isinstance(config, dict) else getattr(agent, "config", {})
+    segments = configured_segments(full)
+    repeat_limit = configured_no_progress_limit(full)
+    rounds = max(1, int(getattr(agent, "max_tool_rounds", 8)))
+    agent.max_tool_segments = segments
+    agent.no_progress_repeat_limit = repeat_limit
+    agent.max_total_tool_rounds = rounds * segments
+    if registry is None:
+        registry = getattr(agent, "registry", None)
+    bind_state = getattr(registry, "bind_state", None)
+    if callable(bind_state):
+        bind_state(
+            "tool_budget_continuation",
+            max_tool_segments=segments,
+            no_progress_repeat_limit=repeat_limit,
+            max_total_tool_rounds=rounds * segments,
+        )
 
 
 def execute(tool_name: str, args: dict[str, Any]) -> str:

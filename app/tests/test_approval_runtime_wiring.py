@@ -71,15 +71,49 @@ class ApprovalRuntimeWiringTest(unittest.TestCase):
         init = services["approval-key-init"]
         self.assertEqual(init["network_mode"], "none")
         self.assertEqual(init["user"], "0:0")
+        # 模型常驻进程绝不可见 HMAC 密钥，防止自签审批。
+        self.assertFalse(
+            any(
+                "approval-key" in str(item)
+                for item in services["agenelf"]["volumes"]
+            ),
+            "agenelf 服务不得挂载 approval-key",
+        )
+        # 只有独立 cli 服务（profile=cli）与 approval-runner 可读密钥。
+        cli = services["cli"]
+        self.assertIn("cli", cli["profiles"])
         self.assertIn(
             "approval-key:/agenelf/approval:ro",
-            services["agenelf"]["volumes"],
+            cli["volumes"],
         )
         self.assertIn(
             "approval-key:/agenelf/approval:ro",
             services["approval-runner"]["volumes"],
         )
         self.assertIn("approval-key", compose["volumes"])
+
+    def test_agent_gets_web_console_assets_read_only(self):
+        compose = yaml.safe_load(
+            (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+        volumes = compose["services"]["agenelf"]["volumes"]
+        self.assertIn("./web:/agenelf/web:ro", volumes)
+
+    def test_agent_reads_approval_commands_but_cannot_write_them(self):
+        compose = yaml.safe_load(
+            (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+        volumes = compose["services"]["agenelf"]["volumes"]
+        self.assertIn(
+            "./data/approval-commands:/agenelf/data/approval-commands:ro",
+            volumes,
+        )
+
+    def test_chat_sh_uses_isolated_cli_service(self):
+        script = (ROOT / "scripts" / "chat.sh").read_text(encoding="utf-8")
+        self.assertIn("--profile cli", script)
+        self.assertIn("run --rm", script)
+        self.assertIn("/agenelf/app-fork/cli.py", script)
 
     def test_windows_and_shell_wrappers_prefer_same_python_implementation(self):
         powershell = (ROOT / "scripts/approve.ps1").read_text(encoding="utf-8")
