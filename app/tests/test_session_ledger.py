@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,16 @@ from core.session_ledger import (
     SessionLedgerError,
     SessionLedgerStore,
 )
+
+
+def _append_many(root: str, session_id: str, worker: int, count: int) -> None:
+    store = SessionLedgerStore(root)
+    for index in range(count):
+        store.append(
+            session_id,
+            "custom",
+            {"worker": worker, "index": index},
+        )
 
 
 class SessionLedgerStoreTest(unittest.TestCase):
@@ -158,6 +169,27 @@ class SessionLedgerStoreTest(unittest.TestCase):
         result = self.store.verify("malformed-demo")
         self.assertEqual(result["integrity"], "failed")
         self.assertTrue(any("parent_id 格式非法" in item for item in result["errors"]))
+
+    def test_concurrent_processes_preserve_sequence_and_hash_chain(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        processes = [
+            context.Process(
+                target=_append_many,
+                args=(str(self.root), "process-demo", worker, 6),
+            )
+            for worker in range(4)
+        ]
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=30)
+            self.assertFalse(process.is_alive(), "ledger worker did not terminate")
+            self.assertEqual(process.exitcode, 0)
+
+        entries = self.store.entries("process-demo", limit=100)
+        self.assertEqual(len(entries), 24)
+        self.assertEqual([item["seq"] for item in entries], list(range(1, 25)))
+        self.assertEqual(self.store.verify("process-demo")["integrity"], "ok")
 
     def test_language_neutral_schema_stays_in_sync(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
