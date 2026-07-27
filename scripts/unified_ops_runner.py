@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Unified deterministic SSH runner with structured Docker and Compose lifecycle ops.
+"""Unified deterministic SSH runner with structured remote Docker operations.
 
-The model never receives SSH credentials or arbitrary shell access.  Every request is
-fingerprint-bound and validated again by this runner.  Server profiles reload before
-each queue scan; malformed edits retain the last known-good snapshot.
+This runner replaces the original entrypoint without changing the operation queue or
+approval protocol. Existing ``server.operations`` requests are delegated to
+``OpsRunner``. ``docker.operations`` adds a small, validated surface for logs,
+safe inspect metadata, owner-configured diagnostics and exact-approval restarts.
+
+The server profile file is reloaded before every queue scan. A temporary malformed
+edit keeps the last known-good profile set instead of crashing the long-running
+runner, while the failure is written to the audit log.
 """
 from __future__ import annotations
 
@@ -32,11 +37,8 @@ from core import operations  # noqa: E402
 from core.privacy import redact_sensitive_text  # noqa: E402
 
 _DOCKER_CAPABILITY = "docker.operations"
-_SERVER_CAPABILITY = "server.operations"
-_COMPOSE_DOWN = "compose_down"
 _CONTAINER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 _CHECK_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
-_PROJECT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 _DOCKER_RISKS = {
     "get_docker_logs": operations.RISK_READ,
     "inspect_docker_container": operations.RISK_READ,
@@ -75,9 +77,11 @@ def _safe_command_result(result: Any) -> dict[str, Any]:
 
 
 class UnifiedOpsRunner(OpsRunner):
-    """Extend the existing server runner without weakening its queue/approval model."""
+    """Extend the existing runner while preserving its queue and approvals."""
 
     def refresh_profiles(self) -> bool:
+        """Reload servers.yaml, keeping the last valid snapshot on transient errors."""
+
         try:
             loaded = self._load_profiles()
         except Exception as exc:
@@ -121,17 +125,6 @@ class UnifiedOpsRunner(OpsRunner):
         if not isinstance(allowed, list) or operation not in {str(item) for item in allowed}:
             raise RunnerError(f"目标 Docker 策略未允许操作：{operation}")
 
-    @staticmethod
-    def _allowed_compose_down(profile: dict[str, Any]) -> None:
-        allowed = profile.get("allowed_operations")
-        if allowed is None:
-            return
-        values = {str(item) for item in allowed} if isinstance(allowed, list) else set()
-        # Existing compose_deploy authorization permits lifecycle shutdown only after a
-        # separate exact owner approval; volumes/images remain protected.
-        if not ({_COMPOSE_DOWN, "compose_deploy"} & values):
-            raise RunnerError("目标策略未允许 compose_down")
-
     def _check_definition(
         self, profile: dict[str, Any], alias_raw: Any
     ) -> tuple[str, str, list[str]]:
@@ -154,53 +147,9 @@ class UnifiedOpsRunner(OpsRunner):
             argv.append(text)
         return alias, container, argv
 
-    @staticmethod
-    def _is_compose_down(request: dict[str, Any]) -> bool:
-        return (
-            request.get("capability") == _SERVER_CAPABILITY
-            and request.get("operation") == _COMPOSE_DOWN
-        )
-
-    def _validate_compose_down(
-        self, request: dict[str, Any]
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if request.get("schema_version") != 1:
-            raise RunnerError("不支持的操作请求版本")
-        target = str(request.get("target", ""))
-        parameters = request.get("parameters", {})
-        if not isinstance(parameters, dict):
-            raise RunnerError("parameters 必须是对象")
-        allowed_parameters = {"project", "timeout_seconds", "remove_orphans"}
-        unknown = set(parameters) - allowed_parameters
-        if unknown:
-            raise RunnerError(f"compose_down 含未知参数：{sorted(unknown)}")
-        project = str(parameters.get("project", ""))
-        if not _PROJECT_RE.fullmatch(project):
-            raise RunnerError("非法 Compose 项目名")
-        try:
-            timeout = int(parameters.get("timeout_seconds", 30))
-        except (TypeError, ValueError) as exc:
-            raise RunnerError("timeout_seconds 必须是整数") from exc
-        if timeout < 0 or timeout > 120:
-            raise RunnerError("timeout_seconds 必须在 0-120 之间")
-        if not isinstance(parameters.get("remove_orphans", True), bool):
-            raise RunnerError("remove_orphans 必须是布尔值")
-        payload = operations.canonical_payload(
-            _SERVER_CAPABILITY, _COMPOSE_DOWN, target, parameters
-        )
-        if operations.payload_fingerprint(payload) != request.get("fingerprint"):
-            raise RunnerError("请求指纹校验失败，文件可能被篡改")
-        if request.get("risk") != operations.RISK_CHANGE:
-            raise RunnerError("compose_down 必须声明 change 风险")
-        profile = self._profile(target)
-        self._allowed_compose_down(profile)
-        return payload, profile
-
     def _validate_request(
         self, request: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if self._is_compose_down(request):
-            return self._validate_compose_down(request)
         if request.get("capability") != _DOCKER_CAPABILITY:
             return super()._validate_request(request)
         if request.get("schema_version") != 1:
@@ -219,7 +168,9 @@ class UnifiedOpsRunner(OpsRunner):
             raise RunnerError("请求指纹校验失败，文件可能被篡改")
         expected_risk = _DOCKER_RISKS[operation]
         if request.get("risk") != expected_risk:
-            raise RunnerError(f"风险级别不匹配：操作 {operation} 必须是 {expected_risk}")
+            raise RunnerError(
+                f"风险级别不匹配：操作 {operation} 必须是 {expected_risk}"
+            )
         profile = self._profile(target)
         self._allowed_docker_operation(profile, operation)
         if operation in {
@@ -246,11 +197,16 @@ class UnifiedOpsRunner(OpsRunner):
             self._check_definition(profile, parameters.get("check", ""))
         return payload, profile
 
-    @staticmethod
-    def _exact_change_authorization(
-        paths: dict[str, Path], request: dict[str, Any], payload: dict[str, Any]
+    def _authorization_state(
+        self, request: dict[str, Any], payload: dict[str, Any]
     ) -> str:
-        decision = _read_json(paths["decisions"] / f"{request['id']}.json")
+        if request.get("capability") != _DOCKER_CAPABILITY:
+            return super()._authorization_state(request, payload)
+        operation = str(request.get("operation", ""))
+        if _DOCKER_RISKS[operation] == operations.RISK_READ:
+            return "approved"
+        decision_path = self.paths["decisions"] / f"{request['id']}.json"
+        decision = _read_json(decision_path)
         if decision is None:
             return "pending"
         if decision.get("request_id") != request.get("id"):
@@ -263,88 +219,9 @@ class UnifiedOpsRunner(OpsRunner):
             return "invalid"
         return "approved"
 
-    def _authorization_state(
-        self, request: dict[str, Any], payload: dict[str, Any]
-    ) -> str:
-        if self._is_compose_down(request):
-            return self._exact_change_authorization(self.paths, request, payload)
-        if request.get("capability") != _DOCKER_CAPABILITY:
-            return super()._authorization_state(request, payload)
-        operation = str(request.get("operation", ""))
-        if _DOCKER_RISKS[operation] == operations.RISK_READ:
-            return "approved"
-        return self._exact_change_authorization(self.paths, request, payload)
-
-    def _execute_compose_down(
-        self, request: dict[str, Any], profile: dict[str, Any]
-    ) -> dict[str, Any]:
-        params = request["parameters"]
-        project = str(params["project"])
-        timeout = int(params.get("timeout_seconds", 30))
-        remove_orphans = bool(params.get("remove_orphans", True))
-        managed_root = str(profile.get("managed_root", "/srv/agenelf")).rstrip("/")
-        project_dir = f"{managed_root}/{project}"
-        compose_path = f"{project_dir}/compose.yaml"
-        q_dir = shlex.quote(project_dir)
-        q_compose = shlex.quote(compose_path)
-        docker = self._docker(profile)
-        commands: list[dict[str, Any]] = []
-        started = now_iso()
-
-        with self.session_factory(profile, self.secrets_root) as ssh:
-            check = ssh.run(
-                f"test -d {q_dir} && test -f {q_compose}", timeout=60
-            )
-            commands.append(_safe_command_result(check))
-            if check.ok:
-                validate = ssh.run(
-                    f"cd {q_dir} && {docker} compose -f {q_compose} config --services",
-                    timeout=120,
-                )
-                commands.append(_safe_command_result(validate))
-            else:
-                validate = check
-            if validate.ok:
-                suffix = " --remove-orphans" if remove_orphans else ""
-                # Deliberately no --volumes or --rmi: persistent data and images survive.
-                down = ssh.run(
-                    f"cd {q_dir} && {docker} compose -f {q_compose} down "
-                    f"--timeout {timeout}{suffix}",
-                    timeout=max(180, timeout + 120),
-                )
-                commands.append(_safe_command_result(down))
-            else:
-                down = validate
-            if down.ok:
-                commands.append(
-                    _safe_command_result(
-                        ssh.run(
-                            f"cd {q_dir} && {docker} compose -f {q_compose} ps -a",
-                            timeout=120,
-                        )
-                    )
-                )
-
-        ok = bool(commands) and all(item.get("exit_code") == 0 for item in commands)
-        return {
-            "schema_version": 1,
-            "id": request["id"],
-            "status": "succeeded" if ok else "failed",
-            "target": request["target"],
-            "capability": _SERVER_CAPABILITY,
-            "operation": _COMPOSE_DOWN,
-            "project": project,
-            "preserved": ["named_volumes", "images", "compose.yaml", ".agenelf-backups"],
-            "started_at": started,
-            "finished_at": now_iso(),
-            "commands": commands,
-        }
-
     def _execute(
         self, request: dict[str, Any], profile: dict[str, Any]
     ) -> dict[str, Any]:
-        if self._is_compose_down(request):
-            return self._execute_compose_down(request, profile)
         if request.get("capability") != _DOCKER_CAPABILITY:
             return super()._execute(request, profile)
 
@@ -377,7 +254,9 @@ class UnifiedOpsRunner(OpsRunner):
                 quoted_argv = " ".join(shlex.quote(item) for item in argv)
                 commands.append(
                     _safe_command_result(
-                        ssh.run(f"{docker} exec {container} {quoted_argv}", timeout=300)
+                        ssh.run(
+                            f"{docker} exec {container} {quoted_argv}", timeout=300
+                        )
                     )
                 )
             elif operation == "restart_docker_container":
@@ -389,15 +268,12 @@ class UnifiedOpsRunner(OpsRunner):
                 )
                 commands.append(_safe_command_result(restart))
                 if restart.ok:
-                    commands.append(
-                        _safe_command_result(
-                            ssh.run(
-                                f"{docker} ps -a --filter name=^/{container_raw}$ "
-                                "--format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}'",
-                                timeout=60,
-                            )
-                        )
+                    status = ssh.run(
+                        f"{docker} ps -a --filter name=^/{container_raw}$ "
+                        "--format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}'",
+                        timeout=60,
                     )
+                    commands.append(_safe_command_result(status))
             else:  # pragma: no cover - validated above
                 raise RunnerError(f"未实现 Docker 操作：{operation}")
 

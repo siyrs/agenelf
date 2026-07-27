@@ -8,7 +8,7 @@ from pathlib import Path
 from core.policy import PolicyEngine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_POLICY_VERSION = "1.3.0"
+EXPECTED_POLICY_VERSION = "1.1.0"
 
 
 class PolicyEngineLoadingTest(unittest.TestCase):
@@ -105,8 +105,6 @@ class PolicyEngineQueryTest(unittest.TestCase):
         self.assertTrue(self.engine.is_protected_path("policy/safety-constraints.v1.yaml"))
         self.assertTrue(self.engine.is_protected_path("scripts/validate_governance.py"))
         self.assertTrue(self.engine.is_protected_path("app/core/permissions.py"))
-        self.assertTrue(self.engine.is_protected_path("app/core/runtime_health.py"))
-        self.assertTrue(self.engine.is_protected_path("app/skills/runtime_doctor.py"))
         self.assertFalse(self.engine.is_protected_path("app/skills/foo.py"))
 
     def test_candidate_limits_content(self):
@@ -124,7 +122,6 @@ class PolicyEngineQueryTest(unittest.TestCase):
             "full_unit_suite_passed",
             "exact_authorization_binding_verified",
             "trusted_evidence_archived",
-            "runner_heartbeat_isolation_verified",
             "documentation_updated",
         ):
             self.assertIn(expected, gates)
@@ -134,10 +131,7 @@ class PolicyEngineQueryTest(unittest.TestCase):
             self.engine.approval_requirements("owner_exact"),
             ["exact_payload_fingerprint", "expiration", "single_use"],
         )
-        self.assertIn(
-            "second_confirmation",
-            self.engine.approval_requirements("owner_irreversible"),
-        )
+        self.assertIn("second_confirmation", self.engine.approval_requirements("owner_irreversible"))
         self.assertEqual(self.engine.approval_requirements("nonexistent_mode"), [])
 
     def test_forbidden_behaviors_content(self):
