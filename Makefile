@@ -1,13 +1,14 @@
-# Agenelf operator commands
-.PHONY: help init local mind models workflow validation repair start stop restart build chat test backup promote watch logs status ops approvals evolution autonomy approve deny clean
+# Agenelf operator commands — Node.js/TypeScript is the default Agent/API/CLI.
+.PHONY: help init local mind models workflow validation repair start stop restart build chat legacy-chat node-test python-test test backup promote watch logs status ops approvals evolution autonomy approve deny clean
 
 help: ## Show commands
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-init: ## Create/migrate private config, task/evidence queues and isolated workspaces
+init: ## Create/migrate private config, Node state, controlled queues and workspaces
 	@test -f .env || cp .env.example .env
 	@test -f .ops-runner.env || cp .ops-runner.env.example .ops-runner.env
 	@python3 scripts/init_local.py
+	@test -f local/node-runner.json || cp local/node-runner.example.json local/node-runner.json
 	@mkdir -p logs workspace/scratch app-space/skills app-tmp app-fork code-workspaces repair-space \
 		app-tmp/promote-requests \
 		data/auth-requests data/auth-decisions data/auth-consumed \
@@ -17,8 +18,9 @@ init: ## Create/migrate private config, task/evidence queues and isolated worksp
 		data/repair-requests data/repair-results data/repair-locks \
 		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks \
 		data/self-upgrade-backups data/authorized-upgrades data/runner-health data/app-backups \
-		data/tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles
-	@echo "初始化完成。请编辑 local/ 配置；代码仓库放入 code-workspaces/，修复证据在 repair-space/。"
+		data/tasks data/node-tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles \
+		data/node-runner-requests data/node-runner-results data/node-runner-locks
+	@echo "初始化完成。默认 Agent/API/CLI 为 Node；Python legacy API 与安全 Runner 保留为内部兼容控制面。"
 
 local: ## Validate local personalization without printing secrets
 	@python3 scripts/init_local.py --status
@@ -29,11 +31,12 @@ mind: ## Show persistent reflection/intention files without dumping contents
 models: ## Show private model routing configuration status
 	@python3 scripts/init_local.py --status | grep -E 'models|local_dir' || true
 
-workflow: ## Show governed workflow task files
-	@echo "== workflow tasks =="; ls -lt data/tasks 2>/dev/null | head -20 || true
+workflow: ## Show governed Python and Node workflow task files
+	@echo "== Python workflow tasks =="; ls -lt data/tasks 2>/dev/null | head -20 || true
+	@echo "== Node workflow tasks =="; ls -lt data/node-tasks 2>/dev/null | head -20 || true
 	@echo "== channel requests =="; ls -lt data/channel-requests 2>/dev/null | head -20 || true
 
-start: ## Sync runtime fork and start Agent plus deterministic runners
+start: ## Start Node Agent/API plus internal Python compatibility API and deterministic runners
 	@test -f .env || (echo "缺少 .env，请先 make init"; exit 1)
 	@test -f .ops-runner.env || (echo "缺少 .ops-runner.env，请先 make init"; exit 1)
 	@test -f local/profile.yaml || (echo "缺少 local/profile.yaml，请先 make init"; exit 1)
@@ -42,13 +45,18 @@ start: ## Sync runtime fork and start Agent plus deterministic runners
 	@test -f local/validation.yaml || (echo "缺少 local/validation.yaml，请先 make init"; exit 1)
 	@test -f local/models.yaml || (echo "缺少 local/models.yaml，请先 make init"; exit 1)
 	@test -f local/repositories.yaml || (echo "缺少 local/repositories.yaml，请先 make init"; exit 1)
+	@test -f local/node-runner.json || (echo "缺少 local/node-runner.json，请先 make init"; exit 1)
 	@test -d local/memory || (echo "缺少 local/memory，请先 make init"; exit 1)
 	@test -d local/self || (echo "缺少 local/self，请先 make init"; exit 1)
 	@test -d local/secrets || (echo "缺少 local/secrets，请先 make init"; exit 1)
 	@mkdir -p app-tmp/promote-requests \
 		data/approval-commands data/approval-results data/approval-locks data/auth-decisions data/auth-consumed \
-		data/ops-locks data/validation-locks data/repair-locks data/self-upgrade-locks \
-		data/promote-requests data/promotion-history data/runner-health
+		data/ops-requests data/ops-results data/ops-locks \
+		data/validation-requests data/validation-results data/validation-locks \
+		data/repair-requests data/repair-results data/repair-locks \
+		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks \
+		data/promote-requests data/promotion-history data/runner-health data/node-tasks \
+		data/node-runner-requests data/node-runner-results data/node-runner-locks
 	bash scripts/sync_fork.sh
 	docker compose up -d --build
 
@@ -58,18 +66,27 @@ stop: ## Stop all services
 restart: ## Restart all services
 	docker compose restart
 
-build: ## Rebuild images
+build: ## Rebuild Node, legacy Python and runner images
 	docker compose build
 
-chat: ## Open CLI chat
-	bash scripts/chat.sh
+chat: ## Open the default Node CLI chat
+	docker compose --profile cli run --rm cli
 
-test: ## Run governance, compile and complete unit suite
+legacy-chat: ## Open the legacy Python CLI for migration diagnostics
+	docker compose --profile legacy-cli run --rm legacy-cli
+
+node-test: ## Run native TypeScript checks and Node tests
+	npm ci --ignore-scripts
+	npm run test:node
+
+python-test: ## Run the retained Python governance and regression suite
 	python3 scripts/validate_governance.py
 	python3 -m compileall -q app scripts
 	cd app && python -m unittest discover -s tests -v
 
-backup: ## Back up generic app source state to GitHub; local remains private
+test: node-test python-test ## Run complete Node and Python migration regression
+
+backup: ## Back up generic source state to GitHub; local remains private
 	bash scripts/github_backup.sh
 
 promote: ## Promote an exact evolution request: make promote REQ=<evo-id>
@@ -122,8 +139,8 @@ repair: ## Show code repair aliases, queues and evidence
 	@echo "== repair results =="; ls -lt data/repair-results 2>/dev/null | head -20 || true
 	@echo "== repair artifacts =="; ls -lt repair-space 2>/dev/null | head -20 || true
 
-logs: ## Follow Agent and deterministic runners
-	docker compose logs -f --tail=100 agenelf approval-runner ops-runner validation-runner repair-runner self-upgrade-runner
+logs: ## Follow Node Agent, internal legacy API and deterministic runners
+	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner ops-runner validation-runner repair-runner self-upgrade-runner
 
 status: ## Show containers, local state and all controlled queues
 	-docker compose ps
@@ -142,5 +159,6 @@ clean: ## Clear transient queues; preserve owner data and trusted result evidenc
 	rm -rf app-tmp/* data/ops-requests/* data/ops-locks/* \
 		data/approval-commands/* data/approval-locks/* \
 		data/validation-requests/* data/validation-locks/* \
-		data/repair-requests/* data/repair-locks/*
-	@echo "已清空；local/、结果证据、repair-space、自主循环、裁决与晋升证据均保留。"
+		data/repair-requests/* data/repair-locks/* \
+		data/node-runner-requests/* data/node-runner-locks/*
+	@echo "已清空；local/、Node/Python 结果证据、repair-space、自主循环、裁决与晋升证据均保留。"

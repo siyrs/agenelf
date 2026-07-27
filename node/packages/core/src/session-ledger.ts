@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { canonicalize, randomId, sha256 } from "./canonical.ts";
 import { appendLine, withDirectoryLock } from "./fs-store.ts";
@@ -140,6 +140,16 @@ export class SessionLedgerStore {
     if (options.branchId) entries = entries.filter((entry) => entry.branch_id === options.branchId);
     const limit = Math.max(0, Math.min(Number(options.limit ?? 50), 500));
     return limit ? entries.slice(-limit) : [];
+  }
+
+  async clear(sessionId: string): Promise<{ session_id: string; cleared: number }> {
+    const safeId = safeSessionId(sessionId);
+    const path = this.path(safeId);
+    return withDirectoryLock(`${path}.lock`, async () => {
+      const entries = await this.readEntries(safeId);
+      await rm(path, { force: true });
+      return { session_id: safeId, cleared: entries.length };
+    });
   }
 
   async verify(sessionId: string) {

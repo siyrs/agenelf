@@ -11,7 +11,7 @@ permissions:
 jobs:
   node-runtime:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,15 +24,32 @@ jobs:
         run: npm run node:check
       - name: Run Node unit and integration tests
         run: npm run node:test
-      - name: Validate Node Compose topology
+      - name: Prepare private-path fixtures
         run: |
           cp .env.example .env
-          mkdir -p local/context local/memory local/self data logs workspace repair-space
-          touch local/profile.yaml local/preferences.yaml
+          printf '\nAGENELF_API_TOKEN=node-ci-token\n' >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
           cp local/node-runner.example.json local/node-runner.json
-          docker compose -f docker-compose.node.yml --profile node-runner config > /tmp/agenelf-node-compose.yml
-          grep -q 'agenelf-node:' /tmp/agenelf-node-compose.yml
-          grep -q 'node-runner:' /tmp/agenelf-node-compose.yml
+          mkdir -p data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate default hybrid production topology
+        run: |
+          docker compose config > /tmp/agenelf-production-compose.yml
+          docker compose config --services > /tmp/agenelf-production-services.txt
+          grep -qx 'agenelf' /tmp/agenelf-production-services.txt
+          grep -qx 'legacy-agent' /tmp/agenelf-production-services.txt
+          grep -qx 'approval-runner' /tmp/agenelf-production-services.txt
+          grep -qx 'ops-runner' /tmp/agenelf-production-services.txt
+          grep -qx 'validation-runner' /tmp/agenelf-production-services.txt
+          grep -qx 'repair-runner' /tmp/agenelf-production-services.txt
+          grep -qx 'self-upgrade-runner' /tmp/agenelf-production-services.txt
+          grep -q 'Dockerfile.node' /tmp/agenelf-production-compose.yml
+          grep -q 'AGENELF_LEGACY_API_URL' /tmp/agenelf-production-compose.yml
+      - name: Validate rollback and optional Node runner topologies
+        run: |
+          docker compose -f docker-compose.python.yml config >/tmp/agenelf-python-compose.yml
+          docker compose --profile node-runner config >/tmp/agenelf-node-runner-compose.yml
+          grep -q 'node-runner:' /tmp/agenelf-node-runner-compose.yml
       - name: Build Node production image
         run: docker build -f Dockerfile.node -t agenelf-node:ci .
       - name: Smoke Node API container
@@ -49,6 +66,17 @@ jobs:
             sleep 1
           done
           curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:18080/status | grep -q 'node-typescript'
+      - name: Smoke default Node plus internal legacy topology
+        run: |
+          docker compose up -d --build approval-key-init legacy-agent agenelf
+          trap 'docker compose down -v >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 45); do
+            curl -fsS http://127.0.0.1:8000/health && break
+            sleep 1
+          done
+          curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/status | grep -q 'node-typescript'
+          curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/self/roadmap >/tmp/legacy-proxy-smoke.json
+          test -s /tmp/legacy-proxy-smoke.json
 
   node-supply-chain:
     runs-on: ubuntu-latest

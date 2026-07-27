@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,6 +50,52 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonObject> {
 }
 function parsePath(request: IncomingMessage): URL { return new URL(request.url || "/", "http://localhost"); }
 
+async function readRawBody(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > MAX_BODY_BYTES) throw new Error("request body 超过 1 MiB");
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function proxyLegacy(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
+  const base = String(process.env.AGENELF_LEGACY_API_URL || "").trim();
+  if (!base) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+  try {
+    const headers: Record<string, string> = { accept: String(request.headers.accept || "application/json") };
+    const token = String(request.headers["x-agenelf-token"] || "");
+    if (token) headers["x-agenelf-token"] = token;
+    const contentType = String(request.headers["content-type"] || "");
+    if (contentType) headers["content-type"] = contentType;
+    const method = request.method || "GET";
+    const body = method === "GET" || method === "HEAD" ? undefined : await readRawBody(request);
+    const upstream = await fetch(`${base.replace(/\/$/, "")}${url.pathname}${url.search}`, {
+      method, headers, body: body?.length ? body : undefined, signal: controller.signal, redirect: "manual"
+    });
+    const payload = Buffer.from(await upstream.arrayBuffer());
+    if (payload.length > 8 * 1024 * 1024) throw new Error("legacy response 超过 8 MiB");
+    const outputHeaders: Record<string, string | number> = { "content-length": payload.length };
+    const upstreamType = upstream.headers.get("content-type");
+    if (upstreamType) outputHeaders["content-type"] = upstreamType;
+    const cacheControl = upstream.headers.get("cache-control");
+    if (cacheControl) outputHeaders["cache-control"] = cacheControl;
+    response.writeHead(upstream.status, outputHeaders);
+    response.end(payload);
+    return true;
+  } catch (error) {
+    sendJson(response, 502, { error: `legacy compatibility API 不可用：${error instanceof Error ? error.message : String(error)}` });
+    return true;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function serveUi(response: ServerResponse, pathname: string, root: string): Promise<boolean> {
   const webRoot = resolve(root, "web");
   const relative = pathname === "/ui" || pathname === "/ui/" ? "index.html" : pathname.replace(/^\/ui\//, "");
@@ -64,7 +110,13 @@ async function serveUi(response: ServerResponse, pathname: string, root: string)
   } catch { return false; }
 }
 
-async function streamEvents(response: ServerResponse, stream: ReturnType<AgenelfAgent["startChat"]>["stream"], afterSeq: number, request: IncomingMessage): Promise<void> {
+async function streamEvents(
+  response: ServerResponse,
+  stream: ReturnType<AgenelfAgent["startChat"]>["stream"],
+  afterSeq: number,
+  request: IncomingMessage,
+  compatibilityMode = false
+): Promise<void> {
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform",
     connection: "keep-alive", "x-accel-buffering": "no"
@@ -83,7 +135,22 @@ async function streamEvents(response: ServerResponse, stream: ReturnType<Agenelf
       }
       for (const event of events) {
         cursor = event.seq;
-        response.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+        if (!compatibilityMode) {
+          response.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+          continue;
+        }
+        if (["run.started", "turn.started", "reasoning.started"].includes(event.type)) {
+          response.write(`id: ${event.seq}\nevent: status\ndata: ${JSON.stringify({ phase: "thinking", source_event: event.type })}\n\n`);
+        } else if (event.type === "message.delta") {
+          response.write(`id: ${event.seq}\nevent: message\ndata: ${JSON.stringify({ delta: String(event.payload.delta || "") })}\n\n`);
+        } else if (event.type === "message.completed") {
+          const hasDelta = stream.eventsAfter(0, 1000).some((item) => item.type === "message.delta");
+          if (!hasDelta) response.write(`id: ${event.seq}\nevent: message\ndata: ${JSON.stringify({ delta: String(event.payload.text || "") })}\n\n`);
+        } else if (event.type === "run.settled") {
+          response.write(`id: ${event.seq}\nevent: done\ndata: ${JSON.stringify({ ok: true, run_id: event.run_id })}\n\n`);
+        } else if (event.type === "run.failed" || event.type === "run.cancelled") {
+          response.write(`id: ${event.seq}\nevent: error\ndata: ${JSON.stringify({ error: String(event.payload.error || event.type), run_id: event.run_id })}\n\n`);
+        }
       }
       if (stream.isTerminal && cursor >= stream.snapshot().last_seq) break;
     } catch (error) {
@@ -124,6 +191,22 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
       if (request.method === "GET" && url.pathname === "/status") { sendJson(response, 200, await agent.status()); return; }
       if (request.method === "GET" && url.pathname === "/capabilities") { sendJson(response, 200, { capabilities: agent.registry.catalog() }); return; }
       if (request.method === "GET" && url.pathname === "/resources") { sendJson(response, 200, { resources: agent.resources.catalog() }); return; }
+      if (request.method === "GET" && url.pathname === "/chat/history") {
+        const sessionId = String(url.searchParams.get("session_id") || "default");
+        const limit = Math.max(0, Math.min(Number(url.searchParams.get("limit") || 50), 200));
+        const entries = await agent.ledger.entries(sessionId, { type: "message", limit });
+        const history = entries.flatMap((entry) => {
+          const role = String(entry.payload.role || "");
+          const content = entry.payload.content;
+          if ((role !== "user" && role !== "assistant") || typeof content !== "string") return [];
+          return [{ role, content, created_at: entry.ts, run_id: entry.payload.run_id ?? null }];
+        });
+        sendJson(response, 200, { session_id: sessionId, history }); return;
+      }
+      if (request.method === "DELETE" && url.pathname === "/chat/history") {
+        const sessionId = String(url.searchParams.get("session_id") || "default");
+        sendJson(response, 200, await agent.ledger.clear(sessionId)); return;
+      }
       if (request.method === "POST" && url.pathname === "/chat") {
         const body = await readJsonBody(request);
         const reply = await agent.chat(String(body.message ?? ""), { sessionId: String(body.session_id ?? "default"), subject: String(body.channel ?? "http") });
@@ -146,11 +229,12 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
         const body = await readJsonBody(request);
         const run = agent.startChat(String(body.message ?? ""), { sessionId: String(body.session_id ?? "default"), subject: String(body.channel ?? "http") });
         run.completion.catch(() => undefined);
-        await streamEvents(response, run.stream, 0, request); return;
+        await streamEvents(response, run.stream, 0, request, true); return;
       }
+      if (await proxyLegacy(request, response, url)) return;
       sendJson(response, 404, { error: "Not found" });
     } catch (error) {
-      if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
+      if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : String(error)`});
       else response.end();
     }
   });
