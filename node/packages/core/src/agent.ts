@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { AgentEventHub, type RunEventStream } from "./agent-events.ts";
 import { sha256 } from "./canonical.ts";
 import { MemoryStore } from "./memory-store.ts";
@@ -54,6 +55,7 @@ export class AgenelfAgent {
       tools: this.registry.allTools().length,
       resources: this.resources.catalog().length,
       runs: this.events.list().length,
+      compatibility: { legacy_api: Boolean(process.env.AGENELF_LEGACY_API_URL) },
       security: {
         policy_default: "fail-closed",
         secrets_in_agent: false,

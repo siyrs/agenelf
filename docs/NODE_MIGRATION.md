@@ -1,6 +1,6 @@
 # Agenelf Node.js / TypeScript 迁移基线
 
-> 状态：Foundation 已实现，生产切换分批推进  
+> 状态：Foundation 已实现；Node Agent/API/CLI 已切为默认生产入口；安全 Runner 分批迁移  
 > 目标运行时：Node.js 24 LTS 原生 TypeScript type stripping  
 > 迁移原则：统一语言栈，但不合并信任域。
 
@@ -17,7 +17,7 @@
 - Python Runner 兼容队列：Node Agent 可继续提交 `data/ops-requests`；
 - Node deterministic runner：runtime info、受限文件摘要、精确 allowlist command；
 - Node HTTP API、CLI、真实 lifecycle SSE 与断点游标；
-- 13 项 Node 单元/集成测试。
+- 16 项 Node 单元/集成测试。
 
 ## 2. 为什么不依赖 Fastify/Express/tsx
 
@@ -72,12 +72,13 @@ node/
 
 ## 6. 后续批次
 
-### Batch N2：生产 Agent/API/CLI 切换
+### Batch N2：生产 Agent/API/CLI 切换（已完成）
 
 - 默认 Compose 使用 `Dockerfile.node`；
-- Python Agent/API 保留 `legacy-python` profile；
-- Web 改用 `/v1/chat/runs` + SSE；
-- UAT：聊天、工具、审批等待、Runner result、断线重连。
+- Python API 仅作为内部 `legacy-agent` 兼容路由，不公开端口；
+- 默认 CLI 为 Node，旧 Python CLI 保留 `legacy-cli` profile；
+- Web 使用 Node 真实 Event Core，`/chat/stream` 提供旧事件投影；
+- Node 原生会话历史、清空、断点 SSE 和内部代理均有集成测试。
 
 ### Batch N3：Runner 迁移
 
