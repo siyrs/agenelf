@@ -141,7 +141,6 @@ class SessionLedgerStore:
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self.ledger_dir = self.root / "local" / "memory" / "session-ledger"
-        self.ledger_dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, session_id: str) -> Path:
         return self.ledger_dir / f"{_safe_session_id(session_id)}.jsonl"
@@ -184,6 +183,14 @@ class SessionLedgerStore:
     def _write_line(path: Path, entry: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = _canonical_bytes(entry) + b"\n"
+        try:
+            current_size = path.stat().st_size if path.exists() else 0
+        except OSError as exc:
+            raise SessionLedgerError("无法读取 session ledger 写入前大小") from exc
+        if current_size + len(data) > MAX_LEDGER_BYTES:
+            raise SessionLedgerError(
+                f"session ledger 写入后将超过 {MAX_LEDGER_BYTES} 字节上限"
+            )
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             offset = 0
@@ -267,12 +274,15 @@ class SessionLedgerStore:
         summary: str = "",
     ) -> dict[str, Any]:
         parent = _safe_entry_id(parent_id)
+        safe_label = str(label or "").strip()
+        if not safe_label:
+            raise SessionLedgerError("branch label 不能为空")
         branch_id = "br-" + uuid.uuid4().hex[:12]
         return self.append(
             session_id,
             "branch_summary",
             {
-                "label": str(label or "").strip()[:200],
+                "label": safe_label[:200],
                 "summary": str(summary or "").strip()[:4000],
                 "branched_from": parent,
             },
@@ -329,8 +339,10 @@ class SessionLedgerStore:
         branches: set[str] = set()
         for index, entry in enumerate(entries, start=1):
             entry_id = str(entry.get("id") or "")
-            parent_id = entry.get("parent_id")
+            raw_parent_id = entry.get("parent_id")
+            parent_id = raw_parent_id if isinstance(raw_parent_id, str) else None
             branch_id = str(entry.get("branch_id") or "")
+            event_type = str(entry.get("type") or "")
             if entry.get("schema_version") != SCHEMA_VERSION:
                 errors.append(f"seq={index}: schema_version 非 {SCHEMA_VERSION}")
             if entry.get("session_id") != session_id:
@@ -339,13 +351,16 @@ class SessionLedgerStore:
                 errors.append(f"seq={index}: 持久化 seq={entry.get('seq')!r}")
             if not _ENTRY_ID_RE.fullmatch(entry_id) or entry_id in seen:
                 errors.append(f"seq={index}: entry id 非法或重复")
-            if parent_id is not None and parent_id not in seen:
-                errors.append(f"seq={index}: parent_id 未指向先前 entry")
+            if raw_parent_id is not None:
+                if not isinstance(raw_parent_id, str) or not _ENTRY_ID_RE.fullmatch(raw_parent_id):
+                    errors.append(f"seq={index}: parent_id 格式非法")
+                elif parent_id not in seen:
+                    errors.append(f"seq={index}: parent_id 未指向先前 entry")
             if not _BRANCH_ID_RE.fullmatch(branch_id):
                 errors.append(f"seq={index}: branch_id 非法")
             else:
                 branches.add(branch_id)
-            if entry.get("type") not in ENTRY_TYPES:
+            if event_type not in ENTRY_TYPES:
                 errors.append(f"seq={index}: event type 未注册")
             if entry.get("prev_hash") != previous_hash:
                 errors.append(f"seq={index}: prev_hash 链断裂")
