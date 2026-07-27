@@ -91,13 +91,13 @@ jobs:
           sys.path.insert(0, str(Path("app").resolve()))
           from core import operations
           request = operations.submit_operation(
-            "server.operations",
-            "apt_update",
-            "windows-ci",
-            {},
-            "change",
-            "Windows approval smoke test",
-            root=Path(".").resolve(),
+              "server.operations",
+              "apt_update",
+              "windows-ci",
+              {},
+              "change",
+              "Windows approval smoke test",
+              root=Path(".").resolve(),
           )
           Path("windows-request-id.txt").write_text(request["id"], encoding="utf-8")
           '@ | Set-Content -Path create-windows-request.py -Encoding UTF8
