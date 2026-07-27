@@ -9,15 +9,14 @@ revocation fails closed and reports that execution may already have started.
 from __future__ import annotations
 
 import hmac
-import json
 import os
 import re
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from core import operations
+from core.storage import atomic_write_json as _atomic_json
 from core.privacy import redact_sensitive_text
 
 _ID_RE = re.compile(r"op-[0-9a-f]{16}")
@@ -59,33 +58,6 @@ def _validate_actor(value: object) -> str:
     if not _ACTOR_RE.fullmatch(actor):
         raise OperationRevocationError(f"非法主人标识：{value!r}")
     return actor
-
-
-def _atomic_json(path: Path, value: dict[str, Any], *, exclusive: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    if exclusive:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        return
-    fd, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        try:
-            os.chmod(temporary, 0o600)
-        except OSError:
-            pass
-        os.replace(temporary, path)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
 
 
 def _load_valid_request(operation_id: str, root: Path) -> dict[str, Any]:

@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import tempfile
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from core.storage import atomic_write_json as _atomic_json
+from core.storage import now_iso as _now_iso
+from core.storage import safe_text
 
 SCHEMA_VERSION = 2
 TASK_STATES = {
@@ -83,15 +84,8 @@ class TaskEngineError(ValueError):
     """Expected task validation or state-transition error."""
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def _safe_text(value: object, limit: int = 2000) -> str:
-    text = " ".join(str(value or "").strip().split())
-    if len(text) > limit:
-        return text[: max(0, limit - 1)] + "…"
-    return text
+    return safe_text(" ".join(str(value or "").strip().split()), limit)
 
 
 def _safe_string_list(value: object, *, limit: int, item_limit: int = 1000) -> list[str]:
@@ -103,24 +97,6 @@ def _safe_string_list(value: object, *, limit: int, item_limit: int = 1000) -> l
         if text:
             result.append(text)
     return result
-
-
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(temp_name, path)
-    except Exception:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
-        raise
 
 
 def _payload_hash(value: object) -> str:

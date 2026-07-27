@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import tempfile
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from core.storage import atomic_write_json as _atomic_json
+from core.storage import now_iso as _now_iso
+from core.storage import safe_text
 
 from .privacy import redact_sensitive_text
 
@@ -32,15 +33,8 @@ class ChannelEnvelopeError(ValueError):
     """Invalid or conflicting command-envelope request."""
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def _safe_text(value: object, limit: int = 4000) -> str:
-    text = redact_sensitive_text(value).strip()
-    if len(text) > limit:
-        return text[: max(0, limit - 1)] + "…"
-    return text
+    return safe_text(redact_sensitive_text(value), limit)
 
 
 def _canonical_hash(value: object) -> str:
@@ -48,30 +42,6 @@ def _canonical_hash(value: object) -> str:
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _atomic_json(path: Path, value: dict[str, Any], *, exclusive: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
-    if exclusive:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        fd = os.open(path, flags, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        return
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.replace(temp_name, path)
-    except Exception:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
-        raise
 
 
 class CommandEnvelopeStore:

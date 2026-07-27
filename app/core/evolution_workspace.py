@@ -9,12 +9,13 @@ mounted repository snapshot and records hashes for every pre-existing test file.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from core.storage import atomic_write_json as _atomic_json
+from core.storage import read_json
 
 
 class EvolutionWorkspaceError(RuntimeError):
@@ -151,24 +152,6 @@ def baseline_test_manifest(source_app: Path) -> dict[str, str]:
     return manifest
 
 
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.replace(temp_name, path)
-    except Exception:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
-        raise
-
-
 def stage_workspace(root: Path, source_app: Path) -> dict[str, Any]:
     """Create a clean candidate and return an auditable staging manifest."""
 
@@ -213,11 +196,7 @@ def stage_workspace(root: Path, source_app: Path) -> dict[str, Any]:
 
 
 def load_workspace_marker(root: Path) -> dict[str, Any] | None:
-    path = candidate_repo(root) / _WORKSPACE_MARKER
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    value = read_json(candidate_repo(root) / _WORKSPACE_MARKER)
     return value if isinstance(value, dict) else None
 
 

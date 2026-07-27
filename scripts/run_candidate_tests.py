@@ -5,6 +5,22 @@ The candidate may add new tests, but every pre-existing baseline test and fixtur
 remain byte-identical.  Trusted baseline tests and candidate-added tests run in
 separate Python processes so a new test cannot monkey-patch the baseline suite before
 it executes.
+
+Isolation notes (candidate code is model-generated and untrusted):
+
+- Environment: the test subprocess receives only a minimal variable allowlist
+  (``_ENV_ALLOWLIST``: PATH, HOME, PYTHONPATH, locale/TMP essentials), never the
+  full operator environment, so API tokens and other secrets cannot leak into
+  candidate code through ``os.environ``.
+- Network: this script does not create sockets itself, but the sandboxed test
+  process inherits host networking.  Run it with network isolation — e.g. the
+  way ``scripts/promote.sh`` does (``docker run --network none --read-only``,
+  conceptually a ``--no-network`` invocation) — whenever untrusted candidates
+  are executed outside the already offline gate container.
+- Resource limits: execution time is bounded by ``--timeout``; CPU/memory/file
+  descriptor limits are intentionally left to the caller (container
+  ``mem_limit``/``pids_limit``, or ``ulimit``/``prlimit`` on bare metal), which
+  is the recommended optional hardening for host-side runs.
 """
 from __future__ import annotations
 
@@ -58,9 +74,33 @@ def _candidate_tests(app: Path) -> list[str]:
     ]
 
 
+# Candidate tests run model-generated code, so the child process only receives a
+# minimal allowlist of variables instead of the full operator environment (which
+# may carry API tokens, .env exports, CI credentials, ...).
+_ENV_ALLOWLIST = (
+    "PATH",
+    "HOME",
+    "PYTHONPATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    # Windows process creation essentials.
+    "SystemRoot",
+    "SystemDrive",
+    "ComSpec",
+    "PATHEXT",
+    "USERPROFILE",
+    "OS",
+)
+
+
 def _environment(candidate: Path) -> dict[str, str]:
     repo = candidate.parent
-    env = dict(os.environ)
+    env = {name: os.environ[name] for name in _ENV_ALLOWLIST if name in os.environ}
     entries = [str(candidate), str(repo)]
     existing = env.get("PYTHONPATH", "")
     if existing:

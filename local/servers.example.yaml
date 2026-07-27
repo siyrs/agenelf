@@ -16,9 +16,6 @@ servers:
     allowed_operations:
       - inspect
       - docker_ps
-      - docker_logs
-      - docker_diagnose
-      - docker_restart
       - service_status
       - apt_update
       - compose_deploy

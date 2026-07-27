@@ -35,7 +35,7 @@ class GateValidationProtectionTest(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertNotEqual(proc.returncode, 0)
-            rejected = root / "data" / "promote-requests" / "evo-validation-test" / "REJECTED"
+            rejected = root / "app-tmp" / "promote-requests" / "evo-validation-test" / "REJECTED"
             self.assertTrue(rejected.is_file())
             self.assertIn("core/validation.py", rejected.read_text(encoding="utf-8"))
 

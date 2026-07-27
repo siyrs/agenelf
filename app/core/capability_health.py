@@ -8,21 +8,15 @@ claiming subjective awareness.
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+from core.storage import now_iso as _now_iso
+from core.storage import read_json
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    value = read_json(path)
     return value if isinstance(value, dict) else None
 
 

@@ -116,10 +116,10 @@
 | 门禁 | 工具 | 当前语义 |
 |---|---|---|
 | governance | `python scripts/validate_governance.py` | 策略削弱即失败 |
-| dependency-audit | `pip-audit` | 首次引入，先告警不阻断（`continue-on-error`），待基线清理后转为阻断 |
+| dependency-audit | `pip-audit` | 阻断：`scripts/evaluate_pip_audit.py` 检出存在可修复版本的漏洞即使 job 失败 |
 | secret-scan | gitleaks | 检出凭据即失败 |
 | sbom | `cyclonedx-bom` 生成 `sbom.json` 并上传 artifact | 供应链清点 |
-| shellcheck | shellcheck 检查 `scripts/*.sh` | Shell 静态检查 |
+| shellcheck | shellcheck 检查 `scripts/*.sh` 与 `shared/scripts/*.sh` | Shell 静态检查 |
 | codeql | `.github/workflows/codeql.yml`（GitHub 官方模板，Python） | 代码安全分析 |
 
 **诚实约束**：当前 workflow 中的第三方 Action 使用 `@v4`/`@v5` 等**标签引用**，尚未固定到完整 commit SHA。每个 `uses` 上方都留有 `# TODO(供应链)` 注释。这是已接受的过渡状态：标签可被上游移动，固定 SHA 是本仓库的后续义务，完成后应删除 TODO 并在本节更新状态。

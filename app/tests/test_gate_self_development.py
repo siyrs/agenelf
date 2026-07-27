@@ -44,7 +44,7 @@ class GateSelfDevelopmentProtectionTest(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             rejected = (
                 root
-                / "data"
+                / "app-tmp"
                 / "promote-requests"
                 / "evo-self-test"
                 / "REJECTED"

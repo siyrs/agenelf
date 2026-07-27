@@ -1,149 +1,88 @@
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 
 from skills import task_continuation
 
 
-class FakeMemory:
-    def __init__(self):
-        self.entries: list[tuple[str, str]] = []
+class TaskContinuationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.old_root = os.environ.get("AGENELF_ROOT")
+        os.environ["AGENELF_ROOT"] = str(self.root)
 
-    def add(self, kind: str, content: str) -> None:
-        self.entries.append((kind, content))
+    def tearDown(self) -> None:
+        if self.old_root is None:
+            os.environ.pop("AGENELF_ROOT", None)
+        else:
+            os.environ["AGENELF_ROOT"] = self.old_root
+        self.tmp.cleanup()
 
-
-class FakeAgent:
-    def __init__(self, replies: list[str]):
-        self.replies = list(replies)
-        self.calls: list[tuple[str, str]] = []
-        self.system_prompt = ""
-        self.memory = FakeMemory()
-
-    def _refresh_system_prompt(self) -> None:
-        self.system_prompt = "base prompt"
-
-    def chat(self, user_input: str, *, subject: str = "agent") -> str:
-        self.calls.append((user_input, subject))
-        return self.replies.pop(0)
-
-
-class FakeLLM:
-    def __init__(self):
-        self.calls: list[dict] = []
-
-    def chat(self, messages, tools=None):
-        self.calls.append(
-            {
-                "system": messages[0]["content"],
-                "tools": tools,
-            }
+    def test_checkpoint_is_persistent_redacted_and_idempotent(self) -> None:
+        first = task_continuation.checkpoint(
+            "升级 Docker 技能后继续修 VPN",
+            "读取 vless://secret@example.com 并修复 token=abc",
+            expires_minutes=60,
+            max_attempts=2,
         )
-        return {"content": "ok", "tool_calls": []}
-
-
-class FakeRegistry:
-    def __init__(self, schemas):
-        self.schemas = schemas
-
-    def all_tool_schemas(self):
-        return list(self.schemas)
-
-
-class TaskContinuationRuntimeTest(unittest.TestCase):
-    def test_max_round_sentinel_automatically_continues_original_goal(self):
-        agent = FakeAgent(
-            [task_continuation._MAX_ROUND_SENTINEL, "VPN 已完成诊断"]
+        second = task_continuation.checkpoint(
+            "升级 Docker 技能后继续修 VPN",
+            "读取 vless://secret@example.com 并修复 token=abc",
+            expires_minutes=60,
+            max_attempts=2,
         )
-        task_continuation.configure_runtime(
-            agent=agent,
-            registry=None,
-            config={"agent": {"continuation_segments": 3}},
+        self.assertEqual(first["id"], second["id"])
+        stored = json.loads(
+            (self.root / "data" / "continuations" / "pending.json").read_text(
+                encoding="utf-8"
+            )
         )
+        self.assertIn("vless://[REDACTED]", stored["resume_prompt"])
+        self.assertNotIn("secret@example.com", json.dumps(stored))
+        self.assertNotIn("token=abc", json.dumps(stored))
 
-        result = agent.chat("修复 pve-ubuntu 的 sing-box", subject="cli")
+    def test_claim_is_single_attempt_and_finish_does_not_loop(self) -> None:
+        created = task_continuation.checkpoint("task", "continue", max_attempts=2)
+        claimed = task_continuation.claim_pending()
+        self.assertEqual(claimed["id"], created["id"])
+        self.assertEqual(claimed["status"], "running")
+        self.assertEqual(claimed["attempt_count"], 1)
+        self.assertIsNone(task_continuation.claim_pending())
+        result = task_continuation.finish_attempt(created["id"], result="still working")
+        self.assertEqual(result["status"], "attempted")
+        self.assertIsNone(task_continuation.claim_pending())
 
-        self.assertEqual(result, "VPN 已完成诊断")
-        self.assertEqual(len(agent.calls), 2)
-        self.assertEqual(agent.calls[0][0], "修复 pve-ubuntu 的 sing-box")
-        self.assertIn("原始用户目标：修复 pve-ubuntu 的 sing-box", agent.calls[1][0])
-        self.assertEqual(agent.calls[1][1], "cli")
-        self.assertIn("任务连续性运行时约束", agent.system_prompt)
-        self.assertIn("技能变更只是中间步骤", agent.system_prompt)
+    def test_retry_respects_max_attempts(self) -> None:
+        created = task_continuation.checkpoint("task", "continue", max_attempts=1)
+        task_continuation.claim_pending()
+        task_continuation.finish_attempt(created["id"], error="boom")
+        state = task_continuation.status()
+        self.assertEqual(state["status"], "failed")
+        with self.assertRaisesRegex(ValueError, "次数"):
+            task_continuation.retry(created["id"])
 
-    def test_same_turn_model_call_receives_fresh_prompt_and_tool_schemas(self):
-        agent = FakeAgent(["完成"])
-        agent.llm = FakeLLM()
-        registry = FakeRegistry([{"function": {"name": "old_tool"}}])
-        task_continuation.configure_runtime(agent=agent, registry=registry, config={})
-
-        messages = [{"role": "system", "content": "stale prompt"}]
-        agent.llm.chat(messages, tools=[{"function": {"name": "stale_tool"}}])
-        self.assertIn("任务连续性运行时约束", agent.llm.calls[-1]["system"])
-        self.assertEqual(
-            agent.llm.calls[-1]["tools"],
-            [{"function": {"name": "old_tool"}}],
+    def test_complete_archives_evidence(self) -> None:
+        created = task_continuation.checkpoint("task", "continue")
+        completed = task_continuation.complete(
+            created["id"], ["op-0123456789abcdef", "test report"]
         )
+        self.assertEqual(completed["status"], "completed")
+        history = self.root / "data" / "continuations" / "history" / f"{created['id']}.json"
+        self.assertTrue(history.is_file())
+        archived = json.loads(history.read_text(encoding="utf-8"))
+        self.assertEqual(archived["evidence"], ["op-0123456789abcdef", "test report"])
 
-        registry.schemas = [{"function": {"name": "newly_forged_tool"}}]
-        agent.system_prompt = "prompt refreshed after skill registration"
-        agent.llm.chat(messages, tools=None)
-        self.assertEqual(
-            agent.llm.calls[-1]["system"],
-            "prompt refreshed after skill registration",
-        )
-        self.assertEqual(
-            agent.llm.calls[-1]["tools"],
-            [{"function": {"name": "newly_forged_tool"}}],
-        )
-
-    def test_total_budget_exhaustion_returns_and_persists_recoverable_checkpoint(self):
-        agent = FakeAgent(
-            [
-                task_continuation._MAX_ROUND_SENTINEL,
-                task_continuation._MAX_ROUND_SENTINEL,
-                task_continuation._MAX_ROUND_SENTINEL,
-            ]
-        )
-        task_continuation.configure_runtime(
-            agent=agent,
-            registry=None,
-            config={"agent": {"continuation_segments": 3}},
-        )
-
-        result = agent.chat("继续迭代 Docker 技能", subject="cli")
-
-        self.assertIn("可恢复检查点", result)
-        self.assertIn("已自动续办：3 个有界工具段", result)
-        self.assertNotEqual(result, task_continuation._MAX_ROUND_SENTINEL)
-        self.assertEqual(len(agent.calls), 3)
-        self.assertEqual(len(agent.memory.entries), 1)
-        self.assertIn("原始目标：继续迭代 Docker 技能", agent.memory.entries[0][1])
-
-    def test_binding_is_idempotent(self):
-        agent = FakeAgent(["完成"])
-        task_continuation.configure_runtime(agent=agent, registry=None, config={})
-        first_chat = agent.chat
-        task_continuation.configure_runtime(agent=agent, registry=None, config={})
-        second_chat = agent.chat
-
-        self.assertIs(first_chat.__func__, second_chat.__func__)
-        self.assertEqual(agent.chat("目标"), "完成")
-        self.assertEqual(len(agent.calls), 1)
-
-    def test_segment_budget_is_bounded(self):
-        self.assertEqual(
-            task_continuation._segment_budget(
-                {"agent": {"continuation_segments": 99}}
-            ),
-            6,
-        )
-        self.assertEqual(
-            task_continuation._segment_budget(
-                {"agent": {"continuation_segments": 1}}
-            ),
-            2,
-        )
+    def test_tool_status_does_not_return_full_resume_prompt(self) -> None:
+        created = task_continuation.checkpoint("task", "private resume instructions")
+        output = json.loads(task_continuation.execute("task_continuation_status", {}))
+        self.assertTrue(output["ok"])
+        self.assertEqual(output["continuation"]["id"], created["id"])
+        self.assertNotIn("resume_prompt", output["continuation"])
 
 
 if __name__ == "__main__":

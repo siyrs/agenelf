@@ -14,11 +14,14 @@ import json
 import os
 import posixpath
 import re
-import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from core.storage import atomic_write_json as _atomic_json
+from core.storage import now_iso as _now_iso
+from core.storage import read_json
 
 from .capability_health import CapabilityHealth
 
@@ -62,10 +65,6 @@ _SAFETY_INVARIANTS = (
 )
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def _runtime_root() -> Path:
     configured = os.environ.get("AGENELF_ROOT", "").strip()
     if configured:
@@ -74,27 +73,8 @@ def _runtime_root() -> Path:
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    data = read_json(path)
     return data if isinstance(data, dict) else None
-
-
-def _atomic_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent, text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
 
 
 def _queue_count(path: Path, pattern: str) -> int:

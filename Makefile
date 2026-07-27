@@ -9,11 +9,14 @@ init: ## Create/migrate private config, task/evidence queues and isolated worksp
 	@test -f .ops-runner.env || cp .ops-runner.env.example .ops-runner.env
 	@python3 scripts/init_local.py
 	@mkdir -p logs workspace/scratch app-space/skills app-tmp app-fork code-workspaces repair-space \
+		app-tmp/promote-requests \
 		data/auth-requests data/auth-decisions data/auth-consumed \
 		data/ops-requests data/ops-results data/ops-locks \
 		data/approval-commands data/approval-results data/approval-locks \
 		data/validation-requests data/validation-results data/validation-locks \
 		data/repair-requests data/repair-results data/repair-locks \
+		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks \
+		data/self-upgrade-backups data/authorized-upgrades data/runner-health data/app-backups \
 		data/tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles
 	@echo "初始化完成。请编辑 local/ 配置；代码仓库放入 code-workspaces/，修复证据在 repair-space/。"
 
@@ -42,7 +45,10 @@ start: ## Sync runtime fork and start Agent plus deterministic runners
 	@test -d local/memory || (echo "缺少 local/memory，请先 make init"; exit 1)
 	@test -d local/self || (echo "缺少 local/self，请先 make init"; exit 1)
 	@test -d local/secrets || (echo "缺少 local/secrets，请先 make init"; exit 1)
-	@mkdir -p data/approval-commands data/approval-results data/approval-locks data/auth-decisions
+	@mkdir -p app-tmp/promote-requests \
+		data/approval-commands data/approval-results data/approval-locks data/auth-decisions data/auth-consumed \
+		data/ops-locks data/validation-locks data/repair-locks data/self-upgrade-locks \
+		data/promote-requests data/promotion-history data/runner-health
 	bash scripts/sync_fork.sh
 	docker compose up -d --build
 
@@ -71,10 +77,17 @@ promote: ## Promote an exact evolution request: make promote REQ=<evo-id>
 	bash scripts/promote.sh $(REQ)
 
 watch: ## Start watcher; notification-only unless explicitly enabled in .env
-	nohup bash scripts/watcher.sh > logs/watcher.out 2>&1 &
+	@mkdir -p logs
+	@if pgrep -f "scripts/watcher.sh" >/dev/null 2>&1; then \
+		echo "watcher 已在运行，跳过重复启动"; \
+	else \
+		nohup bash scripts/watcher.sh > logs/watcher.out 2>&1 & \
+		echo "watcher 已启动（日志：logs/watcher.out）"; \
+	fi
 
 evolution: ## Show evolution requests and immutable promotion evidence
-	@echo "== promotion requests =="; find data/promote-requests -maxdepth 2 -type f 2>/dev/null | sort || true
+	@echo "== staging requests (agent 可写，待宿主复核) =="; find app-tmp/promote-requests -maxdepth 2 -type f 2>/dev/null | sort || true
+	@echo "== trusted promotion requests =="; find data/promote-requests -maxdepth 2 -type f 2>/dev/null | sort || true
 	@echo "== promotion history =="; find data/promotion-history -maxdepth 2 -type f 2>/dev/null | sort | tail -40 || true
 
 autonomy: ## Show recent controlled autonomy-cycle records
@@ -110,7 +123,7 @@ repair: ## Show code repair aliases, queues and evidence
 	@echo "== repair artifacts =="; ls -lt repair-space 2>/dev/null | head -20 || true
 
 logs: ## Follow Agent and deterministic runners
-	docker compose logs -f --tail=100 agenelf approval-runner ops-runner validation-runner repair-runner
+	docker compose logs -f --tail=100 agenelf approval-runner ops-runner validation-runner repair-runner self-upgrade-runner
 
 status: ## Show containers, local state and all controlled queues
 	-docker compose ps

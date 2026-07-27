@@ -29,7 +29,8 @@ class AutonomyApiTest(unittest.TestCase):
         os.environ["AGENELF_MOCK"] = "1"
         os.environ["AGENELF_ROOT"] = str(self.root)
         os.environ.pop("OPENAI_API_KEY", None)
-        os.environ.pop("AGENELF_API_TOKEN", None)
+        # API 默认 fail-closed：显式配置 token 并随请求携带
+        os.environ["AGENELF_API_TOKEN"] = "test-token"
         self.original_load = api.load_config
 
         def load_config():
@@ -40,6 +41,7 @@ class AutonomyApiTest(unittest.TestCase):
         api.load_config = load_config
         api._agent = None
         self.client = TestClient(api.app)
+        self.client.headers["X-Agenelf-Token"] = "test-token"
 
     def tearDown(self):
         self.api.load_config = self.original_load

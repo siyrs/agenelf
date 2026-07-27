@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 from core.autonomy import AutonomyEngine, _parse_file_blocks
-from core.llm import MockLLM
+from core.mock_llm import MockLLM
 
 
 def _patch_request_messages() -> list[dict]:

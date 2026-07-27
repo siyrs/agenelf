@@ -18,6 +18,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.storage import atomic_write_json as _atomic_json
+from core.storage import read_json as _read_storage_json
+
 _CAPABILITY = "software.validation"
 _ID_RE = re.compile(r"val-[0-9a-f]{16}")
 _VALID_OPERATIONS = {"run_check", "run_suite"}
@@ -75,19 +78,6 @@ def _validate_id(validation_id: str) -> str:
     return value
 
 
-def _atomic_json(path: Path, value: dict[str, Any], *, exclusive: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
-    if exclusive:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        return
-    tmp = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def _policy_evaluation(operation: str) -> dict[str, Any] | None:
     """咨询策略引擎；引擎不可用或调用失败时返回 None（降级为既有行为）。"""
 
@@ -108,10 +98,7 @@ def _policy_evaluation(operation: str) -> dict[str, Any] | None:
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    value = _read_storage_json(path)
     return value if isinstance(value, dict) else None
 
 

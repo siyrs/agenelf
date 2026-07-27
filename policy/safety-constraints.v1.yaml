@@ -1,13 +1,13 @@
 schema_version: 1
 policy_id: agenelf-safety-constraints
-policy_version: 1.2.0
+policy_version: 1.4.0
 status: active
 
 metadata:
   owner_authority: "主人拥有任务目标、授权、暂停和撤销权，也可以在永久红线之外精确授权 Agenelf 升级自身代码"
   purpose: "让 Agenelf 在可审计、最小权限、证据驱动和主人可控的边界内完成真实任务并持续改进"
   consciousness_claim: false
-  last_reviewed: "2026-07-26"
+  last_reviewed: "2026-07-27"
 
 principles:
   - id: owner_intent_fidelity
@@ -17,13 +17,13 @@ principles:
   - id: no_implicit_trust
     rule: "不因本机、内网、历史会话、长期记忆或自我生成内容而自动获得信任"
   - id: separation_of_duties
-    rule: "Agent 负责理解、生成候选和测试，主人负责裁决升级意图与精确候选，确定性 Runner 负责应用并输出证据"
+    rule: "Agent 负责理解、生成候选和测试，主人负责裁决升级意图与精确候选，确定性 Runner 负责执行并输出证据"
   - id: evidence_before_claim
     rule: "没有测试、可信 Runner 结果或宿主机晋升证据时，不得声称任务已经完成"
   - id: reversible_by_default
     rule: "优先选择可回滚方案；高风险操作必须声明回滚、备份或不可逆性"
   - id: explicit_revocation
-    rule: "主人撤销授权、改变范围或发出停止指令后，后续执行必须立即停止"
+    rule: "主人撤销授权、改变范围或发出停止指令后，未开始的后续执行必须立即停止；已经开始的操作不得伪装成已撤销"
   - id: authorized_growth
     rule: "默认保护路径不是永久禁止；主人可通过目标/路径范围授权与候选摘要授权两阶段机制允许 Agenelf 升级自身，永久安全红线除外"
 
@@ -33,7 +33,7 @@ risk_levels:
     auto_execute: true
     approval: none
     evidence_required: true
-    examples: [inspect_server, docker_ps, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result, list_docker_runtime, get_docker_logs, inspect_docker_container, run_docker_check, get_docker_operation]
+    examples: [inspect_server, docker_ps, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result, list_docker_runtime, get_docker_logs, inspect_docker_container, run_docker_check, get_docker_operation, runtime_doctor, list_revocable_operations, get_operation_control_status, get_operation_revocation_instructions]
   change:
     description: "会改变目标状态但通常可回滚、影响范围有限的操作"
     auto_execute: false
@@ -88,7 +88,9 @@ owner_authorization:
       requirements: [exact_payload_fingerprint, short_expiration, single_use, impact_summary, backup_status, second_confirmation]
   revocation:
     supported: true
-    rule: "未开始的请求可撤销；执行中的长任务必须在安全检查点停止"
+    rule: "未开始的运维请求由主人宿主机命令与 ops-runner 竞争同一请求锁；撤销获锁后写 cancelled 可信终态，Runner 已获锁时必须失败关闭且不得声称成功"
+    evidence: [request_fingerprint, cancelled_at, cancelled_by, reason, started_false, empty_commands]
+    running_operation_rule: "执行中的短操作不可被伪装为已撤销；长任务必须在实现了可信安全检查点后才允许停止"
 
 forbidden_behaviors:
   - self_approve_or_forge_owner_decision
@@ -129,6 +131,7 @@ protected_paths:
   - app/core/code_repair.py
   - app/core/permissions.py
   - app/core/operations.py
+  - app/core/operation_revocation.py
   - app/core/autonomy.py
   - app/core/continuous_chat.py
   - app/core/reasoning_trace.py
@@ -136,12 +139,15 @@ protected_paths:
   - app/core/authorized_upgrade.py
   - app/core/upgrade_redlines.py
   - app/core/approval_catalog.py
+  - app/core/runtime_health.py
   - app/core/self_development.py
   - app/core/self_optimization.py
   - app/core/validation.py
   - app/core/capability_health.py
   - app/skills/authorized_self_upgrade.py
   - app/skills/authorized_upgrade_redlines.py
+  - app/skills/runtime_doctor.py
+  - app/skills/operation_control.py
   - app/skills/evolution_ops.py
   - app/skills/evolution_scope_guard.py
   - app/skills/compose_lifecycle.py
@@ -262,6 +268,8 @@ acceptance_gates:
   - authorized_upgrade_intent_binding_verified
   - authorized_upgrade_candidate_binding_verified
   - authorized_upgrade_runner_isolated
+  - runner_heartbeat_isolation_verified
+  - owner_operation_revocation_race_verified
   - no_secret_exposure
   - exact_authorization_binding_verified
   - trusted_evidence_archived

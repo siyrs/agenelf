@@ -5,7 +5,6 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.agent import Agent
@@ -107,9 +106,11 @@ class RuntimeFailureRecoveryTest(unittest.TestCase):
         return agent
 
     def test_interrupted_stream_retries_once_without_streaming(self):
+        agent = self._agent()
         llm = FlakyLLM()
-        agent = SimpleNamespace(
-            llm=llm,
+        agent.llm = llm
+        zz_transport_resilience.configure_runtime(
+            agent=agent,
             config={
                 "llm": {
                     "transport_retry_attempts": 2,
@@ -118,14 +119,27 @@ class RuntimeFailureRecoveryTest(unittest.TestCase):
                 }
             },
         )
-        zz_transport_resilience.configure_runtime(agent=agent, config=agent.config)
-        result = llm.chat([{"role": "user", "content": "hello"}])
+        result = agent._call_llm([{"role": "user", "content": "hello"}])
         self.assertEqual(result["content"], "已从非流式响应恢复")
         self.assertEqual(llm.flags, [True, False])
         self.assertTrue(llm._agenelf_stream_reasoning)
 
+    def test_transport_wrapper_is_idempotent_and_outermost(self):
+        agent = self._agent()
+        zz_transport_resilience.configure_runtime(agent=agent, config=agent.config)
+        zz_transport_resilience.configure_runtime(agent=agent, config=agent.config)
+        wrappers = agent.list_hooks()["llm_wrappers"]
+        names = [row["name"] for row in wrappers]
+        self.assertEqual(names.count("zz_transport_resilience"), 1)
+        # priority 最大 = 最外层，保持旧的“zz_ 最后加载=最外层”语义
+        self.assertEqual(names[0], "zz_transport_resilience")
+        self.assertEqual(wrappers[0]["priority"], 1000)
+
     def test_non_transient_error_is_not_retried(self):
         class InvalidLLM:
+            model = "invalid"
+            temperature = 0.0
+
             def __init__(self):
                 self.calls = 0
 
@@ -134,14 +148,14 @@ class RuntimeFailureRecoveryTest(unittest.TestCase):
                 self.calls += 1
                 raise ValueError("invalid request")
 
+        agent = self._agent()
         llm = InvalidLLM()
-        agent = SimpleNamespace(
-            llm=llm,
-            config={"llm": {"transport_retry_attempts": 4}},
+        agent.llm = llm
+        zz_transport_resilience.configure_runtime(
+            agent=agent, config={"llm": {"transport_retry_attempts": 4}}
         )
-        zz_transport_resilience.configure_runtime(agent=agent, config=agent.config)
         with self.assertRaises(ValueError):
-            llm.chat([])
+            agent._call_llm([])
         self.assertEqual(llm.calls, 1)
 
     def test_unrecovered_model_failure_keeps_cli_task_recoverable(self):
@@ -171,11 +185,31 @@ class RuntimeFailureRecoveryTest(unittest.TestCase):
         calls: list[tuple[str, bool]] = []
 
         class FakeAgent:
+            """模拟 Agent 钩子管线：注册守卫后由 run_autonomy_cycle 组合应用。"""
+
             config = {"runtime_root": str(self.root)}
 
+            def __init__(self):
+                self._cycle_guards: dict[str, tuple[int, object]] = {}
+
+            def add_cycle_guard(self, fn, *, priority, name):
+                self._cycle_guards[str(name)] = (int(priority), fn)
+
             def run_autonomy_cycle(self, goal="", apply_changes=False):
-                calls.append((goal, apply_changes))
-                return {"status": "promotion_requested"}
+                def core(goal="", apply_changes=False):
+                    calls.append((goal, apply_changes))
+                    return {"status": "promotion_requested"}
+
+                call = core
+                for _name, (_prio, guard) in sorted(
+                    self._cycle_guards.items(), key=lambda item: (item[1][0], item[0])
+                ):
+                    nxt = call
+
+                    def call(goal="", apply_changes=False, _g=guard, _n=nxt):
+                        return _g(_n, goal, apply_changes)
+
+                return call(goal, apply_changes)
 
         fake = FakeAgent()
         evolution_scope_guard.configure_runtime(agent=fake)

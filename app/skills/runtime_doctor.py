@@ -59,24 +59,48 @@ TOOLS: list[dict[str, Any]] = [
 
 _RUNTIME_AGENT: Any | None = None
 _RUNTIME_CONFIG: dict[str, Any] = {}
+_REGISTRY: Any | None = None
 
 
 def configure_runtime(
     *,
     agent: Any,
     config: dict[str, Any] | None = None,
+    registry: Any = None,
     **_: Any,
 ) -> None:
-    global _RUNTIME_AGENT, _RUNTIME_CONFIG
+    global _RUNTIME_AGENT, _RUNTIME_CONFIG, _REGISTRY
     _RUNTIME_AGENT = agent
     _RUNTIME_CONFIG = config if isinstance(config, dict) else getattr(agent, "config", {})
+    # 优先把绑定状态写到 Registry 实例的 per-instance 上下文，
+    # 模块级全局仅作未传入 registry 时的兼容兜底
+    if registry is not None and hasattr(registry, "bind_state"):
+        _REGISTRY = registry
+        registry.bind_state("runtime_doctor", agent=agent, config=_RUNTIME_CONFIG)
+
+
+def _bound_agent() -> Any | None:
+    if _REGISTRY is not None and hasattr(_REGISTRY, "get_state"):
+        agent = _REGISTRY.get_state("runtime_doctor").get("agent")
+        if agent is not None:
+            return agent
+    return _RUNTIME_AGENT
+
+
+def _runtime_config() -> dict[str, Any]:
+    if _REGISTRY is not None and hasattr(_REGISTRY, "get_state"):
+        config = _REGISTRY.get_state("runtime_doctor").get("config")
+        if isinstance(config, dict):
+            return config
+    return _RUNTIME_CONFIG
 
 
 def runtime_doctor() -> dict[str, Any]:
-    registry = getattr(_RUNTIME_AGENT, "registry", None) if _RUNTIME_AGENT is not None else None
+    agent = _bound_agent()
+    registry = getattr(agent, "registry", None) if agent is not None else None
     return runtime_health.diagnose(
         registry=registry,
-        config=_RUNTIME_CONFIG,
+        config=_runtime_config(),
     )
 
 

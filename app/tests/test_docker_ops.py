@@ -6,13 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core import operations
-from core.execution_policy import resolve_contract
 from skills import docker_ops
 
 
 class DockerOpsSkillTest(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.old_root = os.environ.get("AGENELF_ROOT")
@@ -20,9 +18,27 @@ class DockerOpsSkillTest(unittest.TestCase):
         os.environ["AGENELF_ROOT"] = str(self.root)
         self.servers = self.root / "servers.yaml"
         os.environ["AGENELF_SERVERS_FILE"] = str(self.servers)
-        self._write_profile(["docker_ps", "service_restart"])
+        self.servers.write_text(
+            """servers:
+  pve-ubuntu:
+    host: 192.0.2.20
+    username: sirius
+    docker_command: docker
+    allowed_docker_operations:
+      - get_docker_logs
+      - inspect_docker_container
+      - run_docker_check
+      - restart_docker_container
+    allowed_containers: [sing-box]
+    docker_checks:
+      sing-box-config:
+        container: sing-box
+        argv: [sing-box, check, -c, /etc/sing-box/config.json]
+""",
+            encoding="utf-8",
+        )
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         if self.old_root is None:
             os.environ.pop("AGENELF_ROOT", None)
         else:
@@ -33,85 +49,57 @@ class DockerOpsSkillTest(unittest.TestCase):
             os.environ["AGENELF_SERVERS_FILE"] = self.old_servers
         self.tmp.cleanup()
 
-    def _write_profile(self, operations_: list[str]) -> None:
-        allowed = ", ".join(operations_)
-        self.servers.write_text(
-            f"""servers:
-  primary:
-    host: 127.0.0.1
-    username: agenelf
-    docker_command: docker
-    allowed_operations: [{allowed}]
-""",
-            encoding="utf-8",
+    def _requests(self) -> list[Path]:
+        return list((self.root / "data" / "ops-requests").glob("op-*.json"))
+
+    def test_logs_create_read_only_fingerprint_bound_request(self) -> None:
+        result = docker_ops.get_docker_logs(
+            "pve-ubuntu", "sing-box", tail=120, wait_seconds=0
         )
+        state = json.loads(result)
+        self.assertEqual(state["status"], "queued")
+        request = json.loads(self._requests()[0].read_text(encoding="utf-8"))
+        self.assertEqual(request["capability"], "docker.operations")
+        self.assertEqual(request["operation"], "get_docker_logs")
+        self.assertEqual(request["risk"], "read")
+        self.assertEqual(request["parameters"], {"container": "sing-box", "tail": 120})
+        self.assertRegex(request["fingerprint"], r"^[0-9a-f]{64}$")
 
-    def _requests(self) -> list[dict]:
-        paths = operations.queue_paths(self.root)
-        return [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in sorted(paths["requests"].glob("op-*.json"))
-        ]
-
-    def test_logs_uses_legacy_docker_read_grant_and_queues_exact_request(self):
-        result = json.loads(
-            docker_ops.docker_logs("primary", "sing-box", tail=80, wait_seconds=0)
+    def test_restart_requires_exact_host_approval(self) -> None:
+        result = docker_ops.restart_docker_container(
+            "pve-ubuntu", "sing-box", timeout_seconds=15
         )
-        self.assertEqual(result["status"], "queued")
-        requests = self._requests()
-        self.assertEqual(len(requests), 1)
-        request = requests[0]
-        self.assertEqual(request["capability"], "server.docker")
-        self.assertEqual(request["operation"], "docker_logs")
-        self.assertEqual(
-            request["parameters"], {"container": "sing-box", "tail": 80}
+        self.assertIn("Docker 运维请求已创建：op-", result)
+        self.assertIn("scripts/approve.sh", result)
+        request = json.loads(self._requests()[0].read_text(encoding="utf-8"))
+        self.assertEqual(request["risk"], "change")
+        self.assertEqual(request["parameters"]["timeout_seconds"], 15)
+
+    def test_container_allowlist_and_name_validation(self) -> None:
+        denied = docker_ops.get_docker_logs("pve-ubuntu", "gitlab", wait_seconds=0)
+        self.assertIn("allowed_containers", denied)
+        invalid = docker_ops.get_docker_logs(
+            "pve-ubuntu", "sing-box; id", wait_seconds=0
         )
-        self.assertEqual(request["risk"], operations.RISK_READ)
+        self.assertIn("名称非法", invalid)
+        self.assertFalse(self._requests())
 
-    def test_diagnose_rejects_shell_metacharacters_before_queueing(self):
-        result = docker_ops.docker_diagnose(
-            "primary", "sing-box; id", tail=100, wait_seconds=0
+    def test_check_is_selected_by_alias_not_model_supplied_command(self) -> None:
+        result = docker_ops.run_docker_check(
+            "pve-ubuntu", "sing-box-config", wait_seconds=0
         )
-        self.assertIn("请求失败", result)
-        self.assertIn("container", result)
-        self.assertEqual(self._requests(), [])
+        state = json.loads(result)
+        self.assertEqual(state["status"], "queued")
+        request = json.loads(self._requests()[0].read_text(encoding="utf-8"))
+        self.assertEqual(request["parameters"], {"check": "sing-box-config"})
+        self.assertNotIn("argv", request["parameters"])
 
-    def test_restart_uses_legacy_read_plus_restart_grants_but_requires_approval(self):
-        result = docker_ops.docker_restart("primary", "sing-box")
-        self.assertIn("Docker 运维请求已创建", result)
-        self.assertIn("批准命令", result)
-        request = self._requests()[0]
-        self.assertEqual(request["operation"], "docker_restart")
-        self.assertEqual(request["risk"], operations.RISK_CHANGE)
-        state = operations.get_operation(request["id"], root=self.root)
-        self.assertEqual(state["status"], "awaiting_approval")
-
-    def test_restart_is_denied_when_legacy_restart_grant_is_missing(self):
-        self._write_profile(["docker_ps"])
-        result = docker_ops.docker_restart("primary", "sing-box")
-        self.assertIn("服务器策略未允许操作：docker_restart", result)
-        self.assertEqual(self._requests(), [])
-
-    def test_tail_is_strictly_bounded(self):
-        result = docker_ops.docker_logs(
-            "primary", "sing-box", tail=2001, wait_seconds=0
-        )
-        self.assertIn("tail 必须在 1 到 2000 之间", result)
-        self.assertEqual(self._requests(), [])
-
-    def test_all_docker_tools_have_queued_runner_contracts(self):
-        expected = {
-            "docker_logs": ("read", "queued_runner"),
-            "docker_diagnose": ("read", "queued_runner"),
-            "docker_restart": ("change", "queued_runner"),
-        }
-        for tool_name, (risk, mode) in expected.items():
-            with self.subTest(tool=tool_name):
-                contract = resolve_contract(tool_name, {}, docker_ops)
-                self.assertIsNotNone(contract)
-                self.assertEqual(contract.capability, "server.docker")
-                self.assertEqual(contract.risk, risk)
-                self.assertEqual(contract.execution_mode, mode)
+    def test_runtime_summary_hides_diagnostic_argv(self) -> None:
+        result = json.loads(docker_ops.list_docker_runtime("pve-ubuntu"))
+        self.assertEqual(result["docker_checks"], [
+            {"name": "sing-box-config", "container": "sing-box"}
+        ])
+        self.assertNotIn("/etc/sing-box/config.json", json.dumps(result))
 
 
 if __name__ == "__main__":

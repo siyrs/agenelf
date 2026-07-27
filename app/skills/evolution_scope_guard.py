@@ -9,7 +9,6 @@ publishing) remain impossible even after owner approval.
 from __future__ import annotations
 
 import re
-from types import MethodType
 from typing import Any
 
 SKILL_META = {
@@ -116,25 +115,23 @@ def _authorized_cycle(agent: Any, goal: str, scopes: list[str]) -> dict[str, Any
 
 
 def configure_runtime(*, agent: Any, **_: Any) -> None:
-    if getattr(agent, "_agenelf_evolution_scope_guard_bound", False):
-        return
-    original = getattr(agent, "run_autonomy_cycle", None)
-    if not callable(original):
-        return
-    agent._agenelf_evolution_scope_guard_bound = True
-    agent._agenelf_unscoped_autonomy_cycle = original
+    """通过 Agent 的显式有序钩子管线注册分级守卫（同名覆盖，幂等）。"""
 
-    def guarded(
-        self: Any,
+    add_guard = getattr(agent, "add_cycle_guard", None)
+    if not callable(add_guard):
+        return
+
+    def scope_guard(
+        call_next: Any,
         goal: str = "",
         apply_changes: bool = False,
     ) -> dict[str, Any]:
         scopes = classify_goal(goal)
         if apply_changes and scopes:
-            return _authorized_cycle(self, str(goal or "").strip(), scopes)
-        return original(goal=goal, apply_changes=apply_changes)
+            return _authorized_cycle(agent, str(goal or "").strip(), scopes)
+        return call_next(goal=goal, apply_changes=apply_changes)
 
-    agent.run_autonomy_cycle = MethodType(guarded, agent)
+    add_guard(scope_guard, priority=100, name="evolution_scope_guard")
 
 
 def execute(tool_name: str, args: dict[str, Any]) -> str:

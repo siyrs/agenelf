@@ -13,11 +13,15 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from core.storage import atomic_write_json as _atomic_json
+from core.storage import now_iso as _now_iso
+from core.storage import read_json as _read_json
+from core.storage import safe_text
 
 from .privacy import redact_sensitive_text, sanitize_value
 
@@ -60,41 +64,8 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _now_iso() -> str:
-    return _now().isoformat(timespec="seconds")
-
-
-def _atomic_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
-def _read_json(path: Path, default: Any) -> Any:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default
-    return value
-
-
 def _safe_text(value: object, limit: int = 2000) -> str:
-    text = redact_sensitive_text(value).strip()
-    if len(text) > limit:
-        return text[: max(0, limit - 1)] + "…"
-    return text
+    return safe_text(redact_sensitive_text(value), limit)
 
 
 def _safe_strings(value: object, *, limit: int = 10, item_limit: int = 1000) -> list[str]:

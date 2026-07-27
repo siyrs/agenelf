@@ -81,7 +81,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ! git ls-files | grep -E '^(local/secrets/|\.env$|\.ops-runner\.env$)'
+          ! git ls-files | grep -E '^(local/secrets/|\.env$|\.ops-runner\.env$|\.env\.github$)'
       # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议；
       # gitleaks 建议同时固定 gitleaks-action 版本与 GITLEAKS_VERSION。
       - name: Run gitleaks
@@ -137,7 +137,7 @@ jobs:
           : > shellcheck.log
           while IFS= read -r -d '' script; do
             shellcheck --severity=warning "$script" 2>&1 | tee -a shellcheck.log
-          done < <(find scripts -maxdepth 1 -type f -name '*.sh' -print0)
+          done < <(find scripts shared/scripts -maxdepth 1 -type f -name '*.sh' -print0)
       # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
       - name: Upload ShellCheck diagnostics
         if: steps.shellcheck.outcome == 'failure'

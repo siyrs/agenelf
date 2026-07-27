@@ -20,6 +20,9 @@ from typing import Any
 
 import yaml
 
+from core.storage import atomic_write_json as _atomic_json
+from core.storage import read_json as _read_storage_json
+
 from .privacy import redact_sensitive_text
 
 _CAPABILITY = "code.repair"
@@ -156,24 +159,8 @@ def _validate_id(repair_id: str) -> str:
     return value
 
 
-def _atomic_json(path: Path, value: dict[str, Any], *, exclusive: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
-    if exclusive:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        return
-    tmp = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    value = _read_storage_json(path)
     return value if isinstance(value, dict) else None
 
 

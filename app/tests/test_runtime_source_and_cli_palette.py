@@ -16,6 +16,7 @@ class RuntimeSourceAndCliPaletteTest(unittest.TestCase):
         services = compose["services"]
         for name in (
             "agenelf",
+            "cli",
             "ops-runner",
             "approval-runner",
             "validation-runner",

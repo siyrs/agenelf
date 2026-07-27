@@ -8,6 +8,7 @@ workspace/
 app-space/
 data/
 .env
+.env.github
 .ops-runner.env
 code-workspaces/
 repair-space/

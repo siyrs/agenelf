@@ -20,12 +20,15 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from core.storage import atomic_write_json as _atomic_json
+from core.storage import now_iso as _now_iso
+from core.storage import safe_text as _safe_text
 
 SKILL_META = {
     "name": "task_board",
@@ -250,31 +253,8 @@ def _audit(action: str, detail: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 原子读写与容错
+# 原子读写与容错（共享实现见 core.storage）
 # ---------------------------------------------------------------------------
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _atomic_json(path: Path, value: Any) -> None:
-    """原子写入 JSON：临时文件 + os.replace，避免半截文件。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
 
 def _load_board() -> dict[str, Any]:
     """读取主板；文件损坏或结构非法时重建空板（不崩）。"""
@@ -344,13 +324,6 @@ def _save_board(board: dict[str, Any]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # 数据规范化
 # ---------------------------------------------------------------------------
-
-def _safe_text(value: object, limit: int = 2000) -> str:
-    text = str(value or "").strip()
-    if len(text) > limit:
-        return text[: max(0, limit - 1)] + "…"
-    return text
-
 
 def _new_steps(steps: list[Any]) -> list[dict[str, str]]:
     """把输入步骤文本规范化为步骤结构。"""

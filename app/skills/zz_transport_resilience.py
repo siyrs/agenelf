@@ -5,12 +5,16 @@ closes an HTTP chunked stream early, this wrapper retries the same model turn wi
 streaming disabled.  Bounded retry applies only to connection, timeout, incomplete
 stream and retryable server errors; authentication and malformed requests still fail
 immediately.
+
+包装器通过 ``Agent.add_llm_wrapper`` 注册为显式有序钩子：priority=1000 使其
+成为**最外层**包装器（最先看到请求、最后处理内层异常），保留旧的“zz_ 最后
+加载=最外层”语义，但不再依赖技能文件名排序；同名注册覆盖保证幂等。文件名
+保持不变仅为兼容现有测试与文档引用。
 """
 from __future__ import annotations
 
 import os
 import time
-from types import MethodType
 from typing import Any
 
 SKILL_META = {
@@ -98,10 +102,7 @@ def _bounded_float(value: object, default: float, minimum: float, maximum: float
 
 def configure_runtime(*, agent: Any, config: dict[str, Any] | None = None, **_: Any) -> None:
     llm = getattr(agent, "llm", None)
-    if llm is None or getattr(llm, "_agenelf_transport_resilience_bound", False):
-        return
-    original = getattr(llm, "chat", None)
-    if not callable(original):
+    if llm is None or not callable(getattr(llm, "chat", None)):
         return
 
     full = config if isinstance(config, dict) else getattr(agent, "config", {})
@@ -133,21 +134,21 @@ def configure_runtime(*, agent: Any, config: dict[str, Any] | None = None, **_: 
         )
     ).strip().lower() not in {"0", "false", "off", "no"}
 
-    llm._agenelf_transport_resilience_bound = True
-    llm._agenelf_transport_original_chat = original
-    llm._agenelf_transport_retry_attempts = retries
+    add_wrapper = getattr(agent, "add_llm_wrapper", None)
+    if not callable(add_wrapper):
+        return
 
-    def resilient_chat(
-        self: Any,
+    def transport_wrapper(
+        call_next: Any,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        original_stream = getattr(self, "_agenelf_stream_reasoning", None)
+        original_stream = getattr(llm, "_agenelf_stream_reasoning", None)
         last_error: BaseException | None = None
         try:
             for attempt in range(retries + 1):
                 try:
-                    return original(messages, tools=tools)
+                    return call_next(messages, tools=tools)
                 except Exception as exc:
                     last_error = exc
                     if not is_transient_transport_error(exc) or attempt >= retries:
@@ -155,16 +156,17 @@ def configure_runtime(*, agent: Any, config: dict[str, Any] | None = None, **_: 
                     # A partial stream never returned a completed tool call to the Agent,
                     # so retrying this model turn is safe. Prefer non-stream for recovery.
                     if fallback and original_stream is not None:
-                        self._agenelf_stream_reasoning = False
+                        llm._agenelf_stream_reasoning = False
                     if backoff:
                         time.sleep(backoff * (attempt + 1))
             assert last_error is not None
             raise last_error
         finally:
             if original_stream is not None:
-                self._agenelf_stream_reasoning = original_stream
+                llm._agenelf_stream_reasoning = original_stream
 
-    llm.chat = MethodType(resilient_chat, llm)
+    # 最外层（priority 最大）：包裹推理轨迹等所有内层包装器。
+    add_wrapper(transport_wrapper, priority=1000, name="zz_transport_resilience")
 
 
 def execute(tool_name: str, args: dict[str, Any]) -> str:

@@ -15,12 +15,14 @@ import hmac
 import json
 import os
 import re
-import tempfile
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from core.storage import atomic_write_json as _atomic_json
+from core.storage import read_json as _read_storage_json
 
 _REQUEST_ID_RE = re.compile(r"(?:op-[0-9a-f]{16}|auth-[0-9a-f]{12})")
 _COMMAND_ID_RE = re.compile(r"owner-decision-[0-9a-f]{16}")
@@ -79,38 +81,8 @@ def _sanitize_text(value: object, limit: int = _MAX_REASON) -> str:
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    value = _read_storage_json(path)
     return value if isinstance(value, dict) else None
-
-
-def _atomic_json(path: Path, value: dict[str, Any], *, exclusive: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    if exclusive:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        return
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent, text=True
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        try:
-            os.chmod(temp_name, 0o600)
-        except OSError:
-            pass
-        os.replace(temp_name, path)
-    except Exception:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
-        raise
 
 
 def _audit(root: str | Path | None, event: str, detail: str) -> None:

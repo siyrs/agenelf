@@ -9,19 +9,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class DockerOpsRuntimeWiringTest(unittest.TestCase):
-    def test_compose_uses_unified_runner_without_expanding_secret_mounts(self) -> None:
+    def test_compose_uses_lifecycle_aware_unified_runner_without_expanding_secret_mounts(self) -> None:
         compose = yaml.safe_load(
             (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         )
         runner = compose["services"]["ops-runner"]
         self.assertEqual(
             runner["command"],
-            ["python", "/agenelf/scripts/unified_ops_runner.py", "--interval", "1"],
+            [
+                "python",
+                "/agenelf/scripts/runner_supervisor.py",
+                "--name",
+                "ops-runner",
+                "--heartbeat-interval",
+                "1",
+                "--",
+                "python",
+                "/agenelf/scripts/ops_runner_entry.py",
+                "--interval",
+                "1",
+            ],
         )
         volumes = runner["volumes"]
         self.assertTrue(any("local/secrets" in item and item.endswith(":ro") for item in volumes))
         self.assertFalse(any("local/memory" in item for item in volumes))
         self.assertFalse(any("local/self" in item for item in volumes))
+        self.assertIn(
+            "./data/runner-health:/agenelf/data/runner-health:rw",
+            volumes,
+        )
 
     def test_chat_entrypoint_delegates_single_resume_attempt_to_cli(self) -> None:
         script = (PROJECT_ROOT / "scripts" / "chat.sh").read_text(encoding="utf-8")
