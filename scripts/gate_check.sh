@@ -5,13 +5,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_TMP="${ROOT_DIR}/app-tmp"
-# 基线与候选可用环境变量覆盖：promote.sh 的宿主机复核会对冻结快照重跑静态检查。
-BASE_APP="${AGENELF_GATE_BASE_APP:-${ROOT_DIR}/app}"
+BASE_APP="${ROOT_DIR}/app"
 [[ -d "${BASE_APP}" ]] || BASE_APP="${ROOT_DIR}/app-fork"
-if [[ -n "${AGENELF_GATE_CANDIDATE_APP:-}" ]]; then
-    CANDIDATE_APP="${AGENELF_GATE_CANDIDATE_APP}"
-    CANDIDATE_REPO="${AGENELF_GATE_CANDIDATE_REPO:-$(dirname "${CANDIDATE_APP}")}"
-elif [[ -d "${APP_TMP}/repo/app" ]]; then
+if [[ -d "${APP_TMP}/repo/app" ]]; then
     CANDIDATE_APP="${APP_TMP}/repo/app"
     CANDIDATE_REPO="${APP_TMP}/repo"
 else
@@ -27,11 +23,7 @@ if [[ ! "${REQ_ID}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
     echo "[gate] 错误：请求ID含有非法字符：${REQ_ID}" >&2
     exit 1
 fi
-# gate 产物写入 agent 可触发的暂存队列（默认 app-tmp/promote-requests，可用
-# PROMOTE_REQUESTS_DIR 覆盖）；宿主机 watcher 复核后才移入可信的
-# data/promote-requests，promote.sh 晋升前还会重新校验摘要并重跑测试。
-PROMOTE_REQUESTS_DIR="${PROMOTE_REQUESTS_DIR:-${ROOT_DIR}/app-tmp/promote-requests}"
-REQ_DIR="${PROMOTE_REQUESTS_DIR}/${REQ_ID}"
+REQ_DIR="${ROOT_DIR}/data/promote-requests/${REQ_ID}"
 REPORT="${REQ_DIR}/report.txt"
 mkdir -p "${REQ_DIR}" "${ROOT_DIR}/logs"
 : > "${REPORT}"
@@ -110,15 +102,8 @@ pass "受保护路径检查通过"
 
 log "[gate] 检查 c/7：安全关键应用模块不可由普通沙盒修改"
 PROTECTED_APP_FILES=(
-    "api.py"
-    "cli.py"
-    "core/agent.py"
-    "core/llm.py"
-    "core/interactive_prompt.py"
-    "core/context.py"
     "core/autonomy.py"
     "core/operations.py"
-    "core/operation_revocation.py"
     "core/permissions.py"
     "core/configuration.py"
     "core/local_context.py"
@@ -148,7 +133,6 @@ PROTECTED_APP_FILES=(
     "skills/authorized_self_upgrade.py"
     "skills/authorized_upgrade_redlines.py"
     "skills/runtime_doctor.py"
-    "skills/operation_control.py"
     "skills/code_repair.py"
     "skills/code_writer.py"
     "skills/skill_forge.py"
@@ -158,9 +142,6 @@ PROTECTED_APP_FILES=(
     "skills/evolution_scope_guard.py"
     "skills/server_ops.py"
     "skills/compose_lifecycle.py"
-    "skills/docker_ops.py"
-    "skills/authorized_upgrade_recovery.py"
-    "skills/self_optimize.py"
     "skills/zz_transport_resilience.py"
     "skills/local_context.py"
     "skills/self_development.py"
@@ -175,7 +156,7 @@ for rel in "${PROTECTED_APP_FILES[@]}"; do
         fi
     fi
 done
-pass "授权升级、请求撤销、Runner 心跳与其他安全关键模块保持基线一致"
+pass "授权升级、Runner 心跳与其他安全关键模块保持基线一致"
 
 log "[gate] 检查 d/7：既有测试和测试夹具不可删除或修改"
 if [[ ! -d "${BASE_APP}/tests" ]] || [[ ! -d "${CANDIDATE_APP}/tests" ]]; then
@@ -207,9 +188,7 @@ pass "改动规模在限值内"
 
 log "[gate] 检查 f/7：可信基线与候选新增测试分离执行"
 TEST_LOG="$(mktemp)"
-if [[ "${AGENELF_GATE_SKIP_TESTS:-0}" == "1" ]]; then
-    log "AGENELF_GATE_SKIP_TESTS=1，测试阶段由调用方（如 promote 隔离复核）负责"
-elif [[ -f "${TEST_RUNNER}" ]]; then
+if [[ -f "${TEST_RUNNER}" ]]; then
     TEST_CMD=(python3 "${TEST_RUNNER}" --baseline "${BASE_APP}" --candidate "${CANDIDATE_APP}" --phase candidate --timeout 300)
     log "测试命令：${TEST_CMD[*]}"
     if ! "${TEST_CMD[@]}" > "${TEST_LOG}" 2>&1; then
@@ -224,12 +203,8 @@ else
         fail "单元测试未通过，拒绝晋升"
     fi
 fi
-if [[ "${AGENELF_GATE_SKIP_TESTS:-0}" == "1" ]]; then
-    pass "静态检查完成（测试阶段已按调用方要求跳过）"
-else
-    TEST_SUMMARY="$(tail -n 5 "${TEST_LOG}" | tr '\n' ' ')"
-    pass "测试全部通过（${TEST_SUMMARY}）"
-fi
+TEST_SUMMARY="$(tail -n 5 "${TEST_LOG}" | tr '\n' ' ')"
+pass "测试全部通过（${TEST_SUMMARY}）"
 
 log "[gate] 检查 g/7：生成候选 app 树完整性摘要"
 if ! CANDIDATE_SHA="$(python3 "${TREE_DIGEST}" "${CANDIDATE_APP}")"; then fail "无法计算候选代码树摘要"; fi

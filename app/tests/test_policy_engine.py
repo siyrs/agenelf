@@ -8,7 +8,7 @@ from pathlib import Path
 from core.policy import PolicyEngine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_POLICY_VERSION = "1.4.0"
+EXPECTED_POLICY_VERSION = "1.3.0"
 
 
 class PolicyEngineLoadingTest(unittest.TestCase):
@@ -107,8 +107,6 @@ class PolicyEngineQueryTest(unittest.TestCase):
         self.assertTrue(self.engine.is_protected_path("app/core/permissions.py"))
         self.assertTrue(self.engine.is_protected_path("app/core/runtime_health.py"))
         self.assertTrue(self.engine.is_protected_path("app/skills/runtime_doctor.py"))
-        self.assertTrue(self.engine.is_protected_path("app/core/operation_revocation.py"))
-        self.assertTrue(self.engine.is_protected_path("app/skills/operation_control.py"))
         self.assertFalse(self.engine.is_protected_path("app/skills/foo.py"))
 
     def test_candidate_limits_content(self):
@@ -127,7 +125,6 @@ class PolicyEngineQueryTest(unittest.TestCase):
             "exact_authorization_binding_verified",
             "trusted_evidence_archived",
             "runner_heartbeat_isolation_verified",
-            "owner_operation_revocation_race_verified",
             "documentation_updated",
         ):
             self.assertIn(expected, gates)

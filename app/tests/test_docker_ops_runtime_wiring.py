@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class DockerOpsRuntimeWiringTest(unittest.TestCase):
-    def test_compose_uses_lifecycle_aware_unified_runner_without_expanding_secret_mounts(self) -> None:
+    def test_compose_uses_supervised_unified_runner_without_expanding_secret_mounts(self) -> None:
         compose = yaml.safe_load(
             (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         )
@@ -25,7 +25,7 @@ class DockerOpsRuntimeWiringTest(unittest.TestCase):
                 "1",
                 "--",
                 "python",
-                "/agenelf/scripts/ops_runner_entry.py",
+                "/agenelf/scripts/unified_ops_runner.py",
                 "--interval",
                 "1",
             ],

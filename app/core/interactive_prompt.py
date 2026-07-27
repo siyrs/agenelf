@@ -35,6 +35,7 @@ class SlashCommand:
 
 COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/help", "显示全部命令、用途和参数", aliases=("/commands",)),
+    SlashCommand("/doctor", "检查运行时、Runner、队列、挂载与技能健康"),
     SlashCommand("/self", "查看可观测自我模型"),
     SlashCommand("/assess", "评估当前能力与缺口"),
     SlashCommand("/scorecard", "查看可信能力健康评分"),
