@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gate_check.sh — host-controlled safety gate for ordinary self-improvement candidates.
+# gate_check.sh — host-controlled safety gate for self-improvement candidates.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -100,7 +100,7 @@ if [[ -n "${PROTECTED_HITS}" ]]; then
 fi
 pass "受保护路径检查通过"
 
-log "[gate] 检查 c/7：安全关键应用模块不可由普通沙盒修改"
+log "[gate] 检查 c/7：安全关键应用模块不可由 Agent 自主修改"
 PROTECTED_APP_FILES=(
     "core/autonomy.py"
     "core/operations.py"
@@ -124,15 +124,6 @@ PROTECTED_APP_FILES=(
     "core/continuous_chat.py"
     "core/reasoning_trace.py"
     "core/evolution_workspace.py"
-    "core/authorized_upgrade.py"
-    "core/upgrade_redlines.py"
-    "core/approval_catalog.py"
-    "core/owner_approval.py"
-    "core/cli_approval.py"
-    "core/runtime_health.py"
-    "skills/authorized_self_upgrade.py"
-    "skills/authorized_upgrade_redlines.py"
-    "skills/runtime_doctor.py"
     "skills/code_repair.py"
     "skills/code_writer.py"
     "skills/skill_forge.py"
@@ -152,11 +143,11 @@ for rel in "${PROTECTED_APP_FILES[@]}"; do
     candidate="${CANDIDATE_APP}/${rel}"
     if [[ -e "${baseline}" || -e "${candidate}" ]]; then
         if [[ ! -e "${baseline}" || ! -e "${candidate}" ]] || ! cmp -s "${baseline}" "${candidate}"; then
-            fail "安全关键模块发生变化：${rel}；普通沙盒不可修改，请使用主人两阶段授权升级"
+            fail "安全关键模块发生变化：${rel}；只能通过人类主导的仓库变更修改"
         fi
     fi
 done
-pass "授权升级、Runner 心跳与其他安全关键模块保持基线一致"
+pass "安全关键模块与基线一致"
 
 log "[gate] 检查 d/7：既有测试和测试夹具不可删除或修改"
 if [[ ! -d "${BASE_APP}/tests" ]] || [[ ! -d "${CANDIDATE_APP}/tests" ]]; then

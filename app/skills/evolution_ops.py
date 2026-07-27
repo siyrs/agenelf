@@ -178,64 +178,6 @@ def _data(root: Path) -> Path:
     return root / "data"
 
 
-def _promotion_request_dirs(root: Path) -> list[tuple[str, Path]]:
-    """Promote-request sources: gate candidate output first, host-promoted archive second.
-
-    gate_check.sh 默认把候选晋升请求写入 ``app-tmp/promote-requests``
-    （可用 ``PROMOTE_REQUESTS_DIR`` 覆盖）；promote.sh 校验通过后才由宿主机
-    移入 ``data/promote-requests``。读取方需合并两个目录。
-    """
-    configured = os.environ.get("PROMOTE_REQUESTS_DIR", "").strip()
-    candidate = (
-        Path(configured).resolve()
-        if configured
-        else root / "app-tmp" / "promote-requests"
-    )
-    return [
-        ("candidate", candidate),
-        ("promoted", _data(root) / "promote-requests"),
-    ]
-
-
-def merged_promotion_requests(root: Path, limit: int | None = None) -> list[dict[str, Any]]:
-    """合并 app-tmp 候选区与 data 晋升区的请求目录（目录缺失误差容错）。
-
-    同 ID 同时存在时以宿主机已晋升（promoted）记录为准。返回条目含
-    ``id``/``source``（``candidate`` 或 ``promoted``）/``markers``，按修改时间倒序。
-    """
-    merged: dict[str, dict[str, Any]] = {}
-    for source, directory in _promotion_request_dirs(root):
-        if not directory.is_dir():
-            continue
-        try:
-            entries = [item for item in directory.iterdir() if item.is_dir()]
-        except OSError:
-            continue
-        for entry in entries:
-            try:
-                markers = sorted(
-                    path.name for path in entry.iterdir() if path.is_file()
-                )
-                mtime = entry.stat().st_mtime
-            except OSError:
-                continue
-            existing = merged.get(entry.name)
-            if existing is not None and existing["source"] == "promoted":
-                continue
-            merged[entry.name] = {
-                "id": entry.name,
-                "source": source,
-                "markers": markers,
-                "mtime": mtime,
-            }
-    rows = sorted(merged.values(), key=lambda item: float(item["mtime"]), reverse=True)
-    if limit is not None:
-        rows = rows[:limit]
-    for row in rows:
-        row.pop("mtime", None)
-    return rows
-
-
 def _session_path(root: Path) -> Path:
     return _data(root) / _SESSION_FILENAME
 
@@ -615,12 +557,21 @@ def evolution_status() -> str:
             f"  变更文件：{', '.join(session.get('changed_files', [])) or '（无）'}\n"
             f"  最近更新：{session.get('updated_at')}"
         )
-    entries = merged_promotion_requests(root, limit=5)
+    requests = _data(root) / "promote-requests"
+    entries = (
+        sorted(
+            (item for item in requests.iterdir() if item.is_dir()),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        if requests.is_dir()
+        else []
+    )
     if entries:
         lines.append("最近晋升请求：")
-        for entry in entries:
-            markers = ", ".join(entry["markers"]) or "（无标记）"
-            lines.append(f"  - {entry['id']}（{entry['source']}）：{markers}")
+        for entry in entries[:5]:
+            markers = sorted(path.name for path in entry.iterdir() if path.is_file())
+            lines.append(f"  - {entry.name}：{', '.join(markers) or '（无标记）'}")
     else:
         lines.append("暂无晋升请求记录。")
     return "\n".join(lines)

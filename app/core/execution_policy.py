@@ -1,7 +1,7 @@
 """Registry-level execution contracts and policy enforcement.
 
 Risk answers how dangerous an operation is. ``execution_mode`` answers where and how
-it may run. Every external side effect is classified before skill execution and tool
+it may run.  Every external side effect is classified before skill execution and tool
 arguments are never written to policy audit logs.
 """
 from __future__ import annotations
@@ -111,35 +111,6 @@ _EXPLICIT: dict[str, ToolExecutionContract] = {
     "create_improvement_intention": _contract("create_improvement_intention", "agent.self_development", "create_intention", "change", "local_state"),
     "capability_health_snapshot": _contract("capability_health_snapshot", "agent.self_development", "capability_health", "read", "pure"),
     "improvement_roadmap": _contract("improvement_roadmap", "agent.self_development", "improvement_roadmap", "read", "pure"),
-    # Owner-authorized protected self-upgrade.
-    "request_authorized_self_upgrade": _contract(
-        "request_authorized_self_upgrade",
-        "agent.authorized_self_upgrade",
-        "request_intent",
-        "change",
-        "local_state",
-    ),
-    "continue_authorized_self_upgrade": _contract(
-        "continue_authorized_self_upgrade",
-        "agent.authorized_self_upgrade",
-        "continue_upgrade",
-        "change",
-        "controlled_sandbox",
-    ),
-    "authorized_self_upgrade_status": _contract(
-        "authorized_self_upgrade_status",
-        "agent.authorized_self_upgrade",
-        "status",
-        "read",
-        "pure",
-    ),
-    "list_authorized_upgrade_scopes": _contract(
-        "list_authorized_upgrade_scopes",
-        "agent.authorized_self_upgrade",
-        "list_scopes",
-        "read",
-        "pure",
-    ),
     # Bounded runtime tuning.
     "optimize_status": _contract("optimize_status", "agent.self_optimization", "optimize_status", "read", "pure"),
     "optimize_apply": _contract("optimize_apply", "agent.self_optimization", "optimize_apply", "change", "local_state"),
@@ -172,32 +143,16 @@ _EXPLICIT: dict[str, ToolExecutionContract] = {
 _LEGACY_PURE_TOOLS = {"ask_llm", "growth_pulse", "summarize"}
 
 
-def resolve_contract(
-    tool_name: str,
-    args: dict[str, Any],
-    module: Any,
-) -> ToolExecutionContract | None:
+def resolve_contract(tool_name: str, args: dict[str, Any], module: Any) -> ToolExecutionContract | None:
     tool_name = str(tool_name or "").strip()
     data = args if isinstance(args, dict) else {}
 
     if tool_name == "manage_system_service":
         action = str(data.get("action", "")).strip().lower()
         if action == "status":
-            return _contract(
-                tool_name,
-                "server.operations",
-                "service_status",
-                "read",
-                "queued_runner",
-            )
+            return _contract(tool_name, "server.operations", "service_status", "read", "queued_runner")
         if action == "restart":
-            return _contract(
-                tool_name,
-                "server.operations",
-                "service_restart",
-                "change",
-                "queued_runner",
-            )
+            return _contract(tool_name, "server.operations", "service_restart", "change", "queued_runner")
         if not action:
             return ToolExecutionContract(
                 tool_name,
@@ -236,24 +191,14 @@ def resolve_contract(
             raw.get("id") or getattr(module, "SKILL_META", {}).get("name") or ""
         ).strip()
         operations = raw.get("operations", [])
-        declared = (
-            [item for item in operations if isinstance(item, dict)]
-            if isinstance(operations, list)
-            else []
-        )
+        declared = [item for item in operations if isinstance(item, dict)] if isinstance(operations, list) else []
         for item in declared:
             if str(item.get("name", "")).strip() != tool_name:
                 continue
             risk = str(item.get("risk", "read")).strip().lower()
             mode = str(item.get("execution_mode", "")).strip()
             if mode not in VALID_EXECUTION_MODES:
-                mode = (
-                    "pure"
-                    if risk == "read"
-                    else "local_state"
-                    if risk == "change"
-                    else "queued_runner"
-                )
+                mode = "pure" if risk == "read" else "local_state" if risk == "change" else "queued_runner"
                 if risk == "forbidden":
                     mode = "forbidden"
             return ToolExecutionContract(
@@ -265,8 +210,7 @@ def resolve_contract(
                 source="exact-operation",
             )
         if declared and all(
-            str(item.get("risk", "read")).strip().lower() == "read"
-            for item in declared
+            str(item.get("risk", "read")).strip().lower() == "read" for item in declared
         ):
             return ToolExecutionContract(
                 tool_name,
@@ -328,11 +272,10 @@ def evaluate_contract(
         contract.risk,
         subject=subject,
     )
-    result = (
-        dict(decision)
-        if isinstance(decision, dict)
-        else {"allowed": False, "reason": "策略引擎返回异常"}
-    )
+    result = dict(decision) if isinstance(decision, dict) else {
+        "allowed": False,
+        "reason": "策略引擎返回异常",
+    }
     if contract.execution_mode == "pure" and contract.risk != "read":
         result.update(allowed=False, reason="pure 模式只能声明 read 风险")
     elif contract.execution_mode == "local_state":
@@ -340,26 +283,17 @@ def evaluate_contract(
             result.update(allowed=False, reason="local_state 不允许 privileged/irreversible 风险")
         elif result.get("allowed"):
             result.update(auto_execute=True, approval="none")
-            result["reason"] = (
-                str(result.get("reason", ""))
-                + "；仅修改 Agenelf 有界本地状态，不触发外部系统"
-            )
+            result["reason"] = str(result.get("reason", "")) + "；仅修改 Agenelf 有界本地状态，不触发外部系统"
     elif contract.execution_mode == "controlled_sandbox":
         if subject in {"mobile_device", "voice"}:
             result.update(allowed=False, reason="移动端/语音不能直接触发受控代码沙盒")
         elif result.get("allowed"):
-            result["reason"] = (
-                str(result.get("reason", ""))
-                + "；只能在 app-tmp 生成并测试候选；受保护代码应用还必须经过第二阶段精确主人授权和隔离 Runner，不能直接修改或发布 main"
-            )
+            result["reason"] = str(result.get("reason", "")) + "；仅允许 app-tmp 测试与晋升申请，不能直接修改 main"
     elif contract.execution_mode == "host_controlled":
         if subject not in {"cli", "host"}:
             result.update(allowed=False, reason="host_controlled 工具只允许宿主机或显式 CLI 操作")
     elif contract.execution_mode == "queued_runner" and result.get("allowed"):
-        result["reason"] = (
-            str(result.get("reason", ""))
-            + "；实际副作用必须由指纹绑定的确定性 Runner 执行"
-        )
+        result["reason"] = str(result.get("reason", "")) + "；实际副作用必须由指纹绑定的确定性 Runner 执行"
     result.setdefault("policy_version", getattr(policy_engine, "policy_version", "unknown"))
     return result
 
