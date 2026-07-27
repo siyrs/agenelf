@@ -14,7 +14,7 @@ scripts/runner_supervisor.py
 
 启动。Supervisor 现在负责两层互斥：
 
-1. **Supervisor 租约**：同一 Runner 名称在同一个 PID 命名空间中只能有一个活动 Supervisor；
+1. **Supervisor 租约**：同一 Runner 名称在共享数据目录中只能有一个活动 Supervisor；
 2. **请求锁恢复**：只有取得 Supervisor 独占租约后，才允许回收该 Runner 固定锁目录中的旧 `.lock` 文件。
 
 受管 Runner 与锁目录是固定映射：
@@ -59,11 +59,12 @@ data/runner-health/<runner>.supervisor/owner.json
 
 目录创建使用原子 `mkdir`。如果已存在租约：
 
-- PID 命名空间相同、PID 存活且心跳新鲜：拒绝启动第二个 Supervisor；
-- PID 命名空间不同：视为上一容器实例遗留，可立即接管；
-- PID 已退出、心跳损坏或超时：原子隔离旧租约后接管。
+- PID 命名空间相同且 Supervisor PID 仍存活：拒绝启动第二个 Supervisor，即使心跳暂时延迟；
+- PID 命名空间不同但共享卷心跳仍新鲜：视为另一个容器可能仍在运行，拒绝接管；
+- 不同命名空间的心跳已经超时：允许原子隔离旧租约后接管；
+- 同命名空间 PID 已退出，或租约内容损坏：允许接管。
 
-因此，意外把同一 Compose 服务启动两份时，不会出现两个 Runner 同时消费队列。
+因此，意外把同一 Compose 服务扩成两份时，第二个容器不会因 PID 命名空间不同而抢走活动 Runner 的租约。容器异常退出后，新容器会等旧共享心跳过期，再安全接管。
 
 ## 崩溃遗留锁回收
 
@@ -152,6 +153,16 @@ docker compose exec agenelf python /agenelf/app-fork/cli.py
 ```text
 /doctor
 ```
+
+## 可调参数
+
+默认跨容器租约陈旧阈值为 15 秒。需要调整时，可在对应 Runner 服务中设置：
+
+```text
+AGENELF_SUPERVISOR_LEASE_STALE_SECONDS=20
+```
+
+允许范围为 2–300 秒。阈值越短，异常容器后的接管越快；阈值越长，对存储抖动和调度延迟越保守。默认值优先保证不会出现两个 Runner 并发消费同一队列。
 
 ## 安全与幂等边界
 
