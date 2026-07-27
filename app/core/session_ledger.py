@@ -6,6 +6,7 @@ owner-local privacy and governance boundaries:
 - entries are appended to one JSONL file per session;
 - ``parent_id`` forms a conversation/event tree;
 - ``prev_hash`` + ``entry_hash`` form an append-order hash chain;
+- every entry declares its origin; event type alone never proves trust;
 - payloads are recursively redacted before persistence;
 - the store has no tool execution capability and never reads owner secrets.
 
@@ -57,6 +58,7 @@ ENTRY_TYPES = {
     "label",
     "custom",
 }
+ORIGINS = {"runtime", "agent_skill", "owner", "runner", "migration"}
 
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ENTRY_ID_RE = re.compile(r"^evt-[0-9a-f]{16}$")
@@ -179,6 +181,14 @@ def _safe_event_type(value: object) -> str:
     return event_type
 
 
+def _safe_origin(value: object) -> str:
+    origin = str(value or "").strip()
+    if origin not in ORIGINS:
+        allowed = "、".join(sorted(ORIGINS))
+        raise SessionLedgerError(f"origin 必须是：{allowed}")
+    return origin
+
+
 def _safe_payload(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise SessionLedgerError("payload 必须是 JSON object")
@@ -272,9 +282,11 @@ class SessionLedgerStore:
         *,
         parent_id: str | None = None,
         branch_id: str | None = None,
+        origin: str = "runtime",
     ) -> dict[str, Any]:
         session_id = _safe_session_id(session_id)
         event_type = _safe_event_type(event_type)
+        origin = _safe_origin(origin)
         safe_payload = _safe_payload(payload)
         requested_parent = _safe_entry_id(parent_id, optional=True)
         requested_branch = _safe_branch_id(branch_id, optional=True)
@@ -313,6 +325,7 @@ class SessionLedgerStore:
                 "parent_id": parent,
                 "branch_id": branch,
                 "type": event_type,
+                "origin": origin,
                 "ts": now_iso(),
                 "payload": safe_payload,
                 "prev_hash": str(previous.get("entry_hash") or "")
@@ -333,6 +346,7 @@ class SessionLedgerStore:
         *,
         label: str,
         summary: str = "",
+        origin: str = "runtime",
     ) -> dict[str, Any]:
         parent = _safe_entry_id(parent_id)
         safe_label = str(label or "").strip()
@@ -349,6 +363,7 @@ class SessionLedgerStore:
             },
             parent_id=parent,
             branch_id=branch_id,
+            origin=origin,
         )
 
     def entries(
@@ -404,6 +419,7 @@ class SessionLedgerStore:
             parent_id = raw_parent_id if isinstance(raw_parent_id, str) else None
             branch_id = str(entry.get("branch_id") or "")
             event_type = str(entry.get("type") or "")
+            origin = str(entry.get("origin") or "")
             if entry.get("schema_version") != SCHEMA_VERSION:
                 errors.append(f"seq={index}: schema_version 非 {SCHEMA_VERSION}")
             if entry.get("session_id") != session_id:
@@ -423,6 +439,8 @@ class SessionLedgerStore:
                 branches.add(branch_id)
             if event_type not in ENTRY_TYPES:
                 errors.append(f"seq={index}: event type 未注册")
+            if origin not in ORIGINS:
+                errors.append(f"seq={index}: origin 未注册")
             if entry.get("prev_hash") != previous_hash:
                 errors.append(f"seq={index}: prev_hash 链断裂")
 
