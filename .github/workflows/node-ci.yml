@@ -59,13 +59,13 @@ jobs:
         run: |
           set -o pipefail
           {
-            docker compose config --format json > agenelf-production-compose.json
+            docker compose --profile cli config --format json > agenelf-production-compose.json
             node <<'NODE'
           const fs = require('node:fs');
           const config = JSON.parse(fs.readFileSync('agenelf-production-compose.json', 'utf8'));
           const services = config.services || {};
           const required = [
-            'agenelf', 'legacy-agent', 'approval-key-init', 'approval-runner',
+            'agenelf', 'cli', 'legacy-agent', 'approval-key-init', 'approval-runner',
             'ops-runner', 'validation-runner', 'repair-runner', 'self-upgrade-runner'
           ];
           for (const name of required) {
