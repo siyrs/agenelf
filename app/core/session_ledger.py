@@ -20,11 +20,22 @@ import os
 import re
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .privacy import sanitize_value
 from .storage import now_iso
+
+try:  # POSIX/Docker production runtime.
+    import fcntl  # type: ignore
+except ImportError:  # pragma: no cover - exercised on Windows.
+    fcntl = None  # type: ignore
+
+try:  # Cross-platform development fallback.
+    import msvcrt  # type: ignore
+except ImportError:  # pragma: no cover - exercised on POSIX.
+    msvcrt = None  # type: ignore
 
 SCHEMA_VERSION = 1
 MAX_PAYLOAD_BYTES = 64 * 1024
@@ -80,6 +91,56 @@ def _session_lock(path: Path) -> threading.RLock:
             lock = threading.RLock()
             _LOCKS[key] = lock
         return lock
+
+
+@contextmanager
+def _process_file_lock(path: Path, *, exclusive: bool) -> Iterator[None]:
+    """Coordinate API/CLI processes that share the same owner-local bind mount.
+
+    Read-only access to a missing ledger is side-effect free. Writers create one
+    adjacent ``.lock`` file and hold an OS advisory lock while reading the current
+    tail and appending the next entry. POSIX uses shared/exclusive ``flock``;
+    Windows uses an exclusive one-byte ``msvcrt`` lock for both modes.
+    """
+
+    if not exclusive and not path.exists():
+        yield
+        return
+
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    posix_locked = False
+    windows_locked = False
+    try:
+        if fcntl is not None:
+            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            fcntl.flock(fd, operation)
+            posix_locked = True
+        elif msvcrt is not None:  # pragma: no cover - Windows-only path.
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+                os.fsync(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            windows_locked = True
+        yield
+    finally:
+        if posix_locked:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        elif windows_locked:  # pragma: no cover - Windows-only path.
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        os.close(fd)
+
+
+@contextmanager
+def _locked_ledger(path: Path, *, exclusive: bool) -> Iterator[None]:
+    """Combine same-process re-entrancy with cross-process advisory locking."""
+
+    with _session_lock(path):
+        with _process_file_lock(path, exclusive=exclusive):
+            yield
 
 
 def _safe_session_id(value: object) -> str:
@@ -219,7 +280,7 @@ class SessionLedgerStore:
         requested_branch = _safe_branch_id(branch_id, optional=True)
         path = self._path(session_id)
 
-        with _session_lock(path):
+        with _locked_ledger(path, exclusive=True):
             entries = self._read_lines(path)
             by_id = {
                 str(item.get("id")): item
@@ -308,7 +369,7 @@ class SessionLedgerStore:
         except (TypeError, ValueError):
             bounded_limit = DEFAULT_LIMIT
         path = self._path(session_id)
-        with _session_lock(path):
+        with _locked_ledger(path, exclusive=False):
             values = self._read_lines(path)
         if event_type:
             values = [item for item in values if item.get("type") == event_type]
@@ -320,7 +381,7 @@ class SessionLedgerStore:
         session_id = _safe_session_id(session_id)
         entry_id = str(_safe_entry_id(entry_id))
         path = self._path(session_id)
-        with _session_lock(path):
+        with _locked_ledger(path, exclusive=False):
             values = self._read_lines(path)
         for entry in values:
             if entry.get("id") == entry_id:
@@ -330,7 +391,7 @@ class SessionLedgerStore:
     def verify(self, session_id: str) -> dict[str, Any]:
         session_id = _safe_session_id(session_id)
         path = self._path(session_id)
-        with _session_lock(path):
+        with _locked_ledger(path, exclusive=False):
             entries = self._read_lines(path)
 
         seen: set[str] = set()
