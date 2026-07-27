@@ -21,7 +21,7 @@ class RuntimeDoctorWiringTest(unittest.TestCase):
 
     def test_all_long_running_runners_use_the_supervisor_and_writable_heartbeat_mount(self) -> None:
         expected_children = {
-            "ops-runner": "/agenelf/scripts/unified_ops_runner.py",
+            "ops-runner": "/agenelf/scripts/ops_runner_entry.py",
             "approval-runner": "/agenelf/scripts/approval_runner.py",
             "self-upgrade-runner": "/agenelf/scripts/self_upgrade_runner_entry.py",
             "validation-runner": "/agenelf/scripts/validation_runner.py",
