@@ -3,6 +3,7 @@
 ``down_compose_project`` targets only a named project below the server's managed root.
 It never accepts arbitrary shell, never passes ``--volumes`` or ``--rmi``, and always
 requires an owner decision bound to the exact server, project and timeout parameters.
+Identical live requests reuse the same operation ID instead of creating approval spam.
 """
 from __future__ import annotations
 
@@ -22,14 +23,14 @@ SKILL_META = {
         "通过隔离 SSH Runner 对受管 Docker Compose 项目执行安全 down；"
         "默认保留卷、镜像、Compose 文件和备份，且必须精确审批。"
     ),
-    "version": "1.0.0",
+    "version": "1.1.0",
 }
 
 CAPABILITY_META = {
     "id": "docker.compose_lifecycle",
     "name": "Docker Compose 生命周期",
     "description": "停止并移除指定受管 Compose 项目的容器和项目网络，不删除卷或镜像。",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "domain": "operations",
     "operations": [
         {
@@ -55,7 +56,7 @@ TOOLS: list[dict[str, Any]] = [
             "description": (
                 "在目标服务器 managed_root/<project> 中执行 docker compose down。"
                 "只移除该项目容器和网络，明确保留 named volumes、镜像、compose.yaml 与备份；"
-                "提交后需要主人精确批准。"
+                "提交后需要主人精确批准。相同未完成请求会复用同一个 op ID。"
             ),
             "parameters": {
                 "type": "object",
@@ -114,9 +115,27 @@ def _allowed(profile: dict[str, Any]) -> None:
         return
     values = {str(item) for item in allowed} if isinstance(allowed, list) else set()
     # Backward compatibility: an owner who already allowed compose_deploy may stop the
-    # same managed project after an exact approval.  Volumes/images are still preserved.
+    # same managed project after an exact approval. Volumes/images are still preserved.
     if not ({"compose_down", "compose_deploy"} & values):
         raise PermissionError("服务器策略未允许 compose_down（也未允许兼容的 compose_deploy）")
+
+
+def _request_message(request: dict[str, Any], target: str, project: str, timeout: int, remove_orphans: bool) -> str:
+    reused = bool(request.get("reused_existing"))
+    first = (
+        f"已复用相同未完成的 Compose down 请求：{request['id']}"
+        if reused
+        else f"Compose down 请求已创建：{request['id']}"
+    )
+    return (
+        f"{first}\n"
+        f"目标：{target}/{project}\n"
+        f"请求有效期至：{request.get('expires_at', '未知')}\n"
+        f"停止超时：{timeout}s；移除孤儿容器：{'是' if remove_orphans else '否'}\n"
+        "保留：named volumes、镜像、compose.yaml 和备份；不会使用 --volumes/--rmi。\n"
+        + operations.approval_instructions(str(request["id"]))
+        + "\n审批只绑定当前服务器、项目和参数；参数变化必须重新申请。"
+    )
 
 
 def down_compose_project(
@@ -165,16 +184,7 @@ def down_compose_project(
         risk=operations.RISK_CHANGE,
         summary=f"停止 Compose 项目 {target}/{project}，保留卷和镜像",
     )
-    return (
-        f"Compose down 请求已创建：{request['id']}\n"
-        f"目标：{target}/{project}\n"
-        f"停止超时：{timeout}s；移除孤儿容器：{'是' if remove_orphans else '否'}\n"
-        "保留：named volumes、镜像、compose.yaml 和备份；不会使用 --volumes/--rmi。\n"
-        f"在当前 Agenelf CLI 输入：/approve {request['id']}\n"
-        f"或输入：审批通过 {request['id']}\n"
-        f"Windows 备用：.\\scripts\\approve.ps1 {request['id']} approve\n"
-        "审批只绑定当前服务器、项目和参数；参数变化必须重新申请。"
-    )
+    return _request_message(request, target, project, timeout, bool(remove_orphans))
 
 
 _DISPATCH = {
