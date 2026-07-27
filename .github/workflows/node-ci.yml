@@ -30,7 +30,7 @@ jobs:
           mkdir -p local/context local/memory local/self data logs workspace repair-space
           touch local/profile.yaml local/preferences.yaml
           cp local/node-runner.example.json local/node-runner.json
-          docker compose -f docker-compose.node.yml config > /tmp/agenelf-node-compose.yml
+          docker compose -f docker-compose.node.yml --profile node-runner config > /tmp/agenelf-node-compose.yml
           grep -q 'agenelf-node:' /tmp/agenelf-node-compose.yml
           grep -q 'node-runner:' /tmp/agenelf-node-compose.yml
       - name: Build Node production image
