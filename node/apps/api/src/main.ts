@@ -234,7 +234,7 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
       if (await proxyLegacy(request, response, url)) return;
       sendJson(response, 404, { error: "Not found" });
     } catch (error) {
-      if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : String(error)`});
+      if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
       else response.end();
     }
   });
