@@ -114,7 +114,7 @@ class SessionLedgerStoreTest(unittest.TestCase):
             verification,
         )
 
-    def test_missing_parent_is_rejected(self) -> None:
+    def test_missing_parent_and_blank_branch_label_are_rejected(self) -> None:
         with self.assertRaises(SessionLedgerError):
             self.store.append(
                 "parent-demo",
@@ -122,6 +122,9 @@ class SessionLedgerStoreTest(unittest.TestCase):
                 {"content": "child"},
                 parent_id="evt-0000000000000000",
             )
+        root = self.store.append("parent-demo", "message", {"content": "root"})
+        with self.assertRaises(SessionLedgerError):
+            self.store.create_branch("parent-demo", root["id"], label="   ")
 
     def test_invalid_session_and_oversized_payload_are_rejected(self) -> None:
         with self.assertRaises(SessionLedgerError):
@@ -132,6 +135,29 @@ class SessionLedgerStoreTest(unittest.TestCase):
                 "custom",
                 {"value": "x" * (MAX_PAYLOAD_BYTES + 1)},
             )
+
+    def test_read_only_status_does_not_create_storage_directory(self) -> None:
+        ledger_dir = self.root / "local" / "memory" / "session-ledger"
+        self.assertFalse(ledger_dir.exists())
+        status = self.store.status("empty-session")
+        self.assertEqual(status["integrity"], "ok")
+        self.assertFalse(ledger_dir.exists())
+
+    def test_malformed_persisted_parent_is_reported_not_raised(self) -> None:
+        self.store.append("malformed-demo", "message", {"content": "original"})
+        path = (
+            self.root
+            / "local"
+            / "memory"
+            / "session-ledger"
+            / "malformed-demo.jsonl"
+        )
+        row = json.loads(path.read_text(encoding="utf-8").strip())
+        row["parent_id"] = {"unexpected": True}
+        path.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+        result = self.store.verify("malformed-demo")
+        self.assertEqual(result["integrity"], "failed")
+        self.assertTrue(any("parent_id 格式非法" in item for item in result["errors"]))
 
     def test_language_neutral_schema_stays_in_sync(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
