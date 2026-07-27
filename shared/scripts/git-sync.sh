@@ -49,7 +49,6 @@ if ! git diff --cached --quiet; then
     git commit -m "${MESSAGE}"
     COMMIT_CREATED="yes"
 fi
-COMMIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
 
 git fetch origin
 REMOTE_MERGED="no remote branch"

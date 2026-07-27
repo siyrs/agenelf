@@ -22,7 +22,6 @@ fi
 LOG_FILE="${ROOT_DIR}/logs/evolution.log"
 BACKUP_DIR="${ROOT_DIR}/data/app-backups"
 TREE_DIGEST="${SCRIPT_DIR}/tree_digest.py"
-TEST_RUNNER="${SCRIPT_DIR}/run_candidate_tests.py"
 
 REQ_ID="${1:-}"
 if [[ -z "${REQ_ID}" ]]; then
