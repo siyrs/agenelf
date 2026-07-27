@@ -1,0 +1,73 @@
+name: Node Runtime CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - name: Install locked dependency-free workspace
+        run: npm ci --ignore-scripts
+      - name: Check native TypeScript syntax
+        run: npm run node:check
+      - name: Run Node unit and integration tests
+        run: npm run node:test
+      - name: Validate Node Compose topology
+        run: |
+          cp .env.example .env
+          mkdir -p local/context local/memory local/self data logs workspace repair-space
+          touch local/profile.yaml local/preferences.yaml
+          cp local/node-runner.example.json local/node-runner.json
+          docker compose -f docker-compose.node.yml config > /tmp/agenelf-node-compose.yml
+          grep -q 'agenelf-node:' /tmp/agenelf-node-compose.yml
+          grep -q 'node-runner:' /tmp/agenelf-node-compose.yml
+      - name: Build Node production image
+        run: docker build -f Dockerfile.node -t agenelf-node:ci .
+      - name: Smoke Node API container
+        env:
+          AGENELF_API_TOKEN: node-ci-token
+        run: |
+          docker run -d --rm --name agenelf-node-ci \
+            -e AGENELF_API_TOKEN=node-ci-token \
+            -p 127.0.0.1:18080:8000 \
+            agenelf-node:ci
+          trap 'docker rm -f agenelf-node-ci >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18080/health && break
+            sleep 1
+          done
+          curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:18080/status | grep -q 'node-typescript'
+
+  node-supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+      - run: npm ci --ignore-scripts
+      - name: Assert no runtime npm dependencies
+        run: |
+          node -e 'const p=require("./package.json"); if (Object.keys(p.dependencies||{}).length) process.exit(1)'
+      - name: Audit npm lock
+        run: npm audit --omit=dev --audit-level=high
+      - name: Generate npm SBOM
+        run: npm sbom --sbom-format cyclonedx > node-sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-sbom
+          path: node-sbom.json
+          retention-days: 30

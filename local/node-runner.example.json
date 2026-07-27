@@ -1,0 +1,10 @@
+{
+  "roots": {
+    "workspace": "workspace",
+    "repair-space": "repair-space"
+  },
+  "commands": {
+    "docker-ps": ["docker", "ps", "--format", "{{json .}}"],
+    "compose-status": ["docker", "compose", "ps", "--format", "json"]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "agenelf.node.runtime",
+  "name": "Agenelf Node Runtime",
+  "description": "Node.js 24 原生 TypeScript Agent、API、CLI、Event Core 与安全队列协议。",
+  "version": "0.9.0",
+  "kind": "context",
+  "trust": "builtin",
+  "path": "docs/NODE_MIGRATION.md",
+  "capabilities": ["agent.runtime", "agent.events", "agent.session_ledger", "agent.workflow", "server.operations"]
+}
