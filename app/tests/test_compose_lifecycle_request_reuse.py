@@ -47,7 +47,7 @@ class ComposeLifecycleRequestReuseTest(unittest.TestCase):
             raise AssertionError(text)
         return match.group(0)
 
-    def test_identical_change_reuses_one_request_and_has_no_bash_only_instruction(self) -> None:
+    def test_identical_change_reuses_one_request_with_windows_first_guidance(self) -> None:
         first = compose_lifecycle.down_compose_project(
             "primary",
             "vpn",
@@ -67,7 +67,8 @@ class ComposeLifecycleRequestReuseTest(unittest.TestCase):
         self.assertIn("审批通过 op-", first)
         self.assertIn("approve.ps1", first)
         self.assertIn("scripts/approve.py", first)
-        self.assertNotIn("bash scripts/approve.sh", first)
+        self.assertIn("bash scripts/approve.sh", first)
+        self.assertLess(first.index("approve.ps1"), first.index("bash scripts/approve.sh"))
         self.assertEqual(
             len(list((self.root / "data" / "ops-requests").glob("op-*.json"))),
             1,
