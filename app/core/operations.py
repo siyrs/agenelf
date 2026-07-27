@@ -239,7 +239,6 @@ def audit(event: str, detail: str, root: Path | None = None) -> None:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{now_iso()}] [{event}] {detail}\n")
     except OSError:
-        # Auditing must never crash the chat path. The runner has its own audit.
         pass
 
 
@@ -381,14 +380,15 @@ def submit_operation(
 
 
 def approval_instructions(operation_id: str) -> str:
-    """Return platform-neutral, owner-only approval guidance."""
+    """Return owner-only approval guidance with Windows-first cross-platform options."""
 
     operation_id = _validate_operation_id(operation_id)
     return (
         f"当前 Agenelf CLI：/approve {operation_id}\n"
         f"中文输入：审批通过 {operation_id}\n"
         f"Windows PowerShell 备用：.\\scripts\\approve.ps1 {operation_id} approve\n"
-        f"跨平台 Python 备用：python scripts/approve.py {operation_id} approve"
+        f"跨平台 Python 备用：python scripts/approve.py {operation_id} approve\n"
+        f"Linux/macOS Bash 兼容：bash scripts/approve.sh {operation_id} approve"
     )
 
 
