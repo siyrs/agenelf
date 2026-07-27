@@ -154,6 +154,7 @@ services:
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/approval-commands:/agenelf/data/approval-commands:ro
       - ./data/approval-results:/agenelf/data/approval-results:ro
+      - ./data/validation-requests:/agenelf/data/validation-requests:rw
       - ./data/validation-results:/agenelf/data/validation-results:ro
       - ./data/repair-results:/agenelf/data/repair-results:ro
       - ./data/runner-health:/agenelf/data/runner-health:ro
@@ -192,6 +193,8 @@ services:
       - ./data/ops-results:/agenelf/data/ops-results:ro
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/approval-commands:/agenelf/data/approval-commands:ro
+      - ./data/validation-requests:/agenelf/data/validation-requests:rw
+      - ./data/validation-results:/agenelf/data/validation-results:ro
       - ./data/runner-health:/agenelf/data/runner-health:ro
       - ./logs:/agenelf/logs:rw
       - approval-key:/agenelf/approval:ro
@@ -273,22 +276,25 @@ services:
     mem_limit: 256m
 
   validation-runner:
-    <<: *python-runtime
-    command: [python, /agenelf/scripts/runner_supervisor.py, --name, validation-runner, --heartbeat-interval, "1", --, python, /agenelf/scripts/validation_runner.py, --interval, "1"]
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    command: [node, node/apps/validation-runner/src/main.ts]
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
-      <<: *python-env
-      AGENELF_LOCAL_DIR: /agenelf/local
+      AGENELF_ROOT: /agenelf
       AGENELF_VALIDATION_FILE: /agenelf/local/validation.yaml
+      AGENELF_VALIDATION_INTERVAL_MS: 1000
     volumes:
-      - ./app:/agenelf/app-fork:ro
-      - ./scripts:/agenelf/scripts:ro
-      - ./policy:/agenelf/policy:ro
+      - ./node:/agenelf/node:ro
       - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
       - ./data/validation-requests:/agenelf/data/validation-requests:ro
       - ./data/validation-results:/agenelf/data/validation-results:rw
       - ./data/validation-locks:/agenelf/data/validation-locks:rw
       - ./data/runner-health:/agenelf/data/runner-health:rw
       - ./logs:/agenelf/logs:rw
+    <<: *secure
+    restart: unless-stopped
 
   repair-runner:
     <<: *python-runtime
