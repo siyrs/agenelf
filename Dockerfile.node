@@ -9,8 +9,13 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --omit=dev
 
 COPY node ./node
+COPY local/validation.example.yaml ./local/validation.yaml
 
-RUN chown -R node:node /agenelf
+RUN mkdir -p \
+      local/prompts local/memory local/self \
+      data/validation-requests data/validation-results data/validation-locks data/runner-health \
+      data/node-tasks data/node-runner-requests data/node-runner-results logs workspace \
+    && chown -R node:node /agenelf
 USER node
 
 CMD ["node", "node/apps/api/src/main.ts"]
