@@ -12,6 +12,7 @@
     "node:start": "node node/apps/api/src/main.ts",
     "node:cli": "node node/apps/cli/src/main.ts",
     "node:runner": "node node/apps/runner/src/main.ts",
+    "node:validation-runner": "node node/apps/validation-runner/src/main.ts",
     "test:node": "npm run node:check && npm run node:test"
   }
 }
