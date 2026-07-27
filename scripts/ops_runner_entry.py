@@ -18,7 +18,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from ops_runner import _atomic_json, _read_json, now_iso  # noqa: E402
+from ops_runner import CommandResult, _atomic_json, _read_json, now_iso  # noqa: E402,F401
 from unified_ops_runner import UnifiedOpsRunner, _sanitize_text  # noqa: E402
 from core import operations  # noqa: E402
 
