@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenelf.local/contracts/agent-event-envelope.schema.json",
+  "title": "Agenelf Agent Lifecycle Event Envelope",
+  "description": "Versioned event envelope shared by Agent Core, SSE, CLI, audit and future Node.js/RPC implementations.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "session_id",
+    "run_id",
+    "seq",
+    "type",
+    "origin",
+    "ts",
+    "transient",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^aevt-[0-9a-f]{20}$"
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run-[0-9a-f]{16}$"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "approval.required",
+        "approval.resolved",
+        "message.completed",
+        "message.delta",
+        "reasoning.completed",
+        "reasoning.delta",
+        "reasoning.started",
+        "run.cancelled",
+        "run.checkpointed",
+        "run.compacted",
+        "run.failed",
+        "run.settled",
+        "run.started",
+        "runner.completed",
+        "runner.started",
+        "tool.completed",
+        "tool.delta",
+        "tool.preflight",
+        "tool.started",
+        "turn.started"
+      ]
+    },
+    "origin": {
+      "type": "string",
+      "enum": [
+        "agent_skill",
+        "migration",
+        "owner",
+        "runner",
+        "runtime"
+      ]
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "transient": {
+      "type": "boolean"
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}
