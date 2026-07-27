@@ -1,9 +1,14 @@
 """File-backed operation queue shared by the Agent and the privileged runner.
 
 The LLM-facing Agent can only *propose* operations by writing immutable request
-files.  A separate deterministic runner owns SSH credentials and writes result
-files.  Human approval decisions are stored in another directory mounted
+files. A separate deterministic runner owns SSH credentials and writes result
+files. Human approval decisions are stored in another directory mounted
 read-only into the Agent container.
+
+Operation requests are time-bounded and identical unfinished requests are
+reused. This prevents an old approval from authorizing a stale change and keeps
+repeated model/tool attempts from creating an unbounded pile of duplicate
+requests.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +30,89 @@ RISK_FORBIDDEN = "forbidden"
 VALID_RISKS = {RISK_READ, RISK_CHANGE, RISK_PRIVILEGED, RISK_FORBIDDEN}
 
 _ID_RE = re.compile(r"op-[0-9a-f]{16}")
+_DEFAULT_TTL_SECONDS = {
+    RISK_READ: 120,
+    RISK_CHANGE: 1800,
+    RISK_PRIVILEGED: 900,
+}
+_TTL_ENV = {
+    RISK_READ: "AGENELF_OPERATION_READ_TTL_SECONDS",
+    RISK_CHANGE: "AGENELF_OPERATION_CHANGE_TTL_SECONDS",
+    RISK_PRIVILEGED: "AGENELF_OPERATION_PRIVILEGED_TTL_SECONDS",
+}
+_MAX_TTL_SECONDS = 86_400
 
 
-def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+def _now(at: datetime | None = None) -> datetime:
+    value = at or datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def now_iso(at: datetime | None = None) -> str:
+    return _now(at).isoformat(timespec="seconds")
+
+
+def _parse_time(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
+
+
+def request_ttl_seconds(risk: str, explicit: object | None = None) -> int:
+    """Resolve a bounded request lifetime for one effective risk level."""
+
+    normalized = str(risk or "").strip().lower()
+    default = _DEFAULT_TTL_SECONDS.get(normalized, _DEFAULT_TTL_SECONDS[RISK_CHANGE])
+    if explicit is None:
+        explicit = os.environ.get(_TTL_ENV.get(normalized, ""), default)
+    return _bounded_int(explicit, default, 15, _MAX_TTL_SECONDS)
+
+
+def request_expiry(request: dict[str, Any]) -> datetime | None:
+    """Return the explicit or legacy-derived request expiry timestamp."""
+
+    explicit = _parse_time(request.get("expires_at"))
+    if explicit is not None:
+        return explicit
+    created = _parse_time(request.get("created_at"))
+    if created is None:
+        return None
+    risk = str(request.get("risk", RISK_CHANGE)).strip().lower()
+    ttl = request_ttl_seconds(risk, request.get("ttl_seconds"))
+    return created + timedelta(seconds=ttl)
+
+
+def request_expired(
+    request: dict[str, Any],
+    *,
+    at: datetime | None = None,
+    fail_closed: bool = False,
+) -> bool:
+    expiry = request_expiry(request)
+    if expiry is None:
+        return bool(fail_closed)
+    return _now(at) > expiry
+
+
+def decision_expired(decision: dict[str, Any] | None, *, at: datetime | None = None) -> bool:
+    if not decision:
+        return False
+    expiry = _parse_time(decision.get("expires_at"))
+    return expiry is None or _now(at) > expiry
 
 
 def runtime_root() -> Path:
@@ -107,7 +191,7 @@ _POLICY_RISK_ORDER = {
 
 
 def _policy_evaluation(capability: str, operation: str) -> dict[str, Any] | None:
-    """咨询策略引擎；引擎不可用或调用失败时返回 None（降级为既有行为）。"""
+    """Consult the policy engine; return None when it is unavailable."""
 
     try:
         from core.policy import PolicyEngine  # type: ignore[import-not-found]
@@ -116,8 +200,6 @@ def _policy_evaluation(capability: str, operation: str) -> dict[str, Any] | None
     try:
         engine = PolicyEngine()
         if getattr(engine, "degraded", False):
-            # 策略文件缺失/损坏 → 视为引擎不可用，回退既有行为；
-            # 只有健康引擎的判定才具有约束力（兼容未部署 policy/ 的环境）
             return None
         result = engine.evaluate(capability, operation, subject="agent")
     except Exception:
@@ -126,11 +208,7 @@ def _policy_evaluation(capability: str, operation: str) -> dict[str, Any] | None
 
 
 def _strictest_risk(declared: str, evaluation: dict[str, Any]) -> str:
-    """取既有判定与策略判定中更严格的风险级别（既有行为为下限）。
-
-    策略判定为 irreversible/forbidden 时，本执行面的风险词表无法安全表达，
-    直接拒绝提交（失败关闭），而不是静默降级。
-    """
+    """Return the stricter of the declared and policy-evaluated risks."""
 
     policy_risk = str(evaluation.get("risk") or "").lower().strip()
     if policy_risk in ("irreversible", RISK_FORBIDDEN):
@@ -142,7 +220,6 @@ def _strictest_risk(declared: str, evaluation: dict[str, Any]) -> str:
     ):
         effective = policy_risk
     if effective == RISK_READ and evaluation.get("auto_execute") is False:
-        # 策略禁止自动执行的读操作必须升级为需审批的变更级。
         effective = RISK_CHANGE
     return effective
 
@@ -162,8 +239,67 @@ def audit(event: str, detail: str, root: Path | None = None) -> None:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{now_iso()}] [{event}] {detail}\n")
     except OSError:
-        # Auditing must never crash the chat path.  The runner has its own audit.
+        # Auditing must never crash the chat path. The runner has its own audit.
         pass
+
+
+def _request_payload_matches(request: dict[str, Any], fingerprint: str) -> bool:
+    parameters = request.get("parameters", {})
+    if not isinstance(parameters, dict):
+        return False
+    payload = canonical_payload(
+        str(request.get("capability", "")),
+        str(request.get("operation", "")),
+        str(request.get("target", "")),
+        parameters,
+    )
+    return payload_fingerprint(payload) == fingerprint == str(request.get("fingerprint", ""))
+
+
+def find_reusable_operation(
+    payload: dict[str, Any],
+    risk: str,
+    *,
+    root: Path | None = None,
+    at: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Find an identical non-terminal request that is still safe to reuse."""
+
+    paths = queue_paths(root)
+    directory = paths["requests"]
+    if not directory.is_dir():
+        return None
+    fingerprint = payload_fingerprint(payload)
+    candidates = sorted(
+        directory.glob("op-*.json"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        request = read_json(path)
+        if not request or request.get("id") != path.stem:
+            continue
+        if str(request.get("risk", "")) != risk:
+            continue
+        if not _request_payload_matches(request, fingerprint):
+            continue
+        request_id = str(request["id"])
+        if (paths["results"] / f"{request_id}.json").is_file():
+            continue
+        if request_expired(request, at=at, fail_closed=True):
+            continue
+        decision = read_json(paths["decisions"] / f"{request_id}.json")
+        if decision:
+            state = str(decision.get("decision", ""))
+            if state == "deny":
+                continue
+            if state in {"approve", "collecting"} and decision_expired(decision, at=at):
+                continue
+        reused = dict(request)
+        reused["reused_existing"] = True
+        reused["reuse_reason"] = "identical_unfinished_request"
+        return reused
+    return None
 
 
 def submit_operation(
@@ -174,8 +310,11 @@ def submit_operation(
     risk: str,
     summary: str,
     root: Path | None = None,
+    *,
+    ttl_seconds: int | None = None,
+    deduplicate: bool = True,
 ) -> dict[str, Any]:
-    """Create an operation request with an approval-bound fingerprint."""
+    """Create or reuse an approval-bound, time-limited operation request."""
 
     risk = str(risk).lower().strip()
     if risk not in VALID_RISKS:
@@ -201,6 +340,18 @@ def submit_operation(
 
     payload = canonical_payload(capability, operation, target, parameters)
     json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    if deduplicate:
+        reusable = find_reusable_operation(payload, risk, root=root)
+        if reusable is not None:
+            audit(
+                "operation_reused",
+                f"{reusable['id']} {capability}.{operation} target={target} risk={risk}",
+                root,
+            )
+            return reusable
+
+    created = _now()
+    ttl = request_ttl_seconds(risk, ttl_seconds)
     operation_id = f"op-{uuid.uuid4().hex[:16]}"
     request = {
         "schema_version": 1,
@@ -209,7 +360,9 @@ def submit_operation(
         "risk": risk,
         "summary": str(summary).strip(),
         "fingerprint": payload_fingerprint(payload),
-        "created_at": now_iso(),
+        "created_at": now_iso(created),
+        "expires_at": now_iso(created + timedelta(seconds=ttl)),
+        "ttl_seconds": ttl,
         "created_by": "agenelf-agent",
     }
     if evaluation:
@@ -221,10 +374,22 @@ def submit_operation(
     _atomic_write_json(path, request, exclusive=True)
     audit(
         "operation_submitted",
-        f"{operation_id} {capability}.{operation} target={target} risk={risk}",
+        f"{operation_id} {capability}.{operation} target={target} risk={risk} ttl={ttl}",
         root,
     )
     return request
+
+
+def approval_instructions(operation_id: str) -> str:
+    """Return platform-neutral, owner-only approval guidance."""
+
+    operation_id = _validate_operation_id(operation_id)
+    return (
+        f"当前 Agenelf CLI：/approve {operation_id}\n"
+        f"中文输入：审批通过 {operation_id}\n"
+        f"Windows PowerShell 备用：.\\scripts\\approve.ps1 {operation_id} approve\n"
+        f"跨平台 Python 备用：python scripts/approve.py {operation_id} approve"
+    )
 
 
 def get_operation(operation_id: str, root: Path | None = None) -> dict[str, Any]:
@@ -245,21 +410,43 @@ def get_operation(operation_id: str, root: Path | None = None) -> dict[str, Any]
             "result": result,
         }
 
+    expiry = request_expiry(request)
+    if request_expired(request, fail_closed=True):
+        return {
+            "id": operation_id,
+            "status": "expired",
+            "request": request,
+            "expired_at": expiry.isoformat(timespec="seconds") if expiry else None,
+            "next_action": "重新提交当前操作以生成新的精确请求和审批窗口",
+        }
+
     decision = read_json(paths["decisions"] / f"{operation_id}.json")
     risk = request.get("risk")
     if decision:
-        decision_value = decision.get("decision")
-        status = "approved" if decision_value == "approve" else "denied"
+        decision_value = str(decision.get("decision", ""))
+        if decision_value == "deny":
+            status = "denied"
+        elif decision_value in {"approve", "collecting"} and decision_expired(decision):
+            status = "approval_expired"
+        elif decision_value == "approve":
+            status = "approved"
+        elif decision_value == "collecting":
+            status = "collecting_approval"
+        else:
+            status = "awaiting_approval"
     elif risk == RISK_READ:
         status = "queued"
     else:
         status = "awaiting_approval"
-    return {
+    value = {
         "id": operation_id,
         "status": status,
         "request": request,
         "decision": decision,
     }
+    if status == "approval_expired":
+        value["next_action"] = "原审批窗口已过期；重新提交操作，不要复用旧请求"
+    return value
 
 
 def wait_for_result(
@@ -271,14 +458,17 @@ def wait_for_result(
     """Wait briefly for the runner, mainly for read-only chat operations."""
 
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    terminal = {
+        "denied",
+        "failed",
+        "blocked",
+        "expired",
+        "approval_expired",
+        "not_found",
+    }
     while True:
         current = get_operation(operation_id, root=root)
-        if current.get("result") is not None or current.get("status") in {
-            "denied",
-            "failed",
-            "blocked",
-            "not_found",
-        }:
+        if current.get("result") is not None or current.get("status") in terminal:
             return current
         if time.monotonic() >= deadline:
             return current
