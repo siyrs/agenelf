@@ -49,23 +49,61 @@ jobs:
           cp local/node-runner.example.json local/node-runner.json
           mkdir -p data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
       - name: Validate default hybrid production topology
+        shell: bash
         run: |
-          docker compose config > /tmp/agenelf-production-compose.yml
-          docker compose config --services > /tmp/agenelf-production-services.txt
-          grep -qx 'agenelf' /tmp/agenelf-production-services.txt
-          grep -qx 'legacy-agent' /tmp/agenelf-production-services.txt
-          grep -qx 'approval-runner' /tmp/agenelf-production-services.txt
-          grep -qx 'ops-runner' /tmp/agenelf-production-services.txt
-          grep -qx 'validation-runner' /tmp/agenelf-production-services.txt
-          grep -qx 'repair-runner' /tmp/agenelf-production-services.txt
-          grep -qx 'self-upgrade-runner' /tmp/agenelf-production-services.txt
-          grep -q 'Dockerfile.node' /tmp/agenelf-production-compose.yml
-          grep -q 'AGENELF_LEGACY_API_URL' /tmp/agenelf-production-compose.yml
+          set -euo pipefail
+          docker compose config --format json > /tmp/agenelf-production-compose.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const config = JSON.parse(fs.readFileSync('/tmp/agenelf-production-compose.json', 'utf8'));
+          const services = config.services || {};
+          const required = [
+            'agenelf', 'legacy-agent', 'approval-key-init', 'approval-runner',
+            'ops-runner', 'validation-runner', 'repair-runner', 'self-upgrade-runner'
+          ];
+          for (const name of required) {
+            if (!services[name]) throw new Error(`missing production service: ${name}`);
+          }
+          const node = services.agenelf;
+          const legacy = services['legacy-agent'];
+          const dockerfile = typeof node.build === 'object' ? String(node.build.dockerfile || '') : '';
+          if (!dockerfile.endsWith('Dockerfile.node')) throw new Error(`agenelf must build Dockerfile.node, got ${dockerfile}`);
+          const env = node.environment || {};
+          if (String(env.AGENELF_LEGACY_API_URL || '') !== 'http://legacy-agent:8000') {
+            throw new Error('Node API must use the internal legacy-agent URL');
+          }
+          if (!Array.isArray(node.ports) || !node.ports.length) throw new Error('Node API must expose the public port');
+          if (Array.isArray(legacy.ports) && legacy.ports.length) throw new Error('legacy-agent must not expose a host port');
+          const mounts = (service) => (service.volumes || []).map((item) => typeof item === 'string' ? item : `${item.source || ''}:${item.target || ''}:${item.read_only ? 'ro' : 'rw'}`);
+          const nodeMounts = mounts(node).join('\n');
+          if (nodeMounts.includes('local/secrets') || nodeMounts.includes('/agenelf/approval')) {
+            throw new Error('Node Agent must not receive secrets or approval keys');
+          }
+          if (!nodeMounts.includes('/agenelf/policy:ro') || !nodeMounts.includes('/agenelf/data/runner-health:ro')) {
+            throw new Error('Node Agent must retain read-only policy and runner-health observability');
+          }
+          if (services['approval-runner'].network_mode !== 'none') throw new Error('approval-runner must remain networkless');
+          if (services['repair-runner'].network_mode !== 'none') throw new Error('repair-runner must remain networkless');
+          const approvalMounts = mounts(services['approval-runner']).join('\n');
+          if (!approvalMounts.includes('/agenelf/approval:ro')) throw new Error('approval-runner must retain the read-only HMAC key');
+          const opsMounts = mounts(services['ops-runner']).join('\n');
+          if (!opsMounts.includes('/agenelf/local/secrets:ro')) throw new Error('only ops-runner should read server secrets');
+          console.log(`validated ${Object.keys(services).length} explicit production services`);
+          NODE
       - name: Validate rollback and optional Node runner topologies
+        shell: bash
         run: |
-          docker compose -f docker-compose.python.yml config >/tmp/agenelf-python-compose.yml
-          docker compose --profile node-runner config >/tmp/agenelf-node-runner-compose.yml
-          grep -q 'node-runner:' /tmp/agenelf-node-runner-compose.yml
+          set -euo pipefail
+          docker compose -f docker-compose.python.yml config --format json > /tmp/agenelf-python-compose.json
+          docker compose --profile node-runner config --format json > /tmp/agenelf-node-runner-compose.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const python = JSON.parse(fs.readFileSync('/tmp/agenelf-python-compose.json', 'utf8'));
+          const optional = JSON.parse(fs.readFileSync('/tmp/agenelf-node-runner-compose.json', 'utf8'));
+          if (!python.services?.agenelf || !python.services?.['approval-runner']) throw new Error('Python rollback topology incomplete');
+          if (!optional.services?.['node-runner']) throw new Error('optional Node runner profile missing');
+          if (optional.services['node-runner'].network_mode !== 'none') throw new Error('Node runner must remain networkless');
+          NODE
       - name: Build Node production image
         run: docker build -f Dockerfile.node -t agenelf-node:ci .
       - name: Smoke Node API container
