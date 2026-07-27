@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgenelfAgent } from "../packages/core/src/agent.ts";
@@ -9,6 +9,8 @@ import { SessionLedgerStore } from "../packages/core/src/session-ledger.ts";
 async function root() {
   const value = await mkdtemp(join(tmpdir(), "agenelf-agent-test-"));
   await mkdir(join(value, "node", "resources"), { recursive: true });
+  await mkdir(join(value, "local"), { recursive: true });
+  await writeFile(join(value, "local", "validation.yaml"), "checks: {}\nsuites: {}\n");
   return value;
 }
 
