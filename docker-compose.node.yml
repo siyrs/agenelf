@@ -1,0 +1,59 @@
+services:
+  agenelf-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    env_file: .env
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_HOST: 0.0.0.0
+      AGENELF_PORT: 8000
+    ports:
+      - "127.0.0.1:18000:8000"
+    volumes:
+      - ./node:/agenelf/node:ro
+      - ./web:/agenelf/web:ro
+      - ./docs:/agenelf/docs:ro
+      - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
+      - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
+      - ./local/context:/agenelf/local/context:ro
+      - ./local/memory:/agenelf/local/memory:rw
+      - ./local/self:/agenelf/local/self:rw
+      - ./data:/agenelf/data:rw
+      - ./logs:/agenelf/logs:rw
+      - ./workspace:/agenelf/workspace:rw
+      - ./repair-space:/agenelf/repair-space:rw
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  node-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    command: ["node", "node/apps/runner/src/main.ts"]
+    profiles: ["node-runner"]
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+    volumes:
+      - ./node:/agenelf/node:ro
+      - ./local/node-runner.json:/agenelf/local/node-runner.json:ro
+      - ./data/node-runner-requests:/agenelf/data/node-runner-requests:ro
+      - ./data/node-runner-results:/agenelf/data/node-runner-results:rw
+      - ./data/node-runner-locks:/agenelf/data/node-runner-locks:rw
+      - ./workspace:/agenelf/workspace:ro
+      - ./repair-space:/agenelf/repair-space:ro
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
