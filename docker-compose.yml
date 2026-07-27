@@ -44,6 +44,12 @@ services:
       AGENELF_REPOSITORIES_FILE: /agenelf/local/repositories.yaml
       AGENELF_SCRATCH_DIR: /agenelf/workspace/scratch
     expose: ["8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
     volumes:
       - ./app:/agenelf/app-fork:ro
       - ./app-tmp:/agenelf/app-tmp:rw
@@ -110,7 +116,7 @@ services:
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     depends_on:
       legacy-agent:
-        condition: service_started
+        condition: service_healthy
     environment: &node-env
       AGENELF_ROOT: /agenelf
       AGENELF_HOST: 0.0.0.0
