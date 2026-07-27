@@ -78,7 +78,20 @@ class AgentEventCoreTest(unittest.TestCase):
         self.assertIn("_privacy_warnings", event.payload)
 
         persisted = SessionLedgerStore(self.root).entries("privacy-events", limit=5)
-        self.assertEqual(persisted[0]["payload"]["agent_event"]["payload"], event.payload)
+        persisted_payload = persisted[0]["payload"]["agent_event"]["payload"]
+        self.assertEqual(persisted_payload["password"], event.payload["password"])
+        self.assertEqual(
+            persisted_payload["nested"]["token"],
+            event.payload["nested"]["token"],
+        )
+        self.assertEqual(
+            persisted_payload["nested"]["header"],
+            event.payload["nested"]["header"],
+        )
+        # Session Ledger intentionally performs a second privacy pass. Diagnostic
+        # warning wording may be normalized again, but sensitive business values
+        # must remain identically redacted and the outer ledger records warnings.
+        self.assertIn("_privacy_warnings", persisted[0]["payload"])
 
     def test_terminal_event_is_exactly_once(self) -> None:
         stream = RunEventStream(root=self.root, session_id="terminal-demo")
