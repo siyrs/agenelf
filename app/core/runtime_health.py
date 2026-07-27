@@ -359,7 +359,7 @@ def diagnose(
         and queue_clean
     )
     return {
-        "schema_version": 3,
+        "schema_version": 2,
         "generated_at": (at or now_utc()).astimezone(timezone.utc).isoformat(timespec="seconds"),
         "status": "healthy" if healthy else "degraded",
         "summary": (
