@@ -1,11 +1,10 @@
 """Composable server-operations capability.
 
-The Agent never owns SSH keys and never executes remote shell directly.  Every
-request is written to the operation queue and a deterministic ``ops-runner``
-process performs the actual SSH work.  Read-only requests can run automatically;
-changes require a host-side approval bound to the exact request fingerprint.
+The Agent never owns SSH keys and never executes remote shell directly. Every request
+is written to the operation queue and a deterministic ``ops-runner`` performs the actual
+SSH work. Read-only requests can run automatically; changes require an exact owner
+approval. Identical unfinished operations reuse one expiring request ID.
 """
-
 from __future__ import annotations
 
 import json
@@ -28,8 +27,8 @@ except ImportError:
 
 SKILL_META = {
     "name": "server_ops",
-    "description": "通过隔离的 SSH 运维执行器管理服务器、Docker、APT 与 systemd 服务。",
-    "version": "1.0.0",
+    "description": "通过隔离的 SSH 运维执行器管理服务器、Docker、APT 与 systemd 服务；支持请求过期和同载荷复用。",
+    "version": "1.1.0",
 }
 
 CAPABILITY_META = {
@@ -39,7 +38,7 @@ CAPABILITY_META = {
         "服务器巡检、APT 元数据更新、Docker 安装与容器查看、Compose 部署、"
         "systemd 服务查询/重启。可与验证、发布、代码修复能力组合。"
     ),
-    "version": "1.0.0",
+    "version": "1.1.0",
     "domain": "operations",
     "composes_with": ["software.validation", "software.release", "code.repair"],
     "operations": [
@@ -125,7 +124,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "install_docker",
-            "description": "通过 Ubuntu/Debian 官方仓库安装 docker.io 与 compose 插件。高权限操作，必须人类批准。",
+            "description": "通过 Ubuntu/Debian 仓库安装 Docker 与 Compose。高权限操作，必须人类批准。",
             "parameters": {
                 "type": "object",
                 "properties": {"target": {"type": "string"}},
@@ -140,6 +139,7 @@ TOOLS: list[dict[str, Any]] = [
             "description": (
                 "将 Compose YAML 部署到服务器受管目录。禁止 privileged、host namespace、"
                 "Docker Socket、设备映射和未授权绝对路径挂载；需人类批准。"
+                "相同未完成请求会复用同一个 op ID。"
             ),
             "parameters": {
                 "type": "object",
@@ -175,7 +175,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_server_operation",
-            "description": "查询运维请求的排队、待批准、执行成功或失败状态。",
+            "description": "查询运维请求的排队、待批准、执行成功、失败、过期或阻断状态。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -217,7 +217,7 @@ def _profile(target: str) -> dict[str, Any]:
     target = str(target or "").strip()
     profiles = load_servers()
     if target not in profiles:
-        raise ValueError(f"未配置服务器 {target!r}；请先复制 config/servers.example.yaml 为 config/servers.yaml")
+        raise ValueError(f"未配置服务器 {target!r}；请检查 local/servers.yaml")
     return profiles[target]
 
 
@@ -253,7 +253,7 @@ def _is_under(path: str, roots: list[str]) -> bool:
 
 
 def validate_compose(compose_yaml: str, profile: dict[str, Any]) -> dict[str, Any]:
-    """Validate the non-negotiable Compose red lines before queueing."""
+    """Validate non-negotiable Compose red lines before queueing."""
 
     if not isinstance(compose_yaml, str) or not compose_yaml.strip():
         raise ValueError("compose_yaml 不能为空")
@@ -307,7 +307,7 @@ def validate_compose(compose_yaml: str, profile: dict[str, Any]) -> dict[str, An
 def list_managed_servers() -> str:
     profiles = load_servers()
     if not profiles:
-        return "尚未配置服务器。请复制 config/servers.example.yaml 为 config/servers.yaml 并填写连接信息。"
+        return "尚未配置服务器。请检查 local/servers.yaml。"
     safe: list[dict[str, Any]] = []
     for name, profile in sorted(profiles.items()):
         safe.append(
@@ -322,6 +322,24 @@ def list_managed_servers() -> str:
             }
         )
     return json.dumps(safe, ensure_ascii=False, indent=2)
+
+
+def _change_message(request: dict[str, Any], target: str, operation: str, summary: str) -> str:
+    first = (
+        f"已复用相同未完成的运维请求：{request['id']}"
+        if request.get("reused_existing")
+        else f"运维请求已创建：{request['id']}"
+    )
+    return (
+        f"{first}\n"
+        f"风险级别：{request['risk']}\n"
+        f"目标：{target}\n"
+        f"操作：{operation}\n"
+        f"摘要：{summary}\n"
+        f"请求有效期至：{request.get('expires_at', '未知')}\n"
+        + operations.approval_instructions(str(request["id"]))
+        + "\n批准仅绑定本请求的目标、操作和参数；修改任何内容都必须重新申请。"
+    )
 
 
 def _submit(
@@ -341,22 +359,13 @@ def _submit(
         risk=_OPERATION_RISKS[operation],
         summary=summary,
     )
-    risk = request["risk"]
-    if risk == operations.RISK_READ:
+    if request["risk"] == operations.RISK_READ:
         state = operations.wait_for_result(
             request["id"],
             timeout_seconds=max(0, min(int(wait_seconds), 8)),
         )
         return json.dumps(state, ensure_ascii=False, indent=2)
-    return (
-        f"运维请求已创建：{request['id']}\n"
-        f"风险级别：{risk}\n"
-        f"目标：{target}\n"
-        f"操作：{operation}\n"
-        f"摘要：{summary}\n"
-        f"批准命令：bash scripts/approve.sh {request['id']} approve\n"
-        "批准仅绑定本请求的目标、操作和参数；修改任何内容都必须重新申请。"
-    )
+    return _change_message(request, target, operation, summary)
 
 
 def inspect_server(target: str, wait_seconds: int = 3) -> str:
@@ -452,9 +461,8 @@ def get_server_operation(operation_id: str, wait_seconds: int = 0) -> str:
     return json.dumps(state, ensure_ascii=False, indent=2)
 
 
-# Kept as a compatibility helper, but deliberately not exposed to the LLM.
-# It now permits read-only local diagnostics only. ``confirm=True`` can no
-# longer make an arbitrary command executable.
+# Compatibility helper, deliberately not exposed to the LLM. It permits only
+# read-only local diagnostics; confirm/auth_id cannot authorize arbitrary shell.
 def run_shell(command: str, confirm: bool = False, auth_id: str = "") -> str:
     del confirm, auth_id
     if permissions.classify_command(command) != "whitelist":

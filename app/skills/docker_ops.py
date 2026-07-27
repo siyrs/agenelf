@@ -1,9 +1,9 @@
 """Structured remote Docker operations backed by the deterministic SSH runner.
 
 The LLM-facing Agent never receives SSH credentials and never builds arbitrary remote
-shell commands. This skill only creates fingerprint-bound operation requests. The
-host-side unified runner validates the same target, operation, container and policy
-again before using the private SSH material.
+shell commands. This skill only creates fingerprint-bound, expiring operation requests.
+Identical unfinished changes reuse one request ID, while the host-side runner validates
+the target, operation, container and policy again before using private SSH material.
 """
 from __future__ import annotations
 
@@ -21,9 +21,9 @@ SKILL_META = {
     "name": "docker_ops",
     "description": (
         "通过隔离 SSH Runner 查看远程 Docker 日志和安全元数据、运行主人预配置的诊断检查，"
-        "并以精确审批方式重启容器；支持 servers.yaml 热更新。"
+        "并以精确审批方式重启容器；支持 servers.yaml 热更新和同载荷请求复用。"
     ),
-    "version": "1.0.0",
+    "version": "1.1.0",
 }
 
 CAPABILITY_META = {
@@ -33,7 +33,7 @@ CAPABILITY_META = {
         "面向已配置服务器的结构化 Docker 诊断与恢复能力。日志与 inspect 输出会脱敏；"
         "不开放任意 docker exec 或远程 Shell。"
     ),
-    "version": "1.0.0",
+    "version": "1.1.0",
     "domain": "operations",
     "operations": [
         {"name": "list_docker_runtime", "description": "查看目标 Docker 策略摘要", "risk": "read"},
@@ -132,6 +132,7 @@ TOOLS: list[dict[str, Any]] = [
             "description": (
                 "重启远程 Docker 容器并返回重启后的状态。会改变运行状态，"
                 "只创建绑定目标与参数的请求，必须由主人批准后 Runner 执行。"
+                "相同未完成请求会复用同一个 op ID。"
             ),
             "parameters": {
                 "type": "object",
@@ -148,7 +149,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_docker_operation",
-            "description": "查询 Docker 运维请求的排队、待批准、成功、失败或阻断状态。",
+            "description": "查询 Docker 运维请求的排队、待批准、成功、失败、过期或阻断状态。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -248,6 +249,25 @@ def _wait(value: Any, default: int = 3) -> int:
         return default
 
 
+def _change_message(request: dict[str, Any], target: str, operation: str, summary: str) -> str:
+    reused = bool(request.get("reused_existing"))
+    first = (
+        f"已复用相同未完成的 Docker 运维请求：{request['id']}"
+        if reused
+        else f"Docker 运维请求已创建：{request['id']}"
+    )
+    return (
+        f"{first}\n"
+        f"风险级别：{request['risk']}\n"
+        f"目标：{target}\n"
+        f"操作：{operation}\n"
+        f"摘要：{summary}\n"
+        f"请求有效期至：{request.get('expires_at', '未知')}\n"
+        + operations.approval_instructions(str(request["id"]))
+        + "\n批准只绑定本次目标、容器和参数；Runner 会在执行前再次校验。"
+    )
+
+
 def _submit(
     target: str,
     operation: str,
@@ -270,15 +290,7 @@ def _submit(
             request["id"], timeout_seconds=_wait(wait_seconds, 0)
         )
         return json.dumps(state, ensure_ascii=False, indent=2)
-    return (
-        f"Docker 运维请求已创建：{request['id']}\n"
-        f"风险级别：{request['risk']}\n"
-        f"目标：{target}\n"
-        f"操作：{operation}\n"
-        f"摘要：{summary}\n"
-        f"批准命令：bash scripts/approve.sh {request['id']} approve\n"
-        "批准只绑定本次目标、容器和参数；Runner 会在执行前再次校验。"
-    )
+    return _change_message(request, target, operation, summary)
 
 
 def list_docker_runtime(target: str) -> str:
@@ -302,6 +314,7 @@ def list_docker_runtime(target: str) -> str:
             "allowed_containers": profile.get("allowed_containers", "all-valid-names"),
             "docker_checks": check_items,
             "profiles_reload": "runner reloads servers.yaml before every queue scan",
+            "request_lifecycle": "identical unfinished requests reuse one expiring op ID",
         }
         return json.dumps(value, ensure_ascii=False, indent=2)
     except (ValueError, PermissionError) as exc:
