@@ -25,14 +25,7 @@
 
 ## 新运行方式
 
-分段续跑逻辑已并入 `Agent.chat` **单一主回路**（旧的 `Agent.chat` 与
-`core.continuous_chat` 双回路已合并，不再存在 `MethodType` 替换）。
-`tool_budget_continuation` 技能现在是纯配置壳：只把预算参数写入 agent 配置
-属性与 registry per-instance 状态，不再替换 `agent.chat`；
-`core/continuous_chat.py` 仅保留兼容导出（`configured_segments`、
-`LEGACY_EXHAUSTION_TEXT` 与 deprecated 的 `install_continuous_chat`  shim）。
-
-主回路把一次复杂任务拆成多个**有界工具段**：
+`tool_budget_continuation` 运行时把一次复杂任务拆成多个**有界工具段**：
 
 ```yaml
 agent:
@@ -96,6 +89,5 @@ AGENELF_MAX_TOOL_SEGMENTS=6 make chat
 - 技能升级后下一轮立即看到新工具；
 - 总预算耗尽时生成持久化检查点；
 - 不再返回旧的固定失败句；
-- 单一主回路无需安装步骤即具备分段续跑能力；
-- 运行时重复配置保持幂等（不再叠加包装层）；
+- 运行时重复加载保持幂等；
 - 配置和环境变量边界生效。
