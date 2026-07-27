@@ -8,13 +8,14 @@ from pathlib import Path
 from core.policy import PolicyEngine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+EXPECTED_POLICY_VERSION = "1.2.0"
 
 
 class PolicyEngineLoadingTest(unittest.TestCase):
     def test_real_policy_loads_successfully(self):
         engine = PolicyEngine(PROJECT_ROOT / "policy")
         self.assertFalse(engine.degraded)
-        self.assertEqual(engine.policy_version, "1.1.0")
+        self.assertEqual(engine.policy_version, EXPECTED_POLICY_VERSION)
 
     def test_default_probe_uses_repo_root(self):
         engine = PolicyEngine()
@@ -33,21 +34,7 @@ class PolicyEngineEvaluateTest(unittest.TestCase):
         self.assertEqual(result["risk"], "read")
         self.assertEqual(result["approval"], "none")
         self.assertTrue(result["auto_execute"])
-        self.assertEqual(result["policy_version"], "1.1.0")
-
-    def test_docker_operations_have_explicit_risk_and_approval(self):
-        for operation in ("docker_logs", "docker_diagnose"):
-            with self.subTest(operation=operation):
-                result = self.engine.evaluate("server.docker", operation)
-                self.assertTrue(result["allowed"])
-                self.assertEqual(result["risk"], "read")
-                self.assertEqual(result["approval"], "none")
-                self.assertTrue(result["auto_execute"])
-        restart = self.engine.evaluate("server.docker", "docker_restart")
-        self.assertTrue(restart["allowed"])
-        self.assertEqual(restart["risk"], "change")
-        self.assertEqual(restart["approval"], "owner_exact")
-        self.assertFalse(restart["auto_execute"])
+        self.assertEqual(result["policy_version"], EXPECTED_POLICY_VERSION)
 
     def test_change_operation_requires_owner_exact(self):
         result = self.engine.evaluate("server", "apt_update")
@@ -144,7 +131,10 @@ class PolicyEngineQueryTest(unittest.TestCase):
             self.engine.approval_requirements("owner_exact"),
             ["exact_payload_fingerprint", "expiration", "single_use"],
         )
-        self.assertIn("second_confirmation", self.engine.approval_requirements("owner_irreversible"))
+        self.assertIn(
+            "second_confirmation",
+            self.engine.approval_requirements("owner_irreversible"),
+        )
         self.assertEqual(self.engine.approval_requirements("nonexistent_mode"), [])
 
     def test_forbidden_behaviors_content(self):

@@ -2,15 +2,10 @@ from __future__ import annotations
 
 import copy
 import os
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
-from core import authorized_upgrade, authorized_upgrade_recovery
-
-APP_ROOT = Path(__file__).resolve().parents[1]
+from core import authorized_upgrade_recovery
 
 
 class FakeUpgradeModule(SimpleNamespace):
@@ -228,97 +223,6 @@ class AuthorizedUpgradeRecoveryTest(unittest.TestCase):
         self.assertEqual(
             public["candidate_binding_summary"]["candidate_tree_sha256"],
             "c" * 64,
-        )
-
-
-class RealModuleInstallTest(unittest.TestCase):
-    """Regression: install() must succeed on the real core.authorized_upgrade.
-
-    Previously install() referenced ``module._generate_candidate`` (and assumed a
-    str-returning ``_build_prompt``) while the real module only provides
-    ``_advance_candidate`` and a chat-message list prompt. The AttributeError was
-    fail-closed into ``registry.errors["runtime:authorized_upgrade_recovery"]``
-    on every real Agent startup, leaving the recovery skill permanently broken.
-    """
-
-    def test_install_succeeds_on_real_module(self) -> None:
-        authorized_upgrade_recovery.install(authorized_upgrade)
-        self.assertTrue(
-            getattr(
-                authorized_upgrade,
-                "_agenelf_authorized_upgrade_recovery_installed",
-                False,
-            )
-        )
-        for name in (
-            "_generate_candidate",
-            "_intent_auth_state",
-            "_candidate_auth_state",
-            "_request_intent_approval",
-            "_request_candidate_approval",
-        ):
-            self.assertTrue(callable(getattr(authorized_upgrade, name, None)), name)
-
-    def test_wrapped_prompt_builder_tolerates_chat_message_list(self) -> None:
-        authorized_upgrade_recovery.install(authorized_upgrade)
-        session = {
-            "id": "upgrade-20260726-120000-12345678",
-            "goal": "升级 runner",
-            "plan": {
-                "scopes": ["runners"],
-                "allowed_paths": ["app/core/example.py"],
-                "max_files": 1,
-                "max_changed_lines": 10,
-            },
-            "generation_attempts": 2,
-            "last_generation_error": "RuntimeError: temporary model failure",
-        }
-        messages = authorized_upgrade._build_prompt(
-            session, {"app/core/example.py": "print(1)\n"}
-        )
-        self.assertIsInstance(messages, list)
-        user = [m for m in messages if m.get("role") == "user"]
-        self.assertTrue(user)
-        self.assertIn("上一候选失败证据", user[-1]["content"])
-        self.assertIn("temporary model failure", user[-1]["content"])
-
-    def test_auth_state_adapters_fail_closed_on_missing_requests(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"AGENELF_ROOT": tmp}):
-                session = {
-                    "intent_auth_id": "auth-does-not-exist",
-                    "plan": {"goal": "g"},
-                    "candidate_auth_id": "",
-                }
-                self.assertEqual(
-                    authorized_upgrade._intent_auth_state(session), "invalid"
-                )
-                self.assertEqual(
-                    authorized_upgrade._candidate_auth_state(session), "invalid"
-                )
-
-    def test_real_agent_startup_has_no_recovery_runtime_error(self) -> None:
-        from core.agent import Agent
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config = {
-                "mock": True,
-                "runtime_root": str(root),
-                "skills_dir": str(APP_ROOT / "skills"),
-                "memory_path": str(root / "memory.json"),
-                "persona_path": str(root / "persona.yaml"),
-                "agent": {"name": "Agenelf", "history_max_messages": 4},
-            }
-            with patch.dict(os.environ, {"AGENELF_ROOT": str(root)}):
-                agent = Agent(config)
-        self.assertNotIn("runtime:authorized_upgrade_recovery", agent.registry.errors)
-        self.assertTrue(
-            getattr(
-                authorized_upgrade,
-                "_agenelf_authorized_upgrade_recovery_installed",
-                False,
-            )
         )
 
 

@@ -16,9 +16,6 @@ _DEFAULT_MAX_ATTEMPTS = 3
 _MAX_ATTEMPTS_LIMIT = 6
 _RETRIABLE_GENERATION_STATUSES = {
     "generating",
-    # core.authorized_upgrade._advance_candidate persists this status while the
-    # model generates/tests a candidate; a crash leaves it on disk.
-    "generating_candidate",
     "generation_failed",
     "tests_failed",
     "candidate_denied",
@@ -84,32 +81,20 @@ def install(module: Any) -> None:
         return
     original_generate: Callable[..., dict[str, Any]] = module._generate_candidate
     original_advance: Callable[..., dict[str, Any]] = module.advance_session
-    original_build_prompt: Callable[..., Any] = module._build_prompt
+    original_build_prompt: Callable[..., str] = module._build_prompt
     original_public_status: Callable[..., dict[str, Any]] = module.public_status
 
-    def build_prompt(session: dict[str, Any], context: dict[str, str]) -> Any:
+    def build_prompt(session: dict[str, Any], context: dict[str, str]) -> str:
         prompt = original_build_prompt(session, context)
         attempts = int(session.get("generation_attempts", 0) or 0)
         evidence = _failure_evidence(session)
-        if attempts <= 1 or not evidence:
-            return prompt
-        suffix = (
-            "\n\n【上一候选失败证据】\n"
-            + evidence
-            + "\n请修复实现根因；不得修改既有测试、缩小授权红线或重复上一候选。"
-        )
-        if isinstance(prompt, list):
-            # The real core.authorized_upgrade._build_prompt returns chat
-            # messages; carry the evidence in the last user message instead of
-            # assuming a plain string prompt.
-            messages = [dict(message) for message in prompt]
-            for message in reversed(messages):
-                if message.get("role") == "user":
-                    message["content"] = str(message.get("content", "")) + suffix
-                    return messages
-            messages.append({"role": "user", "content": suffix.strip()})
-            return messages
-        return prompt + suffix
+        if attempts > 1 and evidence:
+            prompt += (
+                "\n\n【上一候选失败证据】\n"
+                + evidence
+                + "\n请修复实现根因；不得修改既有测试、缩小授权红线或重复上一候选。"
+            )
+        return prompt
 
     def generate(agent: Any, session: dict[str, Any]) -> dict[str, Any]:
         current = module.load_session(str(session["id"]))
@@ -198,11 +183,6 @@ def install(module: Any) -> None:
                 session["next_action"] = f"/approve {session.get('intent_auth_id', '')}"
                 module.save_session(session)
                 return session
-            if state == "approved":
-                # Route the first candidate generation through the bounded-retry
-                # path as well, so transient model/test failures land in a
-                # retriable state instead of a dead "failed" one.
-                return generate(agent, session)
 
         return original_advance(agent, session_id, wait_seconds=wait_seconds)
 

@@ -1,13 +1,13 @@
 schema_version: 1
 policy_id: agenelf-safety-constraints
-policy_version: 1.1.0
+policy_version: 1.2.0
 status: active
 
 metadata:
-  owner_authority: "主人拥有任务目标、授权、暂停和撤销权"
-  purpose: "让 Agenelf 在可审计、最小权限和证据驱动的边界内完成真实任务并持续改进"
+  owner_authority: "主人拥有任务目标、授权、暂停和撤销权，也可以在永久红线之外精确授权 Agenelf 升级自身代码"
+  purpose: "让 Agenelf 在可审计、最小权限、证据驱动和主人可控的边界内完成真实任务并持续改进"
   consciousness_claim: false
-  last_reviewed: "2026-07-25"
+  last_reviewed: "2026-07-26"
 
 principles:
   - id: owner_intent_fidelity
@@ -17,13 +17,15 @@ principles:
   - id: no_implicit_trust
     rule: "不因本机、内网、历史会话、长期记忆或自我生成内容而自动获得信任"
   - id: separation_of_duties
-    rule: "Agent 负责理解和提议，主人负责裁决高风险操作，确定性 Runner 负责执行并输出证据"
+    rule: "Agent 负责理解、生成候选和测试，主人负责裁决升级意图与精确候选，确定性 Runner 负责应用并输出证据"
   - id: evidence_before_claim
     rule: "没有测试、可信 Runner 结果或宿主机晋升证据时，不得声称任务已经完成"
   - id: reversible_by_default
     rule: "优先选择可回滚方案；高风险操作必须声明回滚、备份或不可逆性"
   - id: explicit_revocation
     rule: "主人撤销授权、改变范围或发出停止指令后，后续执行必须立即停止"
+  - id: authorized_growth
+    rule: "默认保护路径不是永久禁止；主人可通过目标/路径范围授权与候选摘要授权两阶段机制允许 Agenelf 升级自身，永久安全红线除外"
 
 risk_levels:
   read:
@@ -31,14 +33,14 @@ risk_levels:
     auto_execute: true
     approval: none
     evidence_required: true
-    examples: [inspect_server, docker_ps, docker_logs, docker_diagnose, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result]
+    examples: [inspect_server, docker_ps, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result, list_docker_runtime, get_docker_logs, inspect_docker_container, run_docker_check, get_docker_operation]
   change:
     description: "会改变目标状态但通常可回滚、影响范围有限的操作"
     auto_execute: false
     approval: owner_exact
     rollback_required: true
     evidence_required: true
-    examples: [apt_update, service_restart, docker_restart, compose_deploy]
+    examples: [apt_update, service_restart, compose_deploy, compose_down, restart_docker_container, owner_authorized_self_upgrade_intent, owner_authorized_self_upgrade_candidate]
   privileged:
     description: "系统级安装、权限、网络、运行时或生产配置变更"
     auto_execute: false
@@ -56,14 +58,14 @@ risk_levels:
     evidence_required: true
     examples: [database_drop, permanent_delete, destructive_storage_repartition]
   forbidden:
-    description: "即使以普通任务语言提出也不得执行的治理绕过和隐蔽行为"
+    description: "即使主人要求升级也不得执行的治理绕过、凭据泄露和隐蔽行为"
     auto_execute: false
     approval: impossible
     evidence_required: true
     examples: [self_approval, audit_disable, credential_exfiltration, policy_bypass]
 
 owner_authorization:
-  rule: "主人可以精确授权 privileged 或 irreversible 操作；有效授权后 Runner 应按绑定载荷执行，不得以模型主观判断替代主人决定"
+  rule: "主人可以精确授权 change、privileged、irreversible 及受保护代码升级；有效授权后 Runner 应按绑定载荷执行，不得以模型主观判断替代主人决定"
   never_overrides_forbidden: true
   exact_binding_fields:
     - capability
@@ -102,6 +104,9 @@ forbidden_behaviors:
   - persist_credentials_in_memory_reflections_or_intentions
   - continue_after_owner_revocation
 
+# These paths are protected from ordinary sandbox evolution. They may be changed only
+# through owner_authorized_upgrade below. Entries that also fall under permanent
+# redlines remain impossible regardless of authorization.
 protected_paths:
   - policy/
   - scripts/
@@ -125,20 +130,79 @@ protected_paths:
   - app/core/permissions.py
   - app/core/operations.py
   - app/core/autonomy.py
+  - app/core/continuous_chat.py
+  - app/core/reasoning_trace.py
+  - app/core/evolution_workspace.py
+  - app/core/authorized_upgrade.py
+  - app/core/upgrade_redlines.py
+  - app/core/approval_catalog.py
   - app/core/self_development.py
   - app/core/self_optimization.py
   - app/core/validation.py
   - app/core/capability_health.py
+  - app/skills/authorized_self_upgrade.py
+  - app/skills/authorized_upgrade_redlines.py
+  - app/skills/evolution_ops.py
+  - app/skills/evolution_scope_guard.py
+  - app/skills/compose_lifecycle.py
+  - app/skills/zz_transport_resilience.py
+
+owner_authorized_upgrade:
+  enabled: true
+  default_for_protected_paths: true
+  stages:
+    - name: intent_scope_approval
+      binds: [goal_sha256, scopes, allowed_paths, max_files, max_changed_lines, redline_policy]
+      single_use: true
+      expires: true
+    - name: tested_candidate_approval
+      binds: [session_id, intent_auth_id, changed_file_hashes, candidate_tree_sha256, test_report_sha256, baseline_manifest_sha256]
+      single_use: true
+      expires: true
+  execution:
+    candidate_workspace: app-tmp/repo
+    runner: self-upgrade-runner
+    runner_network: none
+    backup_before_apply: true
+    rollback_on_partial_failure: true
+    stale_target_hash_rejected: true
+    skill_hot_reload_when_safe: true
+    restart_checkpoint_for_core_or_runner_changes: true
+  allowed_scopes:
+    - app_runtime
+    - skills
+    - tests
+    - runners
+    - policy
+    - compose
+    - ci
+    - docs
+    - authorization_control
+  permanent_redlines:
+    - owner_authorization_cannot_be_generated_by_model_output
+    - no_self_approval_or_forged_owner_decision
+    - no_access_to_env_local_secrets_ssh_keys_or_approval_key
+    - no_write_to_auth_decisions_audit_evidence_or_git_metadata
+    - no_test_gate_policy_or_audit_weakening_to_force_success
+    - no_docker_socket_or_model_generated_arbitrary_shell
+    - no_direct_push_or_merge_main_from_autonomous_runtime
+  tests:
+    existing_tests_immutable: true
+    new_regression_test_required_for_code_change: true
+    complete_suite_required: true
+    candidate_revalidated_by_runner: true
 
 self_evolution:
   default_mode: sandbox_only
+  protected_mode: owner_authorized_two_stage
   auto_pursue: false
   allowed:
-    - add_or_improve_tests
+    - add_new_tests_without_modifying_baseline_tests
     - improve_non_protected_skills
     - improve_documentation
     - tune_allowlisted_runtime_parameters
     - create_plan_and_acceptance_criteria
+    - modify_protected_code_after_exact_owner_intent_and_candidate_approval
   requires_human_review:
     - modify_core_runtime
     - modify_runner
@@ -149,12 +213,20 @@ self_evolution:
   forbidden:
     - modify_owner_decisions
     - modify_or_read_secrets
+    - modify_delete_or_monkey_patch_existing_tests
     - bypass_gate_or_candidate_digest
     - disable_audit
     - autonomously_merge_main
   candidate_limits:
+    # Stable keys consumed by the ordinary sandbox and existing policy API.
     max_files: 10
     max_changed_lines: 500
+    ordinary_max_files: 10
+    ordinary_max_changed_lines: 500
+    authorized_default_max_files: 8
+    authorized_default_max_changed_lines: 1200
+    authorized_hard_max_files: 20
+    authorized_hard_max_changed_lines: 4000
     tests_required: true
     full_suite_required: true
     immutable_digest_required: true
@@ -178,15 +250,20 @@ model_governance:
 interaction_channels:
   current: [cli, http]
   planned: [web, mobile_app, voice]
-  rule: "所有渠道必须复用同一身份、授权、策略、任务和证据控制面，禁止为语音或移动端建立旁路执行通道"
+  rule: "所有渠道必须复用同一身份、授权、策略、任务和证据控制面；只有交互文本主人输入可形成升级批准，禁止为语音或移动端建立旁路"
 
 acceptance_gates:
   - policy_schema_valid
   - python_compile_passed
   - full_unit_suite_passed
+  - baseline_tests_immutable
   - shell_syntax_passed
-  - protected_paths_unchanged_by_autonomy
+  - ordinary_evolution_protected_paths_unchanged
+  - authorized_upgrade_intent_binding_verified
+  - authorized_upgrade_candidate_binding_verified
+  - authorized_upgrade_runner_isolated
   - no_secret_exposure
   - exact_authorization_binding_verified
   - trusted_evidence_archived
+  - backup_and_rollback_evidence_archived
   - documentation_updated

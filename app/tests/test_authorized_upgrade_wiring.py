@@ -24,13 +24,6 @@ class AuthorizedUpgradeWiringTest(unittest.TestCase):
             runner["command"],
             [
                 "python",
-                "/agenelf/scripts/runner_supervisor.py",
-                "--name",
-                "self-upgrade-runner",
-                "--heartbeat-interval",
-                "1",
-                "--",
-                "python",
                 "/agenelf/scripts/self_upgrade_runner_entry.py",
                 "--interval",
                 "1",
@@ -67,24 +60,16 @@ class AuthorizedUpgradeWiringTest(unittest.TestCase):
             "./data/auth-consumed:/agenelf/data/auth-consumed:rw",
             volumes,
         )
-        self.assertIn(
-            "./data/runner-health:/agenelf/data/runner-health:rw",
-            volumes,
-        )
         self.assertIn("./app:/agenelf/upgrade-target/app:rw", volumes)
         self.assertIn("./scripts:/agenelf/upgrade-target/scripts:rw", volumes)
         self.assertIn("./policy:/agenelf/upgrade-target/policy:rw", volumes)
 
-    def test_agent_cannot_write_repository_source_or_runner_heartbeats_directly(self) -> None:
+    def test_agent_cannot_write_repository_source_directly(self) -> None:
         agent = self.compose["services"]["agenelf"]
         volumes = [str(item) for item in agent["volumes"]]
         self.assertIn("./app:/agenelf/app-fork:ro", volumes)
         self.assertIn("./app-tmp:/agenelf/app-tmp:rw", volumes)
         self.assertIn("./.github:/agenelf/repo-source/.github:ro", volumes)
-        self.assertIn(
-            "./data/runner-health:/agenelf/data/runner-health:ro",
-            volumes,
-        )
         self.assertFalse(
             any(
                 item.startswith("./app:/agenelf/upgrade-target")

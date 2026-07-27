@@ -649,12 +649,8 @@ def _run_tests(root: Path, repo: Path, baseline_manifest_path: Path, session_id:
     return report
 
 
-def _request_candidate_approval(
-    session: dict[str, Any], binding: dict[str, Any] | None = None
-) -> str:
-    # ``binding`` is accepted so the recovery adapter can reissue an approval for
-    # the exact same candidate digest; the issued id is stored on the session.
-    binding = dict(binding if isinstance(binding, dict) else session["candidate_binding"])
+def _request_candidate_approval(session: dict[str, Any]) -> str:
+    binding = dict(session["candidate_binding"])
     ok, request_id = permissions.request_auth(
         "authorized_self_upgrade",
         "approve_tested_candidate",
@@ -668,7 +664,6 @@ def _request_candidate_approval(
     )
     if not ok:
         raise AuthorizedUpgradeError(request_id)
-    session["candidate_auth_id"] = request_id
     return request_id
 
 
@@ -768,62 +763,6 @@ def _advance_candidate(agent: Any, session: dict[str, Any], root: Path) -> dict[
     )
     save_session(session, root)
     return session
-
-
-# --- Adapter surface used by core.authorized_upgrade_recovery -----------------
-#
-# The recovery skill installs bounded-retry wrappers on this module and expects
-# the small helper interface below. Keep these names aligned with
-# ``authorized_upgrade_recovery.install``; they are thin projections of the real
-# internals above, so the wrapper never re-implements state machine details.
-
-_RECOVERY_AUTH_STATES = {
-    permissions.STATUS_APPROVED: "approved",
-    # A consumed authorization is still the owner's approval; the precise
-    # "consumed by whom" checks live in _advance_candidate/_submit_apply.
-    permissions.STATUS_USED: "approved",
-    permissions.STATUS_PENDING: "pending",
-    permissions.STATUS_DENIED: "denied",
-    permissions.STATUS_EXPIRED: "invalid",
-    permissions.STATUS_NOT_FOUND: "invalid",
-    permissions.STATUS_BINDING_MISMATCH: "invalid",
-}
-
-
-def _intent_auth_state(session: dict[str, Any]) -> str:
-    """Coarse recovery-facing state of the exact intent authorization."""
-
-    plan = session.get("plan", {}) if isinstance(session.get("plan"), dict) else {}
-    binding = {key: value for key, value in plan.items() if key != "fingerprint"}
-    state = permissions.check_auth(
-        str(session.get("intent_auth_id") or ""), expected_binding=binding
-    )
-    return _RECOVERY_AUTH_STATES.get(state, "invalid")
-
-
-def _candidate_auth_state(session: dict[str, Any]) -> str:
-    """Coarse recovery-facing state of the exact candidate authorization."""
-
-    binding = session.get("candidate_binding")
-    state = permissions.check_auth(
-        str(session.get("candidate_auth_id") or ""),
-        expected_binding=binding if isinstance(binding, dict) else None,
-    )
-    return _RECOVERY_AUTH_STATES.get(state, "invalid")
-
-
-def _request_intent_approval(session: dict[str, Any]) -> str:
-    """Reissue the exact intent authorization (same plan binding) and store it."""
-
-    request_id = _request_intent(session["plan"])
-    session["intent_auth_id"] = request_id
-    return request_id
-
-
-def _generate_candidate(agent: Any, session: dict[str, Any]) -> dict[str, Any]:
-    """Run the real candidate stage for the recovery wrapper's retry loop."""
-
-    return _advance_candidate(agent, session, runtime_root())
 
 
 def _request_payload(session: dict[str, Any]) -> dict[str, Any]:

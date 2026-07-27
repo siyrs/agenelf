@@ -114,30 +114,12 @@ class AuthorizedUpgradePolicyTest(unittest.TestCase):
 
 class EvolutionScopeRoutingTest(unittest.TestCase):
     class FakeAgent:
-        """模拟 Agent 钩子管线：注册守卫后由 run_autonomy_cycle 组合应用。"""
-
         def __init__(self) -> None:
             self._calls: list[tuple[str, bool]] = []
-            self._cycle_guards: dict[str, tuple[int, object]] = {}
-
-        def add_cycle_guard(self, fn, *, priority, name):
-            self._cycle_guards[str(name)] = (int(priority), fn)
 
         def run_autonomy_cycle(self, goal: str = "", apply_changes: bool = False):
-            def core(goal: str = "", apply_changes: bool = False):
-                self._calls.append((goal, apply_changes))
-                return {"status": "ordinary", "goal": goal}
-
-            call = core
-            for _name, (_prio, guard) in sorted(
-                self._cycle_guards.items(), key=lambda item: (item[1][0], item[0])
-            ):
-                nxt = call
-
-                def call(goal="", apply_changes=False, _g=guard, _n=nxt):
-                    return _g(_n, goal, apply_changes)
-
-            return call(goal, apply_changes)
+            self._calls.append((goal, apply_changes))
+            return {"status": "ordinary", "goal": goal}
 
     def test_ordinary_goal_still_uses_normal_sandbox(self) -> None:
         agent = self.FakeAgent()
