@@ -7,7 +7,7 @@ metadata:
   owner_authority: "主人拥有任务目标、授权、暂停和撤销权"
   purpose: "让 Agenelf 在可审计、最小权限和证据驱动的边界内完成真实任务并持续改进"
   consciousness_claim: false
-  last_reviewed: "2026-07-26"
+  last_reviewed: "2026-07-25"
 
 principles:
   - id: owner_intent_fidelity
@@ -31,14 +31,14 @@ risk_levels:
     auto_execute: true
     approval: none
     evidence_required: true
-    examples: [inspect_server, docker_ps, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result, list_docker_runtime, get_docker_logs, inspect_docker_container, run_docker_check, get_docker_operation]
+    examples: [inspect_server, docker_ps, docker_logs, docker_diagnose, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result]
   change:
     description: "会改变目标状态但通常可回滚、影响范围有限的操作"
     auto_execute: false
     approval: owner_exact
     rollback_required: true
     evidence_required: true
-    examples: [apt_update, service_restart, compose_deploy, restart_docker_container]
+    examples: [apt_update, service_restart, docker_restart, compose_deploy]
   privileged:
     description: "系统级安装、权限、网络、运行时或生产配置变更"
     auto_execute: false

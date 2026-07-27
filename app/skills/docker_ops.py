@@ -1,87 +1,71 @@
-"""Structured remote Docker operations backed by the deterministic SSH runner.
+"""Bounded Docker diagnostics and recovery through the isolated SSH runner.
 
-The LLM-facing Agent never receives SSH credentials and never builds arbitrary remote
-shell commands. This skill only creates fingerprint-bound operation requests. The
-host-side unified runner validates the same target, operation, container and policy
-again before using the private SSH material.
+This skill deliberately exposes only exact container names and structured operations.
+It never accepts shell fragments, never runs ``docker exec`` and never mounts the
+Docker socket into the Agent process.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from core import operations
+try:
+    from core import operations
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from core import operations
 
 SKILL_META = {
     "name": "docker_ops",
-    "description": (
-        "通过隔离 SSH Runner 查看远程 Docker 日志和安全元数据、运行主人预配置的诊断检查，"
-        "并以精确审批方式重启容器；支持 servers.yaml 热更新。"
-    ),
+    "description": "通过隔离 SSH Runner 读取容器日志、执行诊断并按精确审批重启容器。",
     "version": "1.0.0",
 }
 
 CAPABILITY_META = {
-    "id": "docker.operations",
-    "name": "远程 Docker 运维",
-    "description": (
-        "面向已配置服务器的结构化 Docker 诊断与恢复能力。日志与 inspect 输出会脱敏；"
-        "不开放任意 docker exec 或远程 Shell。"
-    ),
+    "id": "server.docker",
+    "name": "Docker 运维",
+    "description": "有界日志、无环境变量值的容器诊断，以及需要精确批准的容器重启。",
     "version": "1.0.0",
     "domain": "operations",
+    "composes_with": ["server.operations", "software.validation", "agent.self_development"],
     "operations": [
-        {"name": "list_docker_runtime", "description": "查看目标 Docker 策略摘要", "risk": "read"},
-        {"name": "get_docker_logs", "description": "读取容器最近日志", "risk": "read"},
-        {"name": "inspect_docker_container", "description": "读取不含环境变量的容器元数据", "risk": "read"},
-        {"name": "run_docker_check", "description": "运行主人预配置的只读容器诊断", "risk": "read"},
-        {"name": "restart_docker_container", "description": "重启容器并读取新状态", "risk": "change"},
-        {"name": "get_docker_operation", "description": "查询 Docker 运维请求结果", "risk": "read"},
+        {"name": "docker_logs", "description": "读取指定容器的有界日志", "risk": "read"},
+        {"name": "docker_diagnose", "description": "汇总容器状态、日志与资源快照", "risk": "read"},
+        {"name": "docker_restart", "description": "重启指定容器并验证状态", "risk": "change"},
     ],
-    "composes_with": [
-        "server.operations",
-        "software.validation",
-        "agent.workflow",
-        "agent.task_continuation",
-    ],
+}
+
+_CONTAINER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+_MAX_TAIL = 2000
+_RISKS = {
+    "docker_logs": operations.RISK_READ,
+    "docker_diagnose": operations.RISK_READ,
+    "docker_restart": operations.RISK_CHANGE,
 }
 
 TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "list_docker_runtime",
+            "name": "docker_logs",
             "description": (
-                "查看服务器 Docker 命令、允许的容器/操作及预配置诊断别名；"
-                "不返回 SSH 凭据或诊断命令参数。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"target": {"type": "string"}},
-                "required": ["target"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_docker_logs",
-            "description": (
-                "通过 SSH Runner 读取远程容器最近日志。输出会对常见 Token、密码、"
-                "代理节点 URI 和订阅查询参数脱敏；只读，可自动执行。"
+                "读取目标服务器上指定 Docker 容器最近的日志。只读并自动执行；"
+                "适合排查启动失败、配置错误和反复重启。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "target": {"type": "string"},
-                    "container": {"type": "string"},
-                    "tail": {"type": "integer", "minimum": 1, "maximum": 1000},
-                    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 8},
+                    "target": {"type": "string", "description": "servers.yaml 中的服务器别名"},
+                    "container": {"type": "string", "description": "精确容器名称或 ID"},
+                    "tail": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 8, "default": 3},
                 },
                 "required": ["target", "container"],
             },
@@ -90,17 +74,18 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "inspect_docker_container",
+            "name": "docker_diagnose",
             "description": (
-                "读取远程容器状态、镜像、挂载、Compose 标签、重启策略和网络。"
-                "明确排除 Config.Env，避免把容器环境变量中的秘密送入模型。"
+                "对指定容器执行只读诊断：状态摘要、最近日志和一次性资源快照。"
+                "不会读取环境变量值，也不会执行容器内命令。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {"type": "string"},
-                    "container": {"type": "string"},
-                    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 8},
+                    "container": {"type": "string", "description": "精确容器名称或 ID"},
+                    "tail": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 8, "default": 5},
                 },
                 "required": ["target", "container"],
             },
@@ -109,66 +94,22 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "run_docker_check",
+            "name": "docker_restart",
             "description": (
-                "运行 local/servers.yaml 中 docker_checks 预先定义的诊断别名。"
-                "模型只能选择别名，不能提交命令、参数或 Shell。只读，可自动执行。"
+                "重启精确指定的 Docker 容器并验证状态。属于外部系统变更，"
+                "只创建绑定目标和参数的请求，必须由宿主机审批后才会执行。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {"type": "string"},
-                    "check": {"type": "string"},
-                    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 8},
-                },
-                "required": ["target", "check"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "restart_docker_container",
-            "description": (
-                "重启远程 Docker 容器并返回重启后的状态。会改变运行状态，"
-                "只创建绑定目标与参数的请求，必须由主人批准后 Runner 执行。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string"},
-                    "container": {"type": "string"},
-                    "timeout_seconds": {"type": "integer", "minimum": 0, "maximum": 60},
+                    "container": {"type": "string", "description": "精确容器名称或 ID"},
                 },
                 "required": ["target", "container"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_docker_operation",
-            "description": "查询 Docker 运维请求的排队、待批准、成功、失败或阻断状态。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "operation_id": {"type": "string"},
-                    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 8},
-                },
-                "required": ["operation_id"],
             },
         },
     },
 ]
-
-_CONTAINER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
-_CHECK_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
-_REMOTE_RISKS = {
-    "get_docker_logs": operations.RISK_READ,
-    "inspect_docker_container": operations.RISK_READ,
-    "run_docker_check": operations.RISK_READ,
-    "restart_docker_container": operations.RISK_CHANGE,
-}
 
 
 def _root() -> Path:
@@ -178,74 +119,67 @@ def _root() -> Path:
 
 def _servers_path() -> Path:
     configured = os.environ.get("AGENELF_SERVERS_FILE", "").strip()
-    return Path(configured).resolve() if configured else _root() / "local" / "servers.yaml"
+    return Path(configured).resolve() if configured else _root() / "config" / "servers.yaml"
 
 
-def _load_servers() -> dict[str, dict[str, Any]]:
+def _load_profiles() -> dict[str, dict[str, Any]]:
     path = _servers_path()
     if not path.is_file():
         return {}
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
         return {}
-    raw = data.get("servers", {}) if isinstance(data, dict) else {}
+    raw = document.get("servers", {}) if isinstance(document, dict) else {}
     if not isinstance(raw, dict):
         return {}
-    return {str(name): cfg for name, cfg in raw.items() if isinstance(cfg, dict)}
+    return {str(name): value for name, value in raw.items() if isinstance(value, dict)}
 
 
 def _profile(target: str) -> dict[str, Any]:
-    target = str(target or "").strip()
-    profiles = _load_servers()
-    if target not in profiles:
-        raise ValueError(f"未配置服务器 {target!r}；请检查 local/servers.yaml")
-    return profiles[target]
+    name = str(target or "").strip()
+    profile = _load_profiles().get(name)
+    if profile is None:
+        raise ValueError(f"未配置服务器 {name!r}")
+    return profile
 
 
-def _allowed_operation(profile: dict[str, Any], operation: str) -> None:
-    allowed = profile.get("allowed_docker_operations")
-    if allowed is None:
+def _allowed(profile: dict[str, Any], operation: str) -> None:
+    raw = profile.get("allowed_operations")
+    if raw is None:
         return
-    if not isinstance(allowed, list) or operation not in {str(item) for item in allowed}:
-        raise PermissionError(f"服务器 Docker 策略未允许操作：{operation}")
+    if not isinstance(raw, list):
+        raise PermissionError(f"服务器策略未允许操作：{operation}")
+    names = {str(item) for item in raw}
+    if operation in names:
+        return
+    if operation in {"docker_logs", "docker_diagnose"} and "docker_ps" in names:
+        return
+    # Legacy profiles often granted Docker visibility plus restart capability before
+    # container-level restart existed. Require both grants and still require the exact
+    # host-side request approval; either grant alone is insufficient.
+    if operation == "docker_restart" and {"docker_ps", "service_restart"} <= names:
+        return
+    raise PermissionError(f"服务器策略未允许操作：{operation}")
 
 
-def _container(profile: dict[str, Any], raw: str) -> str:
-    value = str(raw or "").strip()
-    if not _CONTAINER_RE.fullmatch(value):
-        raise ValueError("container 名称非法")
-    allowed = profile.get("allowed_containers")
-    if allowed is not None:
-        if not isinstance(allowed, list) or value not in {str(item) for item in allowed}:
-            raise PermissionError(f"容器 {value!r} 不在 allowed_containers 清单中")
-    return value
+def _container(value: object) -> str:
+    name = str(value or "").strip()
+    if not _CONTAINER_RE.fullmatch(name):
+        raise ValueError("container 只能是字母或数字开头，并包含字母、数字、点、下划线和短横线")
+    return name
 
 
-def _check(profile: dict[str, Any], raw: str) -> tuple[str, dict[str, Any]]:
-    alias = str(raw or "").strip()
-    if not _CHECK_RE.fullmatch(alias):
-        raise ValueError("check 别名非法")
-    checks = profile.get("docker_checks", {})
-    if not isinstance(checks, dict) or not isinstance(checks.get(alias), dict):
-        raise PermissionError(f"未配置 Docker 诊断别名：{alias}")
-    entry = checks[alias]
-    _container(profile, str(entry.get("container", "")))
-    argv = entry.get("argv")
-    if not isinstance(argv, list) or not argv or len(argv) > 32:
-        raise ValueError(f"Docker 诊断 {alias!r} 的 argv 必须是 1-32 项列表")
-    for item in argv:
-        text = str(item)
-        if not text or len(text) > 500 or "\n" in text or "\x00" in text:
-            raise ValueError(f"Docker 诊断 {alias!r} 含非法参数")
-    return alias, entry
-
-
-def _wait(value: Any, default: int = 3) -> int:
+def _tail(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError("tail 必须是整数")
     try:
-        return max(0, min(int(value), 8))
-    except (TypeError, ValueError):
-        return default
+        count = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("tail 必须是整数") from exc
+    if count < 1 or count > _MAX_TAIL:
+        raise ValueError(f"tail 必须在 1 到 {_MAX_TAIL} 之间")
+    return count
 
 
 def _submit(
@@ -256,18 +190,18 @@ def _submit(
     wait_seconds: int = 0,
 ) -> str:
     profile = _profile(target)
-    _allowed_operation(profile, operation)
+    _allowed(profile, operation)
     request = operations.submit_operation(
-        capability="docker.operations",
+        capability="server.docker",
         operation=operation,
-        target=target,
+        target=str(target).strip(),
         parameters=parameters,
-        risk=_REMOTE_RISKS[operation],
+        risk=_RISKS[operation],
         summary=summary,
     )
     if request["risk"] == operations.RISK_READ:
         state = operations.wait_for_result(
-            request["id"], timeout_seconds=_wait(wait_seconds, 0)
+            request["id"], timeout_seconds=max(0, min(int(wait_seconds), 8))
         )
         return json.dumps(state, ensure_ascii=False, indent=2)
     return (
@@ -277,133 +211,72 @@ def _submit(
         f"操作：{operation}\n"
         f"摘要：{summary}\n"
         f"批准命令：bash scripts/approve.sh {request['id']} approve\n"
-        "批准只绑定本次目标、容器和参数；Runner 会在执行前再次校验。"
+        "批准只绑定本请求的服务器、容器和操作；参数变化后必须重新申请。"
     )
 
 
-def list_docker_runtime(target: str) -> str:
-    try:
-        profile = _profile(target)
-        checks = profile.get("docker_checks", {})
-        check_items: list[dict[str, str]] = []
-        if isinstance(checks, dict):
-            for alias, entry in sorted(checks.items()):
-                if isinstance(entry, dict):
-                    check_items.append(
-                        {"name": str(alias), "container": str(entry.get("container", ""))}
-                    )
-        value = {
-            "target": target,
-            "host": profile.get("host"),
-            "docker_command": profile.get("docker_command", "docker"),
-            "allowed_docker_operations": profile.get(
-                "allowed_docker_operations", sorted(_REMOTE_RISKS)
-            ),
-            "allowed_containers": profile.get("allowed_containers", "all-valid-names"),
-            "docker_checks": check_items,
-            "profiles_reload": "runner reloads servers.yaml before every queue scan",
-        }
-        return json.dumps(value, ensure_ascii=False, indent=2)
-    except (ValueError, PermissionError) as exc:
-        return f"查询失败：{exc}"
-
-
-def get_docker_logs(
-    target: str, container: str, tail: int = 100, wait_seconds: int = 3
+def docker_logs(
+    target: str, container: str, tail: int = 200, wait_seconds: int = 3
 ) -> str:
     try:
-        profile = _profile(target)
-        container = _container(profile, container)
-        tail = max(1, min(int(tail), 1000))
+        safe_container = _container(container)
+        safe_tail = _tail(tail)
         return _submit(
             target,
-            "get_docker_logs",
-            {"container": container, "tail": tail},
-            f"读取 {target}/{container} 最近 {tail} 行日志",
-            wait_seconds,
-        )
-    except (TypeError, ValueError, PermissionError) as exc:
-        return f"操作失败：{exc}"
-
-
-def inspect_docker_container(
-    target: str, container: str, wait_seconds: int = 3
-) -> str:
-    try:
-        profile = _profile(target)
-        container = _container(profile, container)
-        return _submit(
-            target,
-            "inspect_docker_container",
-            {"container": container},
-            f"读取 {target}/{container} 的安全 Docker 元数据",
+            "docker_logs",
+            {"container": safe_container, "tail": safe_tail},
+            f"读取 {target} 上容器 {safe_container} 最近 {safe_tail} 行日志",
             wait_seconds,
         )
     except (ValueError, PermissionError) as exc:
-        return f"操作失败：{exc}"
+        return f"Docker 日志请求失败：{exc}"
 
 
-def run_docker_check(target: str, check: str, wait_seconds: int = 3) -> str:
+def docker_diagnose(
+    target: str, container: str, tail: int = 200, wait_seconds: int = 5
+) -> str:
     try:
-        profile = _profile(target)
-        alias, entry = _check(profile, check)
+        safe_container = _container(container)
+        safe_tail = _tail(tail)
         return _submit(
             target,
-            "run_docker_check",
-            {"check": alias},
-            f"在 {target}/{entry.get('container')} 运行预配置诊断 {alias}",
+            "docker_diagnose",
+            {"container": safe_container, "tail": safe_tail},
+            f"诊断 {target} 上 Docker 容器 {safe_container}",
             wait_seconds,
         )
     except (ValueError, PermissionError) as exc:
-        return f"操作失败：{exc}"
+        return f"Docker 诊断请求失败：{exc}"
 
 
-def restart_docker_container(
-    target: str, container: str, timeout_seconds: int = 10
-) -> str:
+def docker_restart(target: str, container: str) -> str:
     try:
-        profile = _profile(target)
-        container = _container(profile, container)
-        timeout_seconds = max(0, min(int(timeout_seconds), 60))
+        safe_container = _container(container)
         return _submit(
             target,
-            "restart_docker_container",
-            {"container": container, "timeout_seconds": timeout_seconds},
-            f"重启 {target}/{container}（停止超时 {timeout_seconds}s）",
+            "docker_restart",
+            {"container": safe_container},
+            f"重启 {target} 上 Docker 容器 {safe_container} 并验证状态",
         )
-    except (TypeError, ValueError, PermissionError) as exc:
-        return f"操作失败：{exc}"
-
-
-def get_docker_operation(operation_id: str, wait_seconds: int = 0) -> str:
-    try:
-        state = operations.wait_for_result(
-            operation_id, timeout_seconds=_wait(wait_seconds, 0)
-        )
-    except (TypeError, ValueError) as exc:
-        return f"查询失败：{exc}"
-    return json.dumps(state, ensure_ascii=False, indent=2)
+    except (ValueError, PermissionError) as exc:
+        return f"Docker 重启请求失败：{exc}"
 
 
 _DISPATCH = {
-    "list_docker_runtime": lambda a: list_docker_runtime(a.get("target", "")),
-    "get_docker_logs": lambda a: get_docker_logs(
-        a.get("target", ""),
-        a.get("container", ""),
-        a.get("tail", 100),
-        a.get("wait_seconds", 3),
+    "docker_logs": lambda args: docker_logs(
+        args.get("target", ""),
+        args.get("container", ""),
+        args.get("tail", 200),
+        args.get("wait_seconds", 3),
     ),
-    "inspect_docker_container": lambda a: inspect_docker_container(
-        a.get("target", ""), a.get("container", ""), a.get("wait_seconds", 3)
+    "docker_diagnose": lambda args: docker_diagnose(
+        args.get("target", ""),
+        args.get("container", ""),
+        args.get("tail", 200),
+        args.get("wait_seconds", 5),
     ),
-    "run_docker_check": lambda a: run_docker_check(
-        a.get("target", ""), a.get("check", ""), a.get("wait_seconds", 3)
-    ),
-    "restart_docker_container": lambda a: restart_docker_container(
-        a.get("target", ""), a.get("container", ""), a.get("timeout_seconds", 10)
-    ),
-    "get_docker_operation": lambda a: get_docker_operation(
-        a.get("operation_id", ""), a.get("wait_seconds", 0)
+    "docker_restart": lambda args: docker_restart(
+        args.get("target", ""), args.get("container", "")
     ),
 }
 
