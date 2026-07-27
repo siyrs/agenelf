@@ -17,8 +17,8 @@ SKILL_META = {
 CAPABILITY_META = {
     "id": "agent.session_ledger",
     "description": (
-        "以 append-only JSONL 保存结构化会话/工具/检查点/反思/审批引用事件；"
-        "parent_id 形成树，哈希链提供篡改检测。"
+        "以 append-only JSONL 保存结构化会话、检查点、反思和标签；"
+        "parent_id 形成树，哈希链提供篡改检测，origin 明确事件来源。"
     ),
     "composes_with": [
         "agent.workflow",
@@ -50,7 +50,7 @@ CAPABILITY_META = {
             "name": "session_ledger_append",
             "risk": "change",
             "execution_mode": "local_state",
-            "description": "向主人本地 ledger 追加一条已脱敏事件。",
+            "description": "向主人本地 ledger 追加一条低信任、已脱敏事件。",
         },
         {
             "name": "session_ledger_branch",
@@ -62,10 +62,21 @@ CAPABILITY_META = {
             "name": "session_ledger_verify",
             "risk": "read",
             "execution_mode": "pure",
-            "description": "验证序号、父节点、哈希链和 entry hash。",
+            "description": "验证序号、父节点、来源、哈希链和 entry hash。",
         },
     ],
 }
+
+# 模型可调用入口只允许写低信任的主人/Agent 叙事状态。tool/approval/runner/evidence
+# 等安全关键事件必须由运行时或可信 Runner 自动写入，不能靠模型自述获得可信度。
+MODEL_WRITABLE_EVENT_TYPES = [
+    "message",
+    "checkpoint",
+    "reflection",
+    "intention",
+    "label",
+    "custom",
+]
 
 TOOLS = [
     {
@@ -136,8 +147,8 @@ TOOLS = [
         "function": {
             "name": "session_ledger_append",
             "description": (
-                "向 session ledger 追加结构化事件；payload 会递归脱敏，"
-                "不得用于保存凭据。"
+                "向 session ledger 追加低信任结构化事件；payload 会递归脱敏。"
+                "审批、Runner、工具结果和证据事件只能由运行时自动记录。"
             ),
             "parameters": {
                 "type": "object",
@@ -145,20 +156,7 @@ TOOLS = [
                     "session_id": {"type": "string"},
                     "event_type": {
                         "type": "string",
-                        "enum": [
-                            "message",
-                            "tool_call",
-                            "tool_result",
-                            "checkpoint",
-                            "reflection",
-                            "intention",
-                            "approval_ref",
-                            "evidence_ref",
-                            "branch_summary",
-                            "compaction",
-                            "label",
-                            "custom",
-                        ],
+                        "enum": MODEL_WRITABLE_EVENT_TYPES,
                     },
                     "payload": {"type": "object"},
                     "parent_id": {
@@ -179,7 +177,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "session_ledger_branch",
-            "description": "从既有 entry 创建一个新分支。",
+            "description": "从既有 entry 创建一个低信任叙事分支。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -197,7 +195,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "session_ledger_verify",
-            "description": "验证指定 session ledger 的树引用和哈希链。",
+            "description": "验证指定 session ledger 的树引用、来源和哈希链。",
             "parameters": {
                 "type": "object",
                 "properties": {"session_id": {"type": "string"}},
@@ -247,13 +245,19 @@ def execute(tool_name: str, args: dict[str, Any]) -> str:
                 )
             )
         if tool_name == "session_ledger_append":
+            event_type = str(data.get("event_type", ""))
+            if event_type not in MODEL_WRITABLE_EVENT_TYPES:
+                raise SessionLedgerError(
+                    "模型工具不能写入安全关键事件类型；请由运行时或可信 Runner 记录"
+                )
             return _json(
                 _store().append(
                     str(data.get("session_id", "")),
-                    str(data.get("event_type", "")),
+                    event_type,
                     data.get("payload", {}),
                     parent_id=str(data.get("parent_id", "")).strip() or None,
                     branch_id=str(data.get("branch_id", "")).strip() or None,
+                    origin="agent_skill",
                 )
             )
         if tool_name == "session_ledger_branch":
@@ -263,6 +267,7 @@ def execute(tool_name: str, args: dict[str, Any]) -> str:
                     str(data.get("parent_id", "")),
                     label=str(data.get("label", "")),
                     summary=str(data.get("summary", "")),
+                    origin="agent_skill",
                 )
             )
         if tool_name == "session_ledger_verify":
