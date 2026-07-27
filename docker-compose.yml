@@ -130,6 +130,8 @@ services:
       - ./web:/agenelf/web:ro
       - ./docs:/agenelf/docs:ro
       - ./app:/agenelf/app-fork:ro
+      - ./app-tmp:/agenelf/app-tmp:rw
+      - ./.github:/agenelf/repo-source/.github:ro
       - ./policy:/agenelf/policy:ro
       - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
       - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
@@ -146,6 +148,8 @@ services:
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/approval-commands:/agenelf/data/approval-commands:ro
       - ./data/approval-results:/agenelf/data/approval-results:ro
+      - ./data/validation-results:/agenelf/data/validation-results:ro
+      - ./data/repair-results:/agenelf/data/repair-results:ro
       - ./data/runner-health:/agenelf/data/runner-health:ro
       - ./data/node-runner-requests:/agenelf/data/node-runner-requests:rw
       - ./data/node-runner-results:/agenelf/data/node-runner-results:ro
@@ -184,6 +188,7 @@ services:
       - ./data/approval-commands:/agenelf/data/approval-commands:ro
       - ./data/runner-health:/agenelf/data/runner-health:ro
       - ./logs:/agenelf/logs:rw
+      - approval-key:/agenelf/approval:ro
     <<: *secure
     restart: "no"
 
