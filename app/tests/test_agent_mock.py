@@ -16,7 +16,7 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from core.agent import Agent
-from core.llm import MockLLM
+from core.mock_llm import MockLLM
 
 # 符合技能协议的 dummy 技能源码：提供 write_code_file 工具
 DUMMY_SKILL_SOURCE = '''\

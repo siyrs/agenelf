@@ -1,0 +1,14 @@
+# Copy to local/preferences.yaml. These fields may be injected into the model prompt.
+hobbies:
+  - "编程"
+  - "本地 AI"
+interests:
+  - "服务器运维"
+  - "Android"
+  - "自动化智能体"
+work_preferences:
+  testing: "真实测试通过后才算完成"
+  documentation: "功能与文档同步更新"
+  delivery: "验收通过后合并主分支"
+avoid:
+  - "把密码、Token 或私钥写入画像与记忆"

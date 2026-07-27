@@ -11,7 +11,7 @@
 #   1. 校验项目根是 git 仓库；
 #   2. origin 不存在则 git remote add，已存在则 set-url 更新；
 #   3. 检查 git user.name / user.email 配置，缺失时提示如何设置；
-#   4. 提示推送凭据：https 推送可在 .env 写入 GITHUB_TOKEN，或改用 ssh 地址。
+#   4. 提示推送凭据：https 推送可在 .env.github 写入 GITHUB_TOKEN，或改用 ssh 地址。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +24,7 @@ usage() {
 配置 GitHub 远程仓库 origin：
   - origin 不存在则添加，已存在则更新为新的 URL；
   - 检查 git user.name / user.email 配置是否完整；
-  - 提示推送凭据配置（.env 中 GITHUB_TOKEN 或 ssh 密钥）。
+  - 提示推送凭据配置（.env.github 中 GITHUB_TOKEN 或 ssh 密钥）。
 
 示例：
   bash scripts/github_setup.sh https://github.com/yourname/agenelf.git
@@ -75,11 +75,12 @@ if ! git -C "${ROOT_DIR}" config user.email >/dev/null 2>&1; then
 fi
 
 # ---------- 4. 推送凭据提示 ----------
-ENV_FILE="${ROOT_DIR}/.env"
+# 凭据与运行时 .env 分离：.env.github 专供 GitHub 同步脚本读取，已被 .gitignore 覆盖。
+ENV_FILE="${ROOT_DIR}/.env.github"
 if [[ -f "${ENV_FILE}" ]] && grep -qE '^\s*GITHUB_TOKEN\s*=\s*\S+' "${ENV_FILE}"; then
-    echo "[github_setup] 检测到 .env 已配置 GITHUB_TOKEN（https 推送可用）"
+    echo "[github_setup] 检测到 .env.github 已配置 GITHUB_TOKEN（https 推送可用）"
 else
-    echo "[github_setup] 提示：使用 https 地址推送时，可在 .env 中写入 GITHUB_TOKEN=<你的访问令牌>；"
+    echo "[github_setup] 提示：使用 https 地址推送时，可在 .env.github 中写入 GITHUB_TOKEN=<你的访问令牌>；"
     echo "  或改用 ssh 地址（git@github.com:...）并配置好 ssh 密钥，免输凭据。"
 fi
 

@@ -1,8 +1,10 @@
 """app/api.py（FastAPI HTTP 入口）的单元测试。
 
 使用 fastapi.testclient.TestClient（依赖 httpx）：
-- /health            返回 200 且包含状态、技能数与模型名
-- /chat              mock 模式下返回非空 reply
+- /health            无鉴权存活探针，只返回 status 与 version
+- /status            鉴权后返回状态、技能数与模型名
+- /chat              mock 模式下返回非空 reply；channel 枚举与
+                     core.channel_envelope.CHANNELS 对齐（mobile_device 为废弃别名）
 - /evolution/status  返回晋升管道状态结构
 
 依赖缺失处理：fastapi 或 httpx 不可用时，setUp 中即 skipTest。
@@ -44,12 +46,14 @@ class ApiTest(unittest.TestCase):
         (tmp_root / "data").mkdir()
         self._old_env = {
             key: os.environ.get(key)
-            for key in ("AGENELF_MOCK", "AGENELF_ROOT", "OPENAI_API_KEY")
+            for key in ("AGENELF_MOCK", "AGENELF_ROOT", "OPENAI_API_KEY", "AGENELF_API_TOKEN")
         }
         os.environ["AGENELF_MOCK"] = "1"
         os.environ["AGENELF_ROOT"] = str(tmp_root)
         # 防止环境中的真实 Key 使 Agent 绕过 mock
         os.environ.pop("OPENAI_API_KEY", None)
+        # API 默认 fail-closed，测试显式配置 token 并随请求携带
+        os.environ["AGENELF_API_TOKEN"] = "test-token"
 
         # 包装 load_config：记忆文件重定向到临时目录，保持仓库干净
         self._orig_load_config = api.load_config
@@ -66,6 +70,7 @@ class ApiTest(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         self.client = TestClient(api.app)
+        self.client.headers["X-Agenelf-Token"] = "test-token"
 
     def tearDown(self) -> None:
         self.api.load_config = self._orig_load_config
@@ -77,8 +82,17 @@ class ApiTest(unittest.TestCase):
                 os.environ[key] = value
         self._tmp.cleanup()
 
-    def test_health_返回200与运行信息(self):
+    def test_health_无鉴权只返回最小存活信息(self):
         resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "ok")
+        self.assertIn("version", data)
+        # 不泄露技能数、模型名等内部状态
+        self.assertEqual(set(data), {"status", "version"})
+
+    def test_status_鉴权后返回详细运行信息(self):
+        resp = self.client.get("/status")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["status"], "ok")
@@ -86,6 +100,10 @@ class ApiTest(unittest.TestCase):
         self.assertGreaterEqual(data["skills"], 1)
         # mock 模式下模型固定为 mock-llm
         self.assertEqual(data["model"], "mock-llm")
+
+    def test_status_错误token返回401(self):
+        resp = self.client.get("/status", headers={"X-Agenelf-Token": "wrong"})
+        self.assertEqual(resp.status_code, 401)
 
     def test_chat_mock模式返回reply(self):
         resp = self.client.post("/chat", json={"message": "你好"})
@@ -99,6 +117,24 @@ class ApiTest(unittest.TestCase):
         resp = self.client.post("/chat", json={"message": "   "})
         self.assertEqual(resp.status_code, 400)
 
+    def test_chat_全部合法channel可访问(self):
+        for channel in ("cli", "http", "web", "mobile", "voice"):
+            resp = self.client.post("/chat", json={"message": "你好", "channel": channel})
+            self.assertEqual(resp.status_code, 200, channel)
+
+    def test_chat_mobile_device废弃别名映射为mobile(self):
+        resp = self.client.post(
+            "/chat", json={"message": "你好", "channel": "mobile_device"}
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_chat_非法channel返回400(self):
+        resp = self.client.post(
+            "/chat", json={"message": "你好", "channel": "carrier-pigeon"}
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("mobile", resp.json()["detail"])
+
     def test_evolution_status_返回管道状态结构(self):
         resp = self.client.get("/evolution/status")
         self.assertEqual(resp.status_code, 200)
@@ -106,6 +142,21 @@ class ApiTest(unittest.TestCase):
         self.assertIn("session", data)
         self.assertIn("promotion_requests", data)
         self.assertIsInstance(data["promotion_requests"], list)
+
+    def test_evolution_status_合并候选与已晋升目录并标注来源(self):
+        tmp_root = Path(self._tmp.name).resolve()
+        candidate = tmp_root / "app-tmp" / "promote-requests" / "req-candidate"
+        promoted = tmp_root / "data" / "promote-requests" / "req-promoted"
+        for directory, marker in ((candidate, "READY"), (promoted, "PROMOTED")):
+            directory.mkdir(parents=True)
+            (directory / marker).write_text("ok\n", encoding="utf-8")
+        resp = self.client.get("/evolution/status")
+        self.assertEqual(resp.status_code, 200)
+        requests = {item["id"]: item for item in resp.json()["promotion_requests"]}
+        self.assertEqual(requests["req-candidate"]["source"], "candidate")
+        self.assertEqual(requests["req-candidate"]["markers"], ["READY"])
+        self.assertEqual(requests["req-promoted"]["source"], "promoted")
+        self.assertEqual(requests["req-promoted"]["markers"], ["PROMOTED"])
 
 
 if __name__ == "__main__":

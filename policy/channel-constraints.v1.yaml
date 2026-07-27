@@ -1,0 +1,50 @@
+schema_version: 1
+policy_id: agenelf-channel-constraints
+status: active
+
+channels: [cli, http, web, mobile, voice]
+
+principles:
+  - id: one_control_plane
+    rule: "所有渠道必须先转换为同一命令信封，再进入任务、权限、执行和证据系统"
+  - id: no_channel_bypass
+    rule: "Voice 或 Mobile 不得拥有比 CLI/HTTP 更高的隐式权限"
+  - id: actor_session_binding
+    rule: "每个命令必须绑定 actor_id、session_id、channel 和 idempotency_key"
+  - id: replay_protection
+    rule: "同一 actor/session 的幂等键只能对应一个载荷；载荷变化必须拒绝"
+  - id: reference_only_authorization
+    rule: "渠道请求只能引用已有授权 ID，不能携带原始 Token、密码或私钥"
+  - id: privacy_before_persistence
+    rule: "命令文本和允许的客户端元数据在落盘前必须脱敏和限长"
+
+safe_metadata:
+  - device_id
+  - locale
+  - transcript_confidence
+  - client_version
+
+forbidden_metadata:
+  - source_ip
+  - cookie
+  - bearer_token
+  - password
+  - api_key
+  - private_key
+
+required_fields:
+  - channel
+  - actor_id
+  - session_id
+  - message
+  - idempotency_key
+  - payload_hash
+  - created_at
+
+forbidden:
+  - reuse_key_with_different_payload
+  - voice_authorization_by_transcript_only
+  - mobile_hidden_admin_mode
+  - store_raw_credentials
+  - bypass_task_engine
+  - bypass_owner_revocation

@@ -1,48 +1,146 @@
-# Agenelf 运维快捷命令（人类专用）
-# 用法：make <目标>；详见 make help
+# Agenelf operator commands
+.PHONY: help init local mind models workflow validation repair start stop restart build chat test backup promote watch logs status ops approvals evolution autonomy approve deny clean
 
-.PHONY: help start stop restart build chat test backup promote logs status clean
-
-# 默认目标：显示帮助
-help: ## 显示全部可用命令
+help: ## Show commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-start: ## 同步 fork 并启动容器（首次会自动构建）
+init: ## Create/migrate private config, task/evidence queues and isolated workspaces
+	@test -f .env || cp .env.example .env
+	@test -f .ops-runner.env || cp .ops-runner.env.example .ops-runner.env
+	@python3 scripts/init_local.py
+	@mkdir -p logs workspace/scratch app-space/skills app-tmp app-fork code-workspaces repair-space \
+		app-tmp/promote-requests \
+		data/auth-requests data/auth-decisions data/auth-consumed \
+		data/ops-requests data/ops-results data/ops-locks \
+		data/approval-commands data/approval-results data/approval-locks \
+		data/validation-requests data/validation-results data/validation-locks \
+		data/repair-requests data/repair-results data/repair-locks \
+		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks \
+		data/self-upgrade-backups data/authorized-upgrades data/runner-health data/app-backups \
+		data/tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles
+	@echo "初始化完成。请编辑 local/ 配置；代码仓库放入 code-workspaces/，修复证据在 repair-space/。"
+
+local: ## Validate local personalization without printing secrets
+	@python3 scripts/init_local.py --status
+
+mind: ## Show persistent reflection/intention files without dumping contents
+	@echo "== local/self =="; ls -lh local/self 2>/dev/null || echo "尚未初始化，请运行 make init"
+
+models: ## Show private model routing configuration status
+	@python3 scripts/init_local.py --status | grep -E 'models|local_dir' || true
+
+workflow: ## Show governed workflow task files
+	@echo "== workflow tasks =="; ls -lt data/tasks 2>/dev/null | head -20 || true
+	@echo "== channel requests =="; ls -lt data/channel-requests 2>/dev/null | head -20 || true
+
+start: ## Sync runtime fork and start Agent plus deterministic runners
+	@test -f .env || (echo "缺少 .env，请先 make init"; exit 1)
+	@test -f .ops-runner.env || (echo "缺少 .ops-runner.env，请先 make init"; exit 1)
+	@test -f local/profile.yaml || (echo "缺少 local/profile.yaml，请先 make init"; exit 1)
+	@test -f local/preferences.yaml || (echo "缺少 local/preferences.yaml，请先 make init"; exit 1)
+	@test -f local/servers.yaml || (echo "缺少 local/servers.yaml，请先 make init"; exit 1)
+	@test -f local/validation.yaml || (echo "缺少 local/validation.yaml，请先 make init"; exit 1)
+	@test -f local/models.yaml || (echo "缺少 local/models.yaml，请先 make init"; exit 1)
+	@test -f local/repositories.yaml || (echo "缺少 local/repositories.yaml，请先 make init"; exit 1)
+	@test -d local/memory || (echo "缺少 local/memory，请先 make init"; exit 1)
+	@test -d local/self || (echo "缺少 local/self，请先 make init"; exit 1)
+	@test -d local/secrets || (echo "缺少 local/secrets，请先 make init"; exit 1)
+	@mkdir -p app-tmp/promote-requests \
+		data/approval-commands data/approval-results data/approval-locks data/auth-decisions data/auth-consumed \
+		data/ops-locks data/validation-locks data/repair-locks data/self-upgrade-locks \
+		data/promote-requests data/promotion-history data/runner-health
 	bash scripts/sync_fork.sh
 	docker compose up -d --build
 
-stop: ## 紧急制动：停止容器
+stop: ## Stop all services
 	docker compose stop
 
-restart: ## 重启容器
+restart: ## Restart all services
 	docker compose restart
 
-build: ## 重新构建镜像
+build: ## Rebuild images
 	docker compose build
 
-chat: ## 进入 CLI 对话入口
+chat: ## Open CLI chat
 	bash scripts/chat.sh
 
-test: ## 运行全部单元测试
-	cd app && python -m unittest discover -s tests
+test: ## Run governance, compile and complete unit suite
+	python3 scripts/validate_governance.py
+	python3 -m compileall -q app scripts
+	cd app && python -m unittest discover -s tests -v
 
-backup: ## 手动备份推送到 GitHub
+backup: ## Back up generic app source state to GitHub; local remains private
 	bash scripts/github_backup.sh
 
-promote: ## 手动执行晋升（用法：make promote REQ=<请求ID>）
+promote: ## Promote an exact evolution request: make promote REQ=<evo-id>
+	@test -n "$(REQ)" || (echo "用法：make promote REQ=evo-..."; exit 2)
 	bash scripts/promote.sh $(REQ)
 
-watch: ## 启动晋升守护进程（后台自动执行晋升）
-	nohup bash scripts/watcher.sh > logs/watcher.out 2>&1 &
+watch: ## Start watcher; notification-only unless explicitly enabled in .env
+	@mkdir -p logs
+	@if pgrep -f "scripts/watcher.sh" >/dev/null 2>&1; then \
+		echo "watcher 已在运行，跳过重复启动"; \
+	else \
+		nohup bash scripts/watcher.sh > logs/watcher.out 2>&1 & \
+		echo "watcher 已启动（日志：logs/watcher.out）"; \
+	fi
 
-logs: ## 查看进化日志
-	tail -50 logs/evolution.log
+evolution: ## Show evolution requests and immutable promotion evidence
+	@echo "== staging requests (agent 可写，待宿主复核) =="; find app-tmp/promote-requests -maxdepth 2 -type f 2>/dev/null | sort || true
+	@echo "== trusted promotion requests =="; find data/promote-requests -maxdepth 2 -type f 2>/dev/null | sort || true
+	@echo "== promotion history =="; find data/promotion-history -maxdepth 2 -type f 2>/dev/null | sort | tail -40 || true
 
-status: ## 查看容器与晋升管道状态
+autonomy: ## Show recent controlled autonomy-cycle records
+	@ls -lt data/autonomy-cycles 2>/dev/null | head -20 || echo "暂无自主循环记录"
+
+approve: ## Cross-platform exact approval: make approve REQ=<op-id>
+	@test -n "$(REQ)" || (echo "用法：make approve REQ=op-..."; exit 2)
+	python3 scripts/approve.py $(REQ) approve
+
+deny: ## Cross-platform exact denial: make deny REQ=<op-id> REASON='...'
+	@test -n "$(REQ)" || (echo "用法：make deny REQ=op-... REASON='...'"; exit 2)
+	python3 scripts/approve.py $(REQ) deny "$(REASON)"
+
+approvals: ## Show signed owner approval commands, decisions and broker results
+	@echo "== commands =="; ls -lt data/approval-commands 2>/dev/null | head -20 || true
+	@echo "== decisions =="; ls -lt data/auth-decisions 2>/dev/null | head -20 || true
+	@echo "== broker results =="; ls -lt data/approval-results 2>/dev/null | head -20 || true
+
+ops: ## Show recent operation requests and results
+	@echo "== requests =="; ls -lt data/ops-requests 2>/dev/null | head -20 || true
+	@echo "== decisions =="; ls -lt data/auth-decisions 2>/dev/null | head -20 || true
+	@echo "== results =="; ls -lt data/ops-results 2>/dev/null | head -20 || true
+
+validation: ## Show validation configuration and trusted queues
+	@echo "== validation config =="; python3 scripts/init_local.py --status | grep -E 'validation|local_dir' || true
+	@echo "== validation requests =="; ls -lt data/validation-requests 2>/dev/null | head -20 || true
+	@echo "== validation results =="; ls -lt data/validation-results 2>/dev/null | head -20 || true
+
+repair: ## Show code repair aliases, queues and evidence
+	@echo "== repositories config =="; python3 scripts/init_local.py --status | grep -E 'repositories|code_workspaces|repair_space' || true
+	@echo "== repair requests =="; ls -lt data/repair-requests 2>/dev/null | head -20 || true
+	@echo "== repair results =="; ls -lt data/repair-results 2>/dev/null | head -20 || true
+	@echo "== repair artifacts =="; ls -lt repair-space 2>/dev/null | head -20 || true
+
+logs: ## Follow Agent and deterministic runners
+	docker compose logs -f --tail=100 agenelf approval-runner ops-runner validation-runner repair-runner self-upgrade-runner
+
+status: ## Show containers, local state and all controlled queues
 	-docker compose ps
-	-ls data/promote-requests/ 2>/dev/null || echo "（无待处理晋升请求）"
+	@$(MAKE) --no-print-directory local
+	@$(MAKE) --no-print-directory mind
+	@$(MAKE) --no-print-directory models
+	@$(MAKE) --no-print-directory workflow
+	@$(MAKE) --no-print-directory ops
+	@$(MAKE) --no-print-directory approvals
+	@$(MAKE) --no-print-directory validation
+	@$(MAKE) --no-print-directory repair
+	@$(MAKE) --no-print-directory autonomy
 
-clean: ## 清空暂存区与待处理请求（危险操作，需确认）
-	@echo "将清空 app-tmp/ 与 data/promote-requests/，5 秒内 Ctrl+C 取消..."; sleep 5
-	rm -rf app-tmp/* data/promote-requests/*
-	@echo "已清空"
+clean: ## Clear transient queues; preserve owner data and trusted result evidence
+	@echo "将清空 app-tmp、未完成请求和锁，5 秒内 Ctrl+C 取消..."; sleep 5
+	rm -rf app-tmp/* data/ops-requests/* data/ops-locks/* \
+		data/approval-commands/* data/approval-locks/* \
+		data/validation-requests/* data/validation-locks/* \
+		data/repair-requests/* data/repair-locks/*
+	@echo "已清空；local/、结果证据、repair-space、自主循环、裁决与晋升证据均保留。"

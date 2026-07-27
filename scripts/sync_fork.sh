@@ -24,7 +24,8 @@ mkdir -p "${DST}"
 
 echo "[sync_fork] 同步 ${SRC}/ -> ${DST}/（删除多余文件，排除 __pycache__）"
 if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete --exclude='__pycache__' --exclude='*.pyc' "${SRC}/" "${DST}/"
+    # --checksum：同尺寸同时间戳的候选改动也必须同步，不能依赖快速检查
+    rsync -a --delete --checksum --exclude='__pycache__' --exclude='*.pyc' "${SRC}/" "${DST}/"
 else
     # rsync 不可用时的兜底：先清空再拷贝（保持与 --delete 等价语义）
     echo "[sync_fork] 提示：未找到 rsync，使用 cp 兜底同步"

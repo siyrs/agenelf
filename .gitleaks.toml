@@ -1,0 +1,18 @@
+title = "Agenelf Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+# These values are deterministic fake fixtures used to verify redaction and examples.
+# The allowlist is value-specific: it does not suppress whole test directories or rules.
+[allowlist]
+description = "Known non-secret placeholders used by tests and templates"
+regexes = [
+  '''sk-replace-me''',
+  '''ghp_replace-me''',
+  '''sk-abcdefgh12345678''',
+  '''sk-THIS-MUST-NOT-BE-LOGGED''',
+  '''hunter2''',
+  '''abcdefghijklmnop''',
+  '''top-secret''',
+]

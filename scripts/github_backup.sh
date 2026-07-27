@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# github_backup.sh — 将 app/ 与 scripts/ 的变更提交并推送到 origin，附 backup/<时间戳> 标签
+# github_backup.sh — 将 app/、scripts/、policy/、docs/ 与 docker-compose.yml 的
+# 变更提交并推送到 origin，附 backup/<时间戳> 标签
 #
 # 执行者：宿主机上的人类或 promote.sh 的自动备份钩子。
 #
 # 用法：bash scripts/github_backup.sh [提交信息]
 #
 # 行为：
-#   1. 仅暂存并提交 app/ 与 scripts/ 的变更（无变更则跳过并提示，返回 0）；
+#   1. 仅暂存并提交 app/、scripts/、policy/、docs/、docker-compose.yml 中
+#      存在的路径的变更（无变更则跳过并提示，返回 0）；
 #   2. 打标签 backup/<时间戳>；
 #   3. 推送当前分支与该标签到 origin；
 #   4. 推送失败不炸脚本：返回非 0，并给出诊断（无远程 / 网络 / 凭据）；
@@ -22,7 +24,8 @@ LOG_FILE="${LOG_DIR}/github.log"
 mkdir -p "${LOG_DIR}"
 
 log() {
-    local m="[$(date '+%F %T')] $*"
+    local m
+    m="[$(date '+%F %T')] $*"
     echo "${m}"
     echo "${m}" >> "${LOG_FILE}"
 }
@@ -36,10 +39,14 @@ if ! git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 cd "${ROOT_DIR}"
 
-# ---------- 1. 暂存并提交 app/ 与 scripts/ ----------
-git add app scripts
+# ---------- 1. 暂存并提交受控路径 ----------
+ADD_PATHS=(app scripts)
+for extra in policy docs docker-compose.yml; do
+    [[ -e "${extra}" ]] && ADD_PATHS+=("${extra}")
+done
+git add "${ADD_PATHS[@]}"
 if git diff --cached --quiet; then
-    log "[github_backup] app/ 与 scripts/ 无变更，跳过备份"
+    log "[github_backup] 受控路径（app/scripts/policy/docs/docker-compose.yml）无变更，跳过备份"
     exit 0
 fi
 if ! git commit -m "${COMMIT_MSG}" >/dev/null; then
@@ -78,7 +85,7 @@ if [[ ${push_failed} -ne 0 ]]; then
     if grep -qiE 'Could not resolve hostname|Connection (refused|timed out|reset)|Network is unreachable|Failed to connect|Temporary failure in name resolution' <<<"${err}"; then
         log "[github_backup] 诊断：网络不可达，请检查网络连接/代理设置后重试"
     elif grep -qiE 'Authentication failed|Permission denied|403|401|could not read Username|terminal prompts disabled|invalid credentials' <<<"${err}"; then
-        log "[github_backup] 诊断：凭据问题，请检查 .env 中的 GITHUB_TOKEN（https）或 ssh 密钥配置"
+        log "[github_backup] 诊断：凭据问题，请检查 .env.github 中的 GITHUB_TOKEN（https）或 ssh 密钥配置"
     else
         log "[github_backup] 诊断：未识别的推送错误，原始输出：${err}"
     fi

@@ -1,0 +1,54 @@
+schema_version: 1
+policy_id: agenelf-workflow-constraints
+policy_version: 1.0.0
+status: active
+
+purpose: "定义私人助理任务编排的边界，让多步骤任务可追踪、可暂停、可验证"
+
+workflow:
+  task_requires:
+    - owner_goal
+    - acceptance_criteria
+    - evidence_plan
+  states:
+    - proposed
+    - planned
+    - running
+    - waiting_approval
+    - verifying
+    - completed
+    - failed
+    - cancelled
+  rules:
+    no_hidden_side_effects: true
+    every_step_has_evidence: true
+    failure_creates_learning_record: true
+    cancellation_must_stop_future_steps: true
+
+execution:
+  planner_can:
+    - decompose_tasks
+    - suggest_tools
+    - define_checks
+  planner_cannot:
+    - bypass_permission
+    - approve_own_request
+    - hide_failed_steps
+
+  executor_requires:
+    - validated_capability
+    - matching_authorization
+    - audit_record
+
+channels:
+  must_share_control_plane:
+    - cli
+    - http
+    - mobile
+    - voice
+
+forbidden:
+  - hidden_background_execution
+  - untracked_external_side_effect
+  - direct_main_branch_mutation
+  - secret_in_prompt

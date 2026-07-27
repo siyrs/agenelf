@@ -1,16 +1,42 @@
-# 运行时代码副本（由 scripts/sync_fork.sh 生成）
+# Runtime code copies
 app-fork/
 app-tmp/
 
-# 运行时数据
-data/
+# Runtime state
 logs/
 workspace/
 app-space/
+data/
 .env
+.env.github
+.ops-runner.env
+code-workspaces/
+repair-space/
+
+# Owner-specific local data (examples and docs are explicitly tracked)
+local/profile.yaml
+local/preferences.yaml
+local/servers.yaml
+local/validation.yaml
+local/models.yaml
+local/repositories.yaml
+local/context/
+local/memory/
+local/self/*
+!local/self/intentions.template.json
+local/secrets/
+
+# Legacy private locations kept ignored for migration compatibility
+config/servers.yaml
+secrets/
+
+# Growth report artifacts
+docs/growth-reports/*
+!docs/growth-reports/.gitkeep
 
 # Python
 __pycache__/
 *.pyc
+.pytest_cache/
 app/memory_store/
 app/evolution/evolution.log

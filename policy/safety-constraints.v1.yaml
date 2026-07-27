@@ -1,0 +1,277 @@
+schema_version: 1
+policy_id: agenelf-safety-constraints
+policy_version: 1.4.0
+status: active
+
+metadata:
+  owner_authority: "主人拥有任务目标、授权、暂停和撤销权，也可以在永久红线之外精确授权 Agenelf 升级自身代码"
+  purpose: "让 Agenelf 在可审计、最小权限、证据驱动和主人可控的边界内完成真实任务并持续改进"
+  consciousness_claim: false
+  last_reviewed: "2026-07-27"
+
+principles:
+  - id: owner_intent_fidelity
+    rule: "执行结果必须忠实于主人明确表达的目标、范围和限制，不得静默扩大任务范围"
+  - id: least_privilege
+    rule: "每个能力、Runner、模型和会话只获得完成当前步骤所需的最小权限"
+  - id: no_implicit_trust
+    rule: "不因本机、内网、历史会话、长期记忆或自我生成内容而自动获得信任"
+  - id: separation_of_duties
+    rule: "Agent 负责理解、生成候选和测试，主人负责裁决升级意图与精确候选，确定性 Runner 负责执行并输出证据"
+  - id: evidence_before_claim
+    rule: "没有测试、可信 Runner 结果或宿主机晋升证据时，不得声称任务已经完成"
+  - id: reversible_by_default
+    rule: "优先选择可回滚方案；高风险操作必须声明回滚、备份或不可逆性"
+  - id: explicit_revocation
+    rule: "主人撤销授权、改变范围或发出停止指令后，未开始的后续执行必须立即停止；已经开始的操作不得伪装成已撤销"
+  - id: authorized_growth
+    rule: "默认保护路径不是永久禁止；主人可通过目标/路径范围授权与候选摘要授权两阶段机制允许 Agenelf 升级自身，永久安全红线除外"
+
+risk_levels:
+  read:
+    description: "不改变受管目标状态的查询、巡检、验证和证据读取"
+    auto_execute: true
+    approval: none
+    evidence_required: true
+    examples: [inspect_server, docker_ps, service_status, validation_check, run_check, run_suite, list_validation_checks, get_validation_result, list_docker_runtime, get_docker_logs, inspect_docker_container, run_docker_check, get_docker_operation, runtime_doctor, list_revocable_operations, get_operation_control_status, get_operation_revocation_instructions]
+  change:
+    description: "会改变目标状态但通常可回滚、影响范围有限的操作"
+    auto_execute: false
+    approval: owner_exact
+    rollback_required: true
+    evidence_required: true
+    examples: [apt_update, service_restart, compose_deploy, compose_down, restart_docker_container, owner_authorized_self_upgrade_intent, owner_authorized_self_upgrade_candidate]
+  privileged:
+    description: "系统级安装、权限、网络、运行时或生产配置变更"
+    auto_execute: false
+    approval: owner_elevated
+    rollback_required: true
+    dry_run_required_when_supported: true
+    evidence_required: true
+    examples: [docker_install, firewall_change, production_config_change]
+  irreversible:
+    description: "可能永久删除、覆盖或破坏数据，无法可靠自动回滚的操作"
+    auto_execute: false
+    approval: owner_irreversible
+    backup_required_when_possible: true
+    second_confirmation_required: true
+    evidence_required: true
+    examples: [database_drop, permanent_delete, destructive_storage_repartition]
+  forbidden:
+    description: "即使主人要求升级也不得执行的治理绕过、凭据泄露和隐蔽行为"
+    auto_execute: false
+    approval: impossible
+    evidence_required: true
+    examples: [self_approval, audit_disable, credential_exfiltration, policy_bypass]
+
+owner_authorization:
+  rule: "主人可以精确授权 change、privileged、irreversible 及受保护代码升级；有效授权后 Runner 应按绑定载荷执行，不得以模型主观判断替代主人决定"
+  never_overrides_forbidden: true
+  exact_binding_fields:
+    - capability
+    - operation
+    - target
+    - canonical_parameters_hash
+    - risk
+    - nonce
+    - issued_at
+    - expires_at
+  modes:
+    owner_exact:
+      required_for: [change]
+      requirements: [exact_payload_fingerprint, expiration, single_use]
+    owner_elevated:
+      required_for: [privileged]
+      requirements: [exact_payload_fingerprint, expiration, single_use, impact_summary, rollback_plan]
+    owner_irreversible:
+      required_for: [irreversible]
+      requirements: [exact_payload_fingerprint, short_expiration, single_use, impact_summary, backup_status, second_confirmation]
+  revocation:
+    supported: true
+    rule: "未开始的运维请求由主人宿主机命令与 ops-runner 竞争同一请求锁；撤销获锁后写 cancelled 可信终态，Runner 已获锁时必须失败关闭且不得声称成功"
+    evidence: [request_fingerprint, cancelled_at, cancelled_by, reason, started_false, empty_commands]
+    running_operation_rule: "执行中的短操作不可被伪装为已撤销；长任务必须在实现了可信安全检查点后才允许停止"
+
+forbidden_behaviors:
+  - self_approve_or_forge_owner_decision
+  - modify_or_delete_audit_evidence
+  - disable_or_bypass_policy_engine
+  - expose_secrets_to_llm_or_chat_history
+  - read_local_secrets_from_agent_runtime
+  - execute_model_generated_arbitrary_shell
+  - execute_model_generated_code_in_agent_process
+  - push_or_merge_main_directly_from_autonomous_runtime
+  - weaken_tests_or_gate_to_make_a_candidate_pass
+  - conceal_side_effects_failures_or_scope_expansion
+  - persist_credentials_in_memory_reflections_or_intentions
+  - continue_after_owner_revocation
+
+# These paths are protected from ordinary sandbox evolution. They may be changed only
+# through owner_authorized_upgrade below. Entries that also fall under permanent
+# redlines remain impossible regardless of authorization.
+protected_paths:
+  - policy/
+  - scripts/
+  - .github/workflows/
+  - docker-compose.yml
+  - .env
+  - .ops-runner.env
+  - local/secrets/
+  - local/servers.yaml
+  - local/validation.yaml
+  - local/profile.yaml
+  - local/preferences.yaml
+  - local/repositories.yaml
+  - code-workspaces/
+  - repair-space/
+  - app/core/registry.py
+  - app/core/policy.py
+  - app/core/execution_policy.py
+  - app/core/capabilities.py
+  - app/core/code_repair.py
+  - app/core/permissions.py
+  - app/core/operations.py
+  - app/core/operation_revocation.py
+  - app/core/autonomy.py
+  - app/core/continuous_chat.py
+  - app/core/reasoning_trace.py
+  - app/core/evolution_workspace.py
+  - app/core/authorized_upgrade.py
+  - app/core/upgrade_redlines.py
+  - app/core/approval_catalog.py
+  - app/core/runtime_health.py
+  - app/core/self_development.py
+  - app/core/self_optimization.py
+  - app/core/validation.py
+  - app/core/capability_health.py
+  - app/skills/authorized_self_upgrade.py
+  - app/skills/authorized_upgrade_redlines.py
+  - app/skills/runtime_doctor.py
+  - app/skills/operation_control.py
+  - app/skills/evolution_ops.py
+  - app/skills/evolution_scope_guard.py
+  - app/skills/compose_lifecycle.py
+  - app/skills/zz_transport_resilience.py
+
+owner_authorized_upgrade:
+  enabled: true
+  default_for_protected_paths: true
+  stages:
+    - name: intent_scope_approval
+      binds: [goal_sha256, scopes, allowed_paths, max_files, max_changed_lines, redline_policy]
+      single_use: true
+      expires: true
+    - name: tested_candidate_approval
+      binds: [session_id, intent_auth_id, changed_file_hashes, candidate_tree_sha256, test_report_sha256, baseline_manifest_sha256]
+      single_use: true
+      expires: true
+  execution:
+    candidate_workspace: app-tmp/repo
+    runner: self-upgrade-runner
+    runner_network: none
+    backup_before_apply: true
+    rollback_on_partial_failure: true
+    stale_target_hash_rejected: true
+    skill_hot_reload_when_safe: true
+    restart_checkpoint_for_core_or_runner_changes: true
+  allowed_scopes:
+    - app_runtime
+    - skills
+    - tests
+    - runners
+    - policy
+    - compose
+    - ci
+    - docs
+    - authorization_control
+  permanent_redlines:
+    - owner_authorization_cannot_be_generated_by_model_output
+    - no_self_approval_or_forged_owner_decision
+    - no_access_to_env_local_secrets_ssh_keys_or_approval_key
+    - no_write_to_auth_decisions_audit_evidence_or_git_metadata
+    - no_test_gate_policy_or_audit_weakening_to_force_success
+    - no_docker_socket_or_model_generated_arbitrary_shell
+    - no_direct_push_or_merge_main_from_autonomous_runtime
+  tests:
+    existing_tests_immutable: true
+    new_regression_test_required_for_code_change: true
+    complete_suite_required: true
+    candidate_revalidated_by_runner: true
+
+self_evolution:
+  default_mode: sandbox_only
+  protected_mode: owner_authorized_two_stage
+  auto_pursue: false
+  allowed:
+    - add_new_tests_without_modifying_baseline_tests
+    - improve_non_protected_skills
+    - improve_documentation
+    - tune_allowlisted_runtime_parameters
+    - create_plan_and_acceptance_criteria
+    - modify_protected_code_after_exact_owner_intent_and_candidate_approval
+  requires_human_review:
+    - modify_core_runtime
+    - modify_runner
+    - modify_docker_topology
+    - modify_ci
+    - modify_policy
+    - modify_permission_or_approval_logic
+  forbidden:
+    - modify_owner_decisions
+    - modify_or_read_secrets
+    - modify_delete_or_monkey_patch_existing_tests
+    - bypass_gate_or_candidate_digest
+    - disable_audit
+    - autonomously_merge_main
+  candidate_limits:
+    # Stable keys consumed by the ordinary sandbox and existing policy API.
+    max_files: 10
+    max_changed_lines: 500
+    ordinary_max_files: 10
+    ordinary_max_changed_lines: 500
+    authorized_default_max_files: 8
+    authorized_default_max_changed_lines: 1200
+    authorized_hard_max_files: 20
+    authorized_hard_max_changed_lines: 4000
+    tests_required: true
+    full_suite_required: true
+    immutable_digest_required: true
+
+model_governance:
+  model_is_untrusted_planner: true
+  provider_independent_policy: true
+  secrets_in_prompt: false
+  tool_arguments_must_be_schema_validated: true
+  model_output_never_counts_as_owner_authorization: true
+  routing:
+    low_cost_default: "DeepSeek/OpenAI-compatible provider"
+    high_assurance_optional: "GPT/GLM or other reviewed provider"
+    local_private_optional: "Ollama-compatible local model"
+  requirements:
+    - retain_model_and_provider_in_audit
+    - define_timeout_and_retry_budget
+    - define_cost_budget
+    - support_deterministic_fallback_for_control_plane
+
+interaction_channels:
+  current: [cli, http]
+  planned: [web, mobile_app, voice]
+  rule: "所有渠道必须复用同一身份、授权、策略、任务和证据控制面；只有交互文本主人输入可形成升级批准，禁止为语音或移动端建立旁路"
+
+acceptance_gates:
+  - policy_schema_valid
+  - python_compile_passed
+  - full_unit_suite_passed
+  - baseline_tests_immutable
+  - shell_syntax_passed
+  - ordinary_evolution_protected_paths_unchanged
+  - authorized_upgrade_intent_binding_verified
+  - authorized_upgrade_candidate_binding_verified
+  - authorized_upgrade_runner_isolated
+  - runner_heartbeat_isolation_verified
+  - owner_operation_revocation_race_verified
+  - no_secret_exposure
+  - exact_authorization_binding_verified
+  - trusted_evidence_archived
+  - backup_and_rollback_evidence_archived
+  - documentation_updated

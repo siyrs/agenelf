@@ -1,16 +1,28 @@
 """LLM 客户端模块。
 
-提供基于 OpenAI 兼容接口的 LLMClient，以及无 API Key 时
-用于本地开发与测试的脚本化 MockLLM。
+提供基于 OpenAI 兼容接口的真实 LLMClient。无 API Key 时用于本地
+开发与测试的脚本化 MockLLM 见 core/mock_llm.py。
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 
-# 触发 MockLLM 生成工具调用的中文关键词
-_TRIGGER_KEYWORDS = ("写", "代码", "运行", "执行", "文件")
+# 清洗字符串中的孤立 surrogate 字符（\ud800-\udfff），避免 openai 库 json 序列化崩溃
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _sanitize_surrogates(obj: object) -> object:
+    """递归清洗对象中所有字符串的 surrogate 字符。"""
+    if isinstance(obj, str):
+        return _SURROGATE_RE.sub("�", obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(v) for v in obj]
+    return obj
 
 
 class LLMClient:
@@ -55,117 +67,24 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        # 防御性清洗：递归去除所有字符串中的 surrogate 字符，防止 openai JSON 编码崩溃
+        kwargs = _sanitize_surrogates(kwargs)
         resp = self._client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
+
+        # 清洗 LLM 响应中的 surrogate 字符（DeepSeek 等模型可能返回含 \ud800-\udfff 的文本）
+        content = _SURROGATE_RE.sub("�", str(msg.content or "")) if msg.content else None
 
         tool_calls: list[dict] = []
         for tc in msg.tool_calls or []:
             # arguments 是 JSON 字符串，解析失败时回退为空 dict
             try:
-                arguments = json.loads(tc.function.arguments or "{}")
+                raw_args = _SURROGATE_RE.sub("�", str(tc.function.arguments or "{}"))
+                arguments = json.loads(raw_args)
             except json.JSONDecodeError:
                 arguments = {}
             tool_calls.append(
                 {"id": tc.id, "name": tc.function.name, "arguments": arguments}
             )
-        return {"content": msg.content, "tool_calls": tool_calls}
+        return {"content": content, "tool_calls": tool_calls}
 
-
-class MockLLM(LLMClient):
-    """脚本化的假 LLM，用于无 API Key 的本地开发与测试。
-
-    行为脚本：
-    1. 首轮用户输入中若含 "写"/"代码"/"运行" 等关键词，
-       返回一个 write_code_file 或 run_python 的 tool_call；
-    2. 若对话中已包含工具结果（role == "tool"），返回最终文本回复；
-    3. 其他情况返回普通的提示文本。
-    """
-
-    def __init__(self, config: dict | None = None):
-        # 不调用父类 __init__，避免任何网络客户端初始化
-        self.config = config or {}
-        self.model = "mock-llm"
-        # 记录 chat 调用次数，便于调试与测试
-        self.call_count = 0
-
-    def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
-        self.call_count += 1
-
-        # 对话中已存在工具结果 → 生成最终总结回复；
-        # 若刚写完示例文件且 run_python 可用，则再补一步"运行它"，演示多轮工具调用
-        tool_msgs = [m for m in messages if m.get("role") == "tool"]
-        if tool_msgs:
-            last_result = str(tool_msgs[-1].get("content", ""))
-            available = set()
-            for t in tools or []:
-                fn = t.get("function", {}) if isinstance(t, dict) else {}
-                if fn.get("name"):
-                    available.add(fn["name"])
-            already_ran = any("退出码" in str(m.get("content", "")) for m in tool_msgs)
-            if (
-                not already_ran
-                and "run_python" in available
-                and "hello.py" in last_result
-                and "写入失败" not in last_result
-            ):
-                return {
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": "mock_call_run",
-                            "name": "run_python",
-                            "arguments": {"code": "exec(open('hello.py', encoding='utf-8').read())"},
-                        }
-                    ],
-                }
-            return {
-                "content": f"任务已完成，工具执行结果如下：\n{last_result}",
-                "tool_calls": [],
-            }
-
-        # 取最后一条用户输入判断是否要触发工具调用
-        user_text = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                user_text = str(m.get("content", ""))
-                break
-
-        available = set()
-        for t in tools or []:
-            # OpenAI schema: {"type": "function", "function": {"name": ...}}
-            fn = t.get("function", {}) if isinstance(t, dict) else {}
-            if fn.get("name"):
-                available.add(fn["name"])
-
-        if any(kw in user_text for kw in _TRIGGER_KEYWORDS):
-            # 优先调用 write_code_file，其次 run_python；均不可用时伪造一个，
-            # 由 registry.dispatch 报未知工具，也能走完一轮完整 tool-call 回路
-            if "run_python" in available and "write_code_file" not in available:
-                return {
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": "mock_call_1",
-                            "name": "run_python",
-                            "arguments": {"code": "print('hello world')"},
-                        }
-                    ],
-                }
-            return {
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "mock_call_1",
-                        "name": "write_code_file",
-                        "arguments": {
-                            "path": "hello.py",
-                            "content": "print('hello world')\n",
-                        },
-                    }
-                ],
-            }
-
-        return {
-            "content": "（MockLLM）未识别到可触发工具的关键词，请描述需要写代码或运行的任务。",
-            "tool_calls": [],
-        }

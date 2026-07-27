@@ -16,10 +16,12 @@
    ```
 
    gate 会依次执行：安全底线扫描 → 受保护路径检查 → 改动规模限值 →
-   完整测试。全部通过后生成 READY 标记，由宿主机侧的人类或 watcher
-   执行晋升，你无法自行晋升，也不要尝试。
+   完整测试。全部通过后在暂存队列 `app-tmp/promote-requests/` 生成 READY
+   标记；宿主机 watcher 复核后移入可信队列，promote 前还会重新校验摘要并
+   隔离重跑测试。你无法自行晋升，也不要尝试伪造 READY——伪造产物必然
+   无法通过宿主机复核。
 4. **失败回滚后分析日志**：若被拒绝，阅读
-   `data/promote-requests/<ID>/REJECTED` 与 `report.txt` 中的原因，
+   `app-tmp/promote-requests/<ID>/REJECTED` 与 `report.txt` 中的原因，
    以及 `logs/evolution.log`，修复问题后重新发起检查。不要重复提交
    同样的错误改动。
 

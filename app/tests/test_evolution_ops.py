@@ -133,6 +133,20 @@ class EvolutionOpsTest(unittest.TestCase):
         )
         self.assertTrue((self.root / "app-tmp" / "tests" / "test_dummy.py").exists())
 
+    def test_begin_清除暂存区残留文件(self):
+        """回归：app-tmp 中的残留文件（如上一轮失败的补丁）必须被 begin 清除。"""
+        stale_dir = self.root / "app-tmp" / "tests"
+        stale_dir.mkdir(parents=True, exist_ok=True)
+        stale = stale_dir / "test_stale_leftover.py"
+        stale.write_text("# 上一轮迭代的残留\n", encoding="utf-8")
+
+        result = self._begin()
+        self.assertIn("已开始", result)
+        # 残留文件已清除，且 fork 内容完整镜像
+        self.assertFalse(stale.exists())
+        self.assertTrue((self.root / "app-tmp" / "tests" / "test_dummy.py").exists())
+        self.assertTrue((self.root / "app-tmp" / "core" / "dummy.py").exists())
+
     def test_write_file_写入成功且拒绝逃逸(self):
         self._begin()
 

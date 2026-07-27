@@ -1,0 +1,43 @@
+name: CodeQL
+
+# GitHub 官方 codeql-action 标准模板（languages: python）。
+# 诚实约束：Action 当前使用版本标签引用，待固定到完整 commit SHA（见各 TODO）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python]
+    steps:
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      # TODO(供应链): 固定到完整 commit SHA，参考 GitHub 官方建议
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

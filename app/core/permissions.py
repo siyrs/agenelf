@@ -1,18 +1,19 @@
-"""permissions — 运维命令权限拦截核心（人类授权闸门）。
+"""Human approval primitives and conservative local-command classification.
 
-设计哲学：agent 提议，人类裁决。
-- 三级分类：白名单命令直接放行；普通命令由技能层要求 confirm=True；
-  高危命令一律拦截，必须人类在宿主机执行 scripts/approve.sh 批准后，
-  agent 携带授权 ID 重试方可执行（一次性核销）。
-- 授权请求落盘在 data/auth-requests/<id>.json，agent 只能创建与查询，
-  裁决（approve/deny）只能由人类在宿主机完成。
-- 全部拦截/批准/执行事件追加 logs/audit.log，可审计、可追溯。
+Approval is deliberately split across three directories:
 
-本模块不依赖其他 core 模块，仅用标准库。
+* ``auth-requests`` is writable by the Agent and contains proposals.
+* ``auth-decisions`` is written by the host-side ``approve.sh`` and mounted
+  read-only into the Agent container.
+* ``auth-consumed`` stores one-time-use markers.
+
+Every approval is bound to a canonical payload fingerprint.  An approval for
+one command, target, or parameter set can never authorize another operation.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -20,113 +21,141 @@ import shlex
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
-# 授权请求默认有效期（秒）
 DEFAULT_TTL_SECONDS = 300
-
-# 防轰炸：待裁决请求达到该数量后拒绝新建
+ELEVATED_TTL_SECONDS = 180
+IRREVERSIBLE_TTL_SECONDS = 120
 MAX_PENDING_REQUESTS = 10
 
-# 授权请求状态
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
 STATUS_DENIED = "denied"
 STATUS_EXPIRED = "expired"
 STATUS_USED = "used"
 STATUS_NOT_FOUND = "not_found"
+STATUS_BINDING_MISMATCH = "binding_mismatch"
 
-# ----------------------------------------------------------------------
-# 三级分类：whitelist / normal / dangerous
-# ----------------------------------------------------------------------
-
-# 白名单只读命令（按可执行文件名匹配；出现 shell 元字符时不适用）
 _WHITELIST_PROGS = {
-    "ls", "ps", "df", "free", "uptime", "cat", "grep", "tail", "ss",
-    "uname", "whoami", "pwd", "echo", "date", "hostname", "id", "w",
-    "last", "env", "printenv", "dig", "nslookup",
+    "ls",
+    "ps",
+    "df",
+    "free",
+    "uptime",
+    "cat",
+    "grep",
+    "tail",
+    "ss",
+    "uname",
+    "whoami",
+    "pwd",
+    "echo",
+    "date",
+    "hostname",
+    "id",
+    "w",
+    "last",
+    "dig",
+    "nslookup",
 }
-
-# 出现以下字符即视为复合命令，不适用白名单直放（交给 normal/dangerous 判定）
 _SHELL_META_CHARS = (">", "<", "|", ";", "&", "`", "$(", "\n")
-
-# 系统路径前缀（写重定向目标、mv/cp 目标命中即为高危）
-_SYSTEM_PATH_RE = re.compile(r"^/(?:etc|usr|bin|sbin|boot)(?:/|$)")
-
-# 高危模式（ERE，逐条注释含义；命中任意一条即 dangerous）
+_SYSTEM_PATH_RE = re.compile(r"^/(?:etc|usr|bin|sbin|boot|root)(?:/|$)")
 _DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    # 删除文件/目录
     (re.compile(r"\b(?:rm|rmdir)\b"), "rm/rmdir 删除操作"),
-    # dd 裸写磁盘
     (re.compile(r"\bdd\b"), "dd 低层写操作"),
-    # 格式化磁盘
     (re.compile(r"\bmkfs(?:\.\w+)?\b"), "mkfs 格式化磁盘"),
-    # 关机/重启
     (re.compile(r"\b(?:shutdown|reboot|halt|poweroff)\b"), "关机/重启"),
-    # 杀进程
-    (re.compile(r"\b(?:kill|killall|pkill)\b"), "kill/killall/pkill 杀进程"),
-    # 改权限/属主
-    (re.compile(r"\b(?:chmod|chown)\b"), "chmod/chown 改权限属主"),
-    # 账号管理
-    (re.compile(r"\b(?:useradd|userdel|usermod|passwd|visudo)\b"), "账号/口令管理"),
-    # 防火墙
-    (re.compile(r"\biptables\b"), "iptables 防火墙变更"),
-    # systemctl 的破坏性动作
-    (re.compile(r"\bsystemctl\b[^|;&]*\b(?:stop|restart|disable|mask)\b"),
-     "systemctl stop/restart/disable/mask"),
-    # 写重定向（含 tee）到系统路径
-    (re.compile(r"(?:>{1,2}|\btee\b)\s*/(?:etc|usr|bin|sbin|boot)(?:/|\s|$)"),
-     "写入系统路径"),
-    # curl/wget 远程脚本管道直执行
-    (re.compile(r"\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:ba)?sh\b"),
-     "远程脚本管道直执行"),
-    # git 强制推送
-    (re.compile(r"\bgit\b[^|;&]*\bpush\b[^|;&]*(?:--force\b|-f\b)"),
-     "git push --force"),
-    # fork 炸弹 :(){ :|:& };:
+    (re.compile(r"\b(?:kill|killall|pkill)\b"), "杀进程"),
+    (re.compile(r"\b(?:chmod|chown)\b"), "权限或属主变更"),
+    (re.compile(r"\b(?:useradd|userdel|usermod|passwd|visudo)\b"), "账号管理"),
+    (re.compile(r"\b(?:iptables|nft|ufw)\b"), "防火墙变更"),
+    (
+        re.compile(r"\bsystemctl\b[^|;&]*\b(?:stop|restart|disable|mask)\b"),
+        "systemd 破坏性动作",
+    ),
+    (
+        re.compile(r"(?:>{1,2}|\btee\b)\s*/(?:etc|usr|bin|sbin|boot|root)(?:/|\s|$)"),
+        "写入系统路径",
+    ),
+    (
+        re.compile(r"\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:ba)?sh\b"),
+        "远程脚本管道执行",
+    ),
+    (
+        re.compile(r"\bgit\b[^|;&]*\bpush\b[^|;&]*(?:--force\b|-f\b)"),
+        "git 强制推送",
+    ),
     (re.compile(r":\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:"), "fork 炸弹"),
-    # 安装软件包
-    (re.compile(r"\b(?:pip3?|npm|apt(?:-get)?|yum)\b[^|;&]*\binstall\b"),
-     "安装软件包"),
+    (
+        re.compile(r"\b(?:pip3?|npm|apt(?:-get)?|yum|dnf)\b[^|;&]*\binstall\b"),
+        "安装软件包",
+    ),
 ]
 
 
 def _now() -> datetime:
-    """当前本地时间（带时区，便于跨进程比较）。"""
     return datetime.now().astimezone()
 
 
-def _iso(dt: datetime) -> str:
-    """统一的时间序列化格式（秒级精度，与 approve.sh 内联 python 保持一致）。"""
-    return dt.isoformat(timespec="seconds")
+def _iso(value: datetime) -> str:
+    return value.isoformat(timespec="seconds")
 
 
-def _get_root() -> Path:
-    """获取运行时根目录：AGENELF_ROOT 环境变量优先，否则取 app/ 的上一级。
-
-    本文件固定位于 <根>/app/core/permissions.py，向上两级即根。
-    """
-    env_root = os.environ.get("AGENELF_ROOT", "").strip()
-    if env_root:
-        return Path(env_root).resolve()
+def _root() -> Path:
+    configured = os.environ.get("AGENELF_ROOT", "").strip()
+    if configured:
+        return Path(configured).resolve()
     return Path(__file__).resolve().parents[2]
 
 
-def _requests_dir(root: Path | None = None) -> Path:
-    """授权请求目录 data/auth-requests/。"""
-    return (root or _get_root()) / "data" / "auth-requests"
+def _directory(name: str, root: Path | None = None) -> Path:
+    return (root or _root()) / "data" / name
 
 
-def _audit_log_path(root: Path | None = None) -> Path:
-    """审计日志 logs/audit.log。"""
-    return (root or _get_root()) / "logs" / "audit.log"
+def _path(directory: str, request_id: str, root: Path | None = None) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", str(request_id or "")):
+        raise ValueError(f"非法授权请求 ID：{request_id!r}")
+    return _directory(directory, root) / f"{request_id}.json"
+
+
+def _read(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write(path: Path, data: dict[str, Any], exclusive: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    if exclusive:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return
+    tmp = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def canonical_binding(binding: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(binding, dict):
+        raise TypeError("binding 必须是对象")
+    return json.loads(json.dumps(binding, ensure_ascii=False, sort_keys=True))
+
+
+def binding_fingerprint(binding: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        canonical_binding(binding),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _mv_cp_targets_system(command: str) -> bool:
-    """检测 mv/cp 的目标（最后一个参数）是否为系统路径。
-
-    按管道/分号切段后逐段 shlex 解析；解析失败时保守返回 False
-    （其余正则规则仍会兜底，宁可少报也不在此抛异常）。
-    """
     for segment in re.split(r"[|;&]", command):
         try:
             tokens = shlex.split(segment)
@@ -139,93 +168,64 @@ def _mv_cp_targets_system(command: str) -> bool:
 
 
 def classify_command(command: str) -> str:
-    """把 shell 命令分为 "whitelist" | "normal" | "dangerous" 三级。
+    """Classify local commands as whitelist, normal, or dangerous."""
 
-    判定顺序：dangerous 优先（命中任意高危模式即 dangerous），
-    其次 whitelist（无 shell 元字符的简单只读命令），其余为 normal。
-    """
     if not isinstance(command, str) or not command.strip():
         return "normal"
     text = command.strip()
-
-    # 1. 高危模式（全文扫描，优先于一切）
-    for pattern, _desc in _DANGEROUS_PATTERNS:
+    for pattern, _description in _DANGEROUS_PATTERNS:
         if pattern.search(text):
             return "dangerous"
     if _mv_cp_targets_system(text):
         return "dangerous"
-
-    # 2. 白名单：不允许 shell 元字符（重定向/管道/复合命令一律降级为 normal）
-    if not any(ch in text for ch in _SHELL_META_CHARS):
-        try:
-            argv = shlex.split(text)
-        except ValueError:
-            argv = []
-        if argv:
-            prog = argv[0]
-            if prog in _WHITELIST_PROGS:
-                return "whitelist"
-            # curl 仅允许 -I/--head（只取响应头）
-            if prog == "curl" and ("-I" in argv[1:] or "--head" in argv[1:]):
-                return "whitelist"
-            # systemctl 仅允许 status 子命令
-            if prog == "systemctl" and len(argv) >= 2 and argv[1] == "status":
-                return "whitelist"
-            # ping 必须带 -c（限定次数，避免长挂）
-            if prog == "ping" and "-c" in argv[1:]:
-                return "whitelist"
-
-    # 3. 其余全部普通
+    if any(token in text for token in _SHELL_META_CHARS):
+        return "normal"
+    try:
+        argv = shlex.split(text)
+    except ValueError:
+        return "normal"
+    if not argv:
+        return "normal"
+    program = argv[0]
+    if program in _WHITELIST_PROGS:
+        return "whitelist"
+    if program == "curl" and ("-I" in argv[1:] or "--head" in argv[1:]):
+        return "whitelist"
+    if program == "systemctl" and len(argv) >= 2 and argv[1] == "status":
+        return "whitelist"
+    if program == "ping" and "-c" in argv[1:]:
+        return "whitelist"
     return "normal"
 
 
-# ----------------------------------------------------------------------
-# 授权请求生命周期
-# ----------------------------------------------------------------------
+def _policy_evaluation(capability: str, operation: str) -> dict[str, Any] | None:
+    """咨询策略引擎；引擎不可用或调用失败时返回 None（降级为既有行为）。"""
 
-def _request_path(request_id: str, root: Path | None = None) -> Path:
-    """授权请求文件路径；request_id 含路径分隔符时视为非法（防穿越）。"""
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", request_id or ""):
-        raise ValueError(f"非法的授权请求 ID：{request_id!r}")
-    return _requests_dir(root) / f"{request_id}.json"
-
-
-def _read_request(request_id: str, root: Path | None = None) -> dict | None:
-    """读取授权请求 JSON；不存在或损坏返回 None。"""
     try:
-        path = _request_path(request_id, root)
-    except ValueError:
-        return None
-    if not path.is_file():
+        from core.policy import PolicyEngine  # type: ignore[import-not-found]
+    except Exception:
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        engine = PolicyEngine()
+        if getattr(engine, "degraded", False):
+            # 策略文件缺失/损坏 → 视为引擎不可用，回退既有行为；
+            # 只有健康引擎的判定才具有约束力（兼容未部署 policy/ 的环境）
+            return None
+        result = engine.evaluate(capability, operation, subject="agent")
+    except Exception:
         return None
-
-
-def _write_request(data: dict, root: Path | None = None) -> None:
-    """落盘授权请求 JSON。"""
-    path = _request_path(data["id"], root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    return result if isinstance(result, dict) else None
 
 
 def _count_pending(root: Path | None = None) -> int:
-    """统计当前 pending 状态的请求数（防轰炸用）。"""
-    req_dir = _requests_dir(root)
-    if not req_dir.is_dir():
+    requests = _directory("auth-requests", root)
+    decisions = _directory("auth-decisions", root)
+    if not requests.is_dir():
         return 0
     count = 0
-    for file in req_dir.glob("*.json"):
-        try:
-            data = json.loads(file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if data.get("status") == STATUS_PENDING:
+    for path in requests.glob("*.json"):
+        request_id = path.stem
+        if not (decisions / f"{request_id}.json").exists():
             count += 1
     return count
 
@@ -236,90 +236,177 @@ def request_auth(
     detail: str,
     reason: str = "",
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    binding: dict[str, Any] | None = None,
+    *,
+    operation: str = "",
+    capability: str = "server.operations",
+    channel: str = "cli",
 ) -> tuple[bool, str]:
-    """创建一条授权请求，写 data/auth-requests/<id>.json。
+    """Create a proposal; only host-side approval can create a decision.
 
-    防轰炸：pending 数 >= MAX_PENDING_REQUESTS 时拒绝新建。
-    成功返回 (True, request_id)，失败返回 (False, 提示信息)。
+    When the policy engine is importable, its evaluation binds the request to
+    a policy version and approval mode.  Elevated/irreversible modes escalate
+    to dual-signature (two distinct human approvers) with a shorter TTL.
     """
-    root = _get_root()
+
+    root = _root()
     pending = _count_pending(root)
     if pending >= MAX_PENDING_REQUESTS:
-        return (
-            False,
-            f"待裁决授权请求已达 {pending} 条（上限 {MAX_PENDING_REQUESTS}），"
-            "拒绝新建；请通知人类先处理存量请求。",
-        )
+        return False, f"待裁决授权请求已达 {pending} 条（上限 {MAX_PENDING_REQUESTS}）"
     request_id = f"auth-{uuid.uuid4().hex[:12]}"
+    bound = canonical_binding(
+        binding
+        or {
+            "skill": str(skill),
+            "action": str(action),
+            "detail": str(detail),
+        }
+    )
+    evaluation = _policy_evaluation(capability, operation)
+    policy_version = ""
+    approval_mode = ""
+    required_approvers = 1
+    effective_ttl = max(1, int(ttl_seconds))
+    policy_fields: dict[str, Any] = {}
+    if evaluation:
+        policy_version = str(evaluation.get("policy_version") or "")
+        approval_mode = str(evaluation.get("approval") or "")
+        if approval_mode == "owner_elevated":
+            required_approvers = 2
+            effective_ttl = ELEVATED_TTL_SECONDS
+            policy_fields["require_distinct_humans"] = True
+        elif approval_mode == "owner_irreversible":
+            required_approvers = 2
+            effective_ttl = IRREVERSIBLE_TTL_SECONDS
+            policy_fields["require_distinct_humans"] = True
+            policy_fields["second_confirmation_required"] = True
     now = _now()
     data = {
+        "schema_version": 2,
         "id": request_id,
-        "skill": skill,
-        "action": action,
-        "detail": detail,
-        "reason": reason,
-        "status": STATUS_PENDING,
+        "skill": str(skill),
+        "action": str(action),
+        "detail": str(detail),
+        "reason": str(reason),
+        "channel": str(channel),
+        "binding": bound,
+        "fingerprint": binding_fingerprint(bound),
         "created_at": _iso(now),
-        "expires_at": _iso(now + timedelta(seconds=ttl_seconds)),
-        "decided_at": None,
-        "decided_by": None,
+        "expires_at": _iso(now + timedelta(seconds=effective_ttl)),
+        "ttl_seconds": effective_ttl,
+        "approvals": [],
     }
-    _write_request(data, root)
-    audit("auth_request", f"{request_id} skill={skill} action={action} detail={detail!r}")
+    if evaluation:
+        data["policy_version"] = policy_version
+        data["approval_mode"] = approval_mode
+        if required_approvers > 1:
+            data["required_approvers"] = required_approvers
+        data.update(policy_fields)
+    try:
+        _write(_path("auth-requests", request_id, root), data, exclusive=True)
+    except OSError as exc:
+        return False, f"授权请求创建失败：{exc}"
+    detail_msg = f"{request_id} skill={skill} action={action}"
+    if policy_version:
+        detail_msg += f" policy_version={policy_version}"
+    audit("auth_request", detail_msg)
     return True, request_id
 
 
-def check_auth(request_id: str) -> str:
-    """查询授权请求状态。
+def _expired(timestamp: Any) -> bool:
+    try:
+        expires_at = datetime.fromisoformat(str(timestamp))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc).astimezone()
+        return _now() > expires_at
+    except ValueError:
+        return True
 
-    返回 "pending" | "approved" | "denied" | "expired" | "used" | "not_found"；
-    pending/approved 超过 expires_at 一律视为 expired。
-    """
-    data = _read_request(request_id)
-    if data is None:
+
+def check_auth(
+    request_id: str,
+    expected_binding: dict[str, Any] | None = None,
+) -> str:
+    root = _root()
+    try:
+        request = _read(_path("auth-requests", request_id, root))
+    except ValueError:
         return STATUS_NOT_FOUND
-    status = data.get("status", "")
-    if status in (STATUS_PENDING, STATUS_APPROVED):
-        try:
-            expires_at = datetime.fromisoformat(str(data.get("expires_at", "")))
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc).astimezone()
-            if _now() > expires_at:
-                return STATUS_EXPIRED
-        except ValueError:
-            # 时间戳损坏：安全起见按过期处理
-            return STATUS_EXPIRED
-    return status if status in (
-        STATUS_PENDING, STATUS_APPROVED, STATUS_DENIED, STATUS_USED,
-    ) else STATUS_NOT_FOUND
+    if request is None:
+        return STATUS_NOT_FOUND
+    if _path("auth-consumed", request_id, root).exists():
+        return STATUS_USED
+
+    decision = _read(_path("auth-decisions", request_id, root))
+    if decision is None:
+        return STATUS_EXPIRED if _expired(request.get("expires_at")) else STATUS_PENDING
+    if decision.get("decision") == "deny":
+        return STATUS_DENIED
+    try:
+        required_approvers = int(request.get("required_approvers") or 1)
+    except (TypeError, ValueError):
+        required_approvers = 1
+    if decision.get("decision") != "approve":
+        if required_approvers > 1:
+            # 多票仍在收集中，尚未形成最终批准。
+            return STATUS_EXPIRED if _expired(request.get("expires_at")) else STATUS_PENDING
+        return STATUS_NOT_FOUND
+    if required_approvers > 1:
+        # 双签：仅统计宿主机裁决文件中不同 decided_by 的票数；
+        # 同一批准人重复投票只算一票。
+        approvers = {
+            str(item.get("decided_by"))
+            for item in decision.get("approvals") or []
+            if isinstance(item, dict) and item.get("decided_by")
+        }
+        if len(approvers) < required_approvers:
+            return (
+                STATUS_EXPIRED
+                if _expired(request.get("expires_at"))
+                else STATUS_PENDING
+            )
+    if _expired(decision.get("expires_at")):
+        return STATUS_EXPIRED
+
+    actual_fingerprint = str(decision.get("fingerprint", ""))
+    request_fingerprint = binding_fingerprint(request.get("binding", {}))
+    if actual_fingerprint != request_fingerprint:
+        return STATUS_BINDING_MISMATCH
+    if expected_binding is not None:
+        if actual_fingerprint != binding_fingerprint(expected_binding):
+            return STATUS_BINDING_MISMATCH
+    return STATUS_APPROVED
 
 
-def consume_auth(request_id: str) -> bool:
-    """核销授权：approved 且未过期 → 标记 used（一次性）返回 True，否则 False。"""
-    root = _get_root()
-    data = _read_request(request_id, root)
-    if data is None:
+def consume_auth(
+    request_id: str,
+    expected_binding: dict[str, Any] | None = None,
+) -> bool:
+    """Atomically consume an approved, exact-match authorization once."""
+
+    if check_auth(request_id, expected_binding=expected_binding) != STATUS_APPROVED:
         return False
-    if data.get("status") != STATUS_APPROVED:
+    request = _read(_path("auth-requests", request_id)) or {}
+    marker = {
+        "id": request_id,
+        "consumed_at": _iso(_now()),
+        "fingerprint": binding_fingerprint(
+            expected_binding or request.get("binding", {})
+        ),
+    }
+    try:
+        _write(_path("auth-consumed", request_id), marker, exclusive=True)
+    except (FileExistsError, OSError, AttributeError):
         return False
-    if check_auth(request_id) != STATUS_APPROVED:
-        # 已过期（或状态异常）
-        return False
-    data["status"] = STATUS_USED
-    _write_request(data, root)
     audit("auth_consumed", f"{request_id} 一次性授权已核销")
     return True
 
 
 def audit(event: str, detail: str) -> None:
-    """追加审计日志 logs/audit.log：[时间戳] [event] detail。"""
-    log_path = _audit_log_path()
+    path = _root() / "logs" / "audit.log"
     try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"[{_iso(_now())}] [{event}] {detail}\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{_iso(_now())}] [{event}] {detail}\n")
     except OSError:
-        # 审计日志写入失败不应阻断主流程，但也不静默吞掉——打到 stderr
-        import sys
-
-        print(f"[permissions] 审计日志写入失败：{log_path}", file=sys.stderr)
+        pass

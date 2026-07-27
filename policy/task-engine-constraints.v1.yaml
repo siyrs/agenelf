@@ -1,0 +1,84 @@
+schema_version: 2
+policy_id: agenelf-task-engine-constraints
+status: active
+
+purpose: "让长期任务跨 CLI/HTTP/Web/Mobile/Voice 共享同一可恢复、可审计、证据驱动的控制面"
+
+principles:
+  - id: explicit_owner_goal
+    rule: "每个任务必须记录主人目标、验收条件和证据计划"
+  - id: no_direct_execution
+    rule: "Task Engine 只编排状态和引用，不直接执行服务器命令、代码补丁或模型调用"
+  - id: evidence_before_completion
+    rule: "completed 必须由至少一条可信运维、验证、测试或晋升证据支持"
+  - id: optimistic_concurrency
+    rule: "多端修改应携带 revision；版本不匹配必须拒绝覆盖"
+  - id: revocation
+    rule: "主人取消任务后，未完成步骤必须停止，不能继续后台推进"
+  - id: resumable
+    rule: "长任务必须支持 paused -> running 恢复和 failed -> planned 重试"
+
+states:
+  proposed: [planned, cancelled]
+  planned: [running, paused, cancelled]
+  running: [waiting_approval, paused, verifying, failed, cancelled]
+  waiting_approval: [running, paused, failed, cancelled]
+  paused: [running, cancelled]
+  verifying: [completed, running, failed, cancelled]
+  failed: [planned, cancelled]
+  completed: []
+  cancelled: []
+
+step_states:
+  pending: [running, waiting_approval, skipped, cancelled]
+  running: [waiting_approval, succeeded, failed, cancelled]
+  waiting_approval: [running, succeeded, failed, cancelled]
+  failed: [pending, running, cancelled]
+  succeeded: []
+  skipped: []
+  cancelled: []
+
+risk_rules:
+  read:
+    approval_required: false
+  change:
+    approval_required: true
+    rollback_plan_required: true
+  privileged:
+    approval_required: true
+    rollback_plan_required: true
+  irreversible:
+    approval_required: true
+    rollback_or_backup_status_required: true
+    second_confirmation_required: true
+
+completion_gate:
+  all_steps_must_be: [succeeded, skipped]
+  trusted_evidence_kinds: [operation, validation, test, promotion]
+  minimum_trusted_evidence: 1
+  status_before_completion: verifying
+
+shared_channel_contract:
+  channels: [cli, http, web, mobile, voice]
+  common_identity: true
+  common_authorization: true
+  common_task_store: true
+  common_evidence_store: true
+  mobile_or_voice_bypass_forbidden: true
+
+forbidden:
+  - hidden_side_effects
+  - bypass_permission
+  - skip_validation
+  - direct_main_mutation
+  - fake_completion
+  - reuse_idempotency_key_for_different_payload
+  - continue_after_owner_cancellation
+  - store_raw_credentials_in_task_steps
+
+limits:
+  max_steps_per_task: 50
+  max_acceptance_criteria: 20
+  max_evidence_plan_items: 20
+  max_evidence_records: 200
+  max_events: 200

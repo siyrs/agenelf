@@ -3,6 +3,64 @@ llm:
   api_key: ""
   model: "kimi-k2-0905-preview"
   temperature: 0.6
+  # 仅当交互终端安装了 reasoning listener 时使用流式响应；API/后台仍走非流式。
+  stream_reasoning: true
+  # reasoning 流断开后先回退非流式，再做有界重试；最终失败由任务检查点接管。
+  transport_retry_attempts: 2
+  transport_retry_backoff_seconds: 0.4
+  stream_fallback_non_stream: true
 agent:
   name: "Agenelf"
-  max_tool_rounds: 8
+  # 单个工具段的模型轮次数；复杂任务会在同一上下文中自动进入下一段。
+  max_tool_rounds: 16
+  # 总预算 = max_tool_rounds × max_tool_segments，默认最多 64 个模型轮次。
+  max_tool_segments: 4
+  # 相同工具参数与相同归一化结果连续出现 3 次即停止循环并保存续跑检查点。
+  no_progress_repeat_limit: 3
+  history_max_messages: 12
+  memory_prompt_limit: 50
+  memory_prompt_max_chars: 8000
+  memory_max_entries: 1000
+cli:
+  # 展示供应商明确返回的 reasoning_content；不返回该字段的模型不会伪造内容。
+  show_reasoning: true
+  reasoning_max_chars: 60000
+  # 输入 / 自动显示命令菜单；↑↓ 选择，Tab 接受补全。
+  interactive_completion: true
+  command_menu_rows: 12
+  # 原始终端审批会等待独立 approval-runner 返回，并在批准后继续原任务。
+  approval_wait_seconds: 8
+  approval_auto_continue: true
+runtime_health:
+  stale_after_seconds: 15
+  expected_runners:
+    - ops-runner
+    - approval-runner
+    - self-upgrade-runner
+    - validation-runner
+    - repair-runner
+local_context:
+  prompt_max_chars: 12000
+  file_max_chars: 20000
+  max_context_files: 20
+self_development:
+  auto_reflect_every_episodes: 12
+  min_reflection_interval_seconds: 3600
+  max_reflections: 200
+  max_intentions: 100
+  prompt_max_chars: 4000
+  allow_llm_reflection: true
+autonomy:
+  allow_code_changes: true
+  # 普通改动走 app-tmp 沙盒；受保护运行时/Runner/策略/Compose/CI 改动走两阶段主人授权。
+  owner_authorized_upgrade:
+    enabled: true
+    default_max_files: 8
+    default_max_changed_lines: 1200
+    hard_max_files: 20
+    hard_max_changed_lines: 4000
+    max_generation_attempts: 3
+    intent_ttl_seconds: 900
+    candidate_ttl_seconds: 900
+    backup_before_apply: true
+    rollback_on_partial_failure: true

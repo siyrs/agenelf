@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "cycle": "first-controlled-autonomy-acceptance",
+  "date": "2026-07-24",
+  "environment": "isolated CI acceptance runtime",
+  "consciousness_claim": false,
+  "goal": "验证 Agenelf 能观察自身、生成带测试的小型补丁、在沙盒执行测试并只申请晋升",
+  "phases": [
+    "snapshot",
+    "assessment",
+    "sandbox_begin",
+    "llm_patch_generation",
+    "path_and_ast_validation",
+    "write_app_tmp",
+    "full_unit_tests",
+    "gate_request",
+    "promotion_requested"
+  ],
+  "expected_status": "promotion_requested",
+  "production_promotion": false,
+  "note": "该记录对应 tests/test_autonomy.py 的端到端验收。真实部署仍需要服务器所有者检查证据并执行 make promote。"
+}
