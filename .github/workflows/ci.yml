@@ -91,13 +91,13 @@ jobs:
           sys.path.insert(0, str(Path("app").resolve()))
           from core import operations
           request = operations.submit_operation(
-            "server.operations",
-            "apt_update",
-            "windows-ci",
-            {},
-            "change",
-            "Windows approval smoke test",
-            root=Path(".").resolve(),
+              "server.operations",
+              "apt_update",
+              "windows-ci",
+              {},
+              "change",
+              "Windows approval smoke test",
+              root=Path(".").resolve(),
           )
           Path("windows-request-id.txt").write_text(request["id"], encoding="utf-8")
           '@ | Set-Content -Path create-windows-request.py -Encoding UTF8
@@ -118,6 +118,29 @@ jobs:
           }
           if ($Decision.decided_by -ne "windows-ci") {
             throw "Unexpected approver: $($Decision.decided_by)"
+          }
+      - name: Revoke approved but not started request through PowerShell
+        shell: pwsh
+        run: |
+          $RequestId = (Get-Content windows-request-id.txt -Raw).Trim()
+          .\scripts\revoke.ps1 $RequestId "Windows owner changed scope" -As windows-ci
+      - name: Verify revocation won before runner execution
+        shell: pwsh
+        run: |
+          $RequestId = (Get-Content windows-request-id.txt -Raw).Trim()
+          $Result = Get-Content "data/ops-results/$RequestId.json" -Raw |
+            ConvertFrom-Json
+          if ($Result.status -ne "cancelled") {
+            throw "Expected cancelled result, got $($Result.status)"
+          }
+          if ($Result.commands.Count -ne 0) {
+            throw "Revoked request unexpectedly contains executed commands"
+          }
+          if ($Result.cancellation.started -ne $false) {
+            throw "Revocation must prove execution had not started"
+          }
+          if ($Result.cancellation.cancelled_by -ne "windows-ci") {
+            throw "Unexpected revoker: $($Result.cancellation.cancelled_by)"
           }
       - name: Run native Windows app-fork synchronization
         shell: pwsh
