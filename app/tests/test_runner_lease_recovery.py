@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +56,23 @@ class RunnerLeaseRecoveryTest(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+
+    def _foreign_lease(self, name: str, *, age_seconds: int) -> Path:
+        lease_dir = self.root / "data" / "runner-health" / f"{name}.supervisor"
+        lease_dir.mkdir(parents=True)
+        heartbeat = supervisor.now_utc() - timedelta(seconds=age_seconds)
+        (lease_dir / "owner.json").write_text(
+            json.dumps(
+                {
+                    "instance_id": "old",
+                    "pid_namespace": "pid:[other-container]",
+                    "supervisor_pid": os.getpid(),
+                    "heartbeat_at": heartbeat.isoformat(timespec="seconds"),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return lease_dir
 
     def test_abandoned_lock_is_removed_before_child_starts(self) -> None:
         lock_dir = self.root / "data" / "ops-locks"
@@ -109,30 +127,37 @@ class RunnerLeaseRecoveryTest(unittest.TestCase):
             lease.release()
         self.assertFalse(invoked)
 
-    def test_stale_namespace_lease_is_reclaimed(self) -> None:
-        lease_dir = (
-            self.root
-            / "data"
-            / "runner-health"
-            / "validation-runner.supervisor"
-        )
-        lease_dir.mkdir(parents=True)
-        (lease_dir / "owner.json").write_text(
-            json.dumps(
-                {
-                    "instance_id": "old",
-                    "pid_namespace": "pid:[old-container]",
-                    "supervisor_pid": os.getpid(),
-                    "heartbeat_at": supervisor.now_iso(),
-                }
-            ),
-            encoding="utf-8",
-        )
+    def test_fresh_other_container_lease_blocks_duplicate_runner(self) -> None:
+        self._foreign_lease("validation-runner", age_seconds=1)
+        invoked = False
+
+        def factory(argv, shell=False):
+            del argv, shell
+            nonlocal invoked
+            invoked = True
+            return FakeProcess()
+
+        with self.assertRaisesRegex(
+            supervisor.SupervisorLeaseError,
+            "活动 supervisor",
+        ):
+            supervisor.supervise(
+                "validation-runner",
+                ["python", "runner.py"],
+                root=self.root,
+                lease_stale_seconds=10,
+                popen_factory=factory,
+            )
+        self.assertFalse(invoked)
+
+    def test_stale_other_container_lease_is_reclaimed(self) -> None:
+        self._foreign_lease("validation-runner", age_seconds=60)
 
         code = supervisor.supervise(
             "validation-runner",
             ["python", "runner.py"],
             root=self.root,
+            lease_stale_seconds=10,
             popen_factory=lambda argv, shell=False: FakeProcess(),
         )
 
