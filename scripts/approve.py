@@ -3,16 +3,12 @@
 
 Examples:
   python scripts/approve.py op-0123456789abcdef approve
-  py -3 scripts\approve.py latest approve --as sirius
+  py -3 scripts\\approve.py latest approve --as sirius
   python scripts/approve.py op-0123456789abcdef deny "暂不执行"
 
 Host-side control commands deliberately import ``app/`` first. ``app-fork/`` is a
 runtime copy and can be stale immediately after ``git pull``; approval must not depend
 on synchronizing that copy before the owner can make a decision.
-
-The pending catalogue is also the authority for request liveness. Expired operation or
-authorization requests cannot be approved from PowerShell/Python after their exact
-execution window has closed; the owner must submit a fresh request.
 """
 from __future__ import annotations
 
@@ -30,7 +26,7 @@ if not APP_DIR.is_dir():
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from core import approval_catalog, owner_approval  # noqa: E402
+from core import owner_approval  # noqa: E402
 
 
 def main() -> int:
@@ -43,11 +39,9 @@ def main() -> int:
     actor = args.decided_by.strip() or owner_approval.default_actor().removeprefix("cli:")
     try:
         requested = str(args.request_id).strip()
-        selected, _duplicates = approval_catalog.resolve_pending_request(
-            requested,
-            root=ROOT,
-        )
-        requested = str(selected["id"])
+        if requested.lower() in {"latest", "newest"} or requested in {"最新", "刚才"}:
+            selected, _duplicates = owner_approval.resolve_pending_operation(root=ROOT)
+            requested = str(selected["id"])
         result = owner_approval.apply_owner_decision(
             requested,
             args.action,
