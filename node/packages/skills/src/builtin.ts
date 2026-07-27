@@ -1,10 +1,17 @@
 import { MemoryStore } from "../../core/src/memory-store.ts";
 import { OperationQueue } from "../../core/src/operation-queue.ts";
+import { PromptTemplateLoader } from "../../core/src/prompt-templates.ts";
 import { SessionLedgerStore } from "../../core/src/session-ledger.ts";
 import { TaskStore, type TaskStatus } from "../../core/src/task-store.ts";
+import { ValidationQueue } from "../../core/src/validation.ts";
 import type { JsonObject, SkillDescriptor } from "../../core/src/types.ts";
 
-export function builtinSkills(root: string, statusProvider: () => Promise<JsonObject>): SkillDescriptor[] {
+export function builtinSkills(
+  root: string,
+  statusProvider: () => Promise<JsonObject>,
+  validation: ValidationQueue,
+  prompts: PromptTemplateLoader
+): SkillDescriptor[] {
   const memory = new MemoryStore(root);
   const tasks = new TaskStore(root);
   const ledger = new SessionLedgerStore(root);
@@ -15,7 +22,7 @@ export function builtinSkills(root: string, statusProvider: () => Promise<JsonOb
       id: "agent.runtime",
       name: "Node Runtime",
       description: "运行状态、能力目录与健康检查。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "runtime",
       trust: "builtin",
       tools: [
@@ -31,7 +38,7 @@ export function builtinSkills(root: string, statusProvider: () => Promise<JsonOb
       id: "owner.memory",
       name: "主人记忆",
       description: "脱敏保存和检索主人事实、偏好与任务经验。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "owner",
       trust: "builtin",
       tools: [
@@ -53,7 +60,7 @@ export function builtinSkills(root: string, statusProvider: () => Promise<JsonOb
       id: "agent.tasks",
       name: "Node Task Store",
       description: "带 revision 和状态机的 Node 迁移任务存储。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "workflow",
       trust: "builtin",
       tools: [
@@ -81,7 +88,7 @@ export function builtinSkills(root: string, statusProvider: () => Promise<JsonOb
       id: "agent.session-ledger",
       name: "Session Ledger",
       description: "查询 Pi 风格可分支、可回放、带哈希链的会话账本。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "session",
       trust: "builtin",
       tools: [
@@ -94,10 +101,66 @@ export function builtinSkills(root: string, statusProvider: () => Promise<JsonOb
       ]
     },
     {
+      id: "agent.prompt-templates",
+      name: "Markdown Prompt Templates",
+      description: "Pi 风格 Markdown 模板；内置模板可被主人 local/prompts 同名覆盖。",
+      version: "0.10.0",
+      domain: "prompt",
+      trust: "builtin",
+      tools: [
+        {
+          name: "prompt_template_catalog", description: "列出可用 Prompt Templates 与斜杠命令。",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+          contract: { capability: "agent.prompt_templates", operation: "catalog", risk: "read", executionMode: "pure" },
+          handler: async () => ({ prompts: prompts.catalog() }) as unknown as JsonObject
+        },
+        {
+          name: "expand_prompt_template", description: "将模板和参数展开成完整提示词，不执行外部动作。",
+          inputSchema: { type: "object", properties: { name: { type: "string" }, input: { type: "string" } }, required: ["name"], additionalProperties: false },
+          contract: { capability: "agent.prompt_templates", operation: "expand", risk: "read", executionMode: "pure" },
+          handler: async (args) => prompts.expand(String(args.name ?? ""), String(args.input ?? ""))
+        }
+      ]
+    },
+    {
+      id: "software.validation",
+      name: "Node Validation Control Plane",
+      description: "选择主人配置的验证别名，并由独立 Node Runner 生成可信证据。",
+      version: "0.10.0",
+      domain: "validation",
+      trust: "builtin",
+      tools: [
+        {
+          name: "validation_catalog", description: "列出验证检查与套件，不暴露 URL、Host 或断言细节。",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+          contract: { capability: "software.validation", operation: "catalog", risk: "read", executionMode: "pure" },
+          handler: async () => validation.catalog()
+        },
+        {
+          name: "run_validation_check", description: "提交一个主人预配置的只读验证检查。",
+          inputSchema: { type: "object", properties: { name: { type: "string" }, summary: { type: "string" } }, required: ["name"], additionalProperties: false },
+          contract: { capability: "software.validation", operation: "run_check", risk: "read", executionMode: "queued_runner" },
+          handler: async (args) => validation.submit("run_check", String(args.name ?? ""), String(args.summary ?? ""))
+        },
+        {
+          name: "run_validation_suite", description: "提交一个主人预配置的只读验证套件。",
+          inputSchema: { type: "object", properties: { name: { type: "string" }, summary: { type: "string" } }, required: ["name"], additionalProperties: false },
+          contract: { capability: "software.validation", operation: "run_suite", risk: "read", executionMode: "queued_runner" },
+          handler: async (args) => validation.submit("run_suite", String(args.name ?? ""), String(args.summary ?? ""))
+        },
+        {
+          name: "get_validation_result", description: "读取验证请求及独立 Runner 的可信结果。",
+          inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+          contract: { capability: "software.validation", operation: "get_result", risk: "read", executionMode: "pure" },
+          handler: async (args) => validation.get(String(args.id ?? ""))
+        }
+      ]
+    },
+    {
       id: "server.operations",
       name: "Runner Queue Bridge",
       description: "按既有 Python Runner 协议提交不可变操作请求，迁移期间保持安全控制面兼容。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "operations",
       trust: "builtin",
       tools: [
