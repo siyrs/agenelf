@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenelf.local/contracts/session-ledger-entry.schema.json",
+  "title": "Agenelf Session Ledger Entry",
+  "description": "Language-neutral append-only session event record inspired by Pi's tree session model.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "session_id",
+    "seq",
+    "parent_id",
+    "branch_id",
+    "type",
+    "ts",
+    "payload",
+    "prev_hash",
+    "entry_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^evt-[0-9a-f]{16}$"
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^evt-[0-9a-f]{16}$"
+    },
+    "branch_id": {
+      "type": "string",
+      "pattern": "^(main|br-[0-9a-f]{12})$"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "approval_ref",
+        "branch_summary",
+        "checkpoint",
+        "compaction",
+        "custom",
+        "evidence_ref",
+        "intention",
+        "label",
+        "message",
+        "reflection",
+        "tool_call",
+        "tool_result"
+      ]
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "prev_hash": {
+      "type": "string",
+      "pattern": "^$|^[0-9a-f]{64}$"
+    },
+    "entry_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
