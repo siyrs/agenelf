@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agenelf.local/contracts/session-ledger-entry.schema.json",
   "title": "Agenelf Session Ledger Entry",
-  "description": "Language-neutral append-only session event record inspired by Pi's tree session model.",
+  "description": "Language-neutral append-only session event record inspired by Pi's tree session model. Event type never implies trust; consumers must inspect origin and verify referenced evidence at its authoritative source.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,6 +13,7 @@
     "parent_id",
     "branch_id",
     "type",
+    "origin",
     "ts",
     "payload",
     "prev_hash",
@@ -60,6 +61,16 @@
         "reflection",
         "tool_call",
         "tool_result"
+      ]
+    },
+    "origin": {
+      "type": "string",
+      "enum": [
+        "agent_skill",
+        "migration",
+        "owner",
+        "runner",
+        "runtime"
       ]
     },
     "ts": {
