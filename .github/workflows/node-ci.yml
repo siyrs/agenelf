@@ -79,6 +79,11 @@ jobs:
           }
           if (!Array.isArray(node.ports) || !node.ports.length) throw new Error('Node API must expose the public port');
           if (Array.isArray(legacy.ports) && legacy.ports.length) throw new Error('legacy-agent must not expose a host port');
+          if (!legacy.healthcheck) throw new Error('legacy-agent must define a healthcheck');
+          const legacyDependency = node.depends_on?.['legacy-agent'];
+          if (!legacyDependency || legacyDependency.condition !== 'service_healthy') {
+            throw new Error('Node API must wait for a healthy legacy-agent');
+          }
           const volumes = (service) => Array.isArray(service.volumes) ? service.volumes : [];
           const hasTarget = (service, target, readOnly) => volumes(service).some((item) => {
             if (typeof item === 'string') {
@@ -92,6 +97,10 @@ jobs:
           if (hasTarget(node, '/agenelf/approval')) throw new Error('Node Agent must not receive approval keys');
           if (!hasTarget(node, '/agenelf/policy', true)) throw new Error('Node Agent must retain read-only policy');
           if (!hasTarget(node, '/agenelf/data/runner-health', true)) throw new Error('Node Agent must retain read-only runner health');
+          if (!hasTarget(node, '/agenelf/data/validation-results', true)) throw new Error('Node Agent must observe validation results read-only');
+          if (!hasTarget(node, '/agenelf/data/repair-results', true)) throw new Error('Node Agent must observe repair results read-only');
+          if (!hasTarget(node, '/agenelf/app-tmp', false)) throw new Error('Node Agent must retain the controlled candidate workspace');
+          if (!hasTarget(services.cli, '/agenelf/approval', true)) throw new Error('Node CLI must retain owner approval signing access');
           if (services['approval-runner'].network_mode !== 'none') throw new Error(`approval network_mode=${services['approval-runner'].network_mode}`);
           if (services['repair-runner'].network_mode !== 'none') throw new Error(`repair network_mode=${services['repair-runner'].network_mode}`);
           if (!hasTarget(services['approval-runner'], '/agenelf/approval', true)) throw new Error('approval-runner must retain read-only HMAC key');
@@ -143,15 +152,36 @@ jobs:
           done
           curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:18080/status | grep -q 'node-typescript'
       - name: Smoke default Node plus internal legacy topology
+        shell: bash
         run: |
+          set -euo pipefail
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker compose ps || true
+              docker compose logs --no-color --tail=200 legacy-agent agenelf || true
+            fi
+            docker compose down -v >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
           docker compose up -d --build approval-key-init legacy-agent agenelf
-          trap 'docker compose down -v >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 45); do
-            curl -fsS http://127.0.0.1:8000/health && break
+            if curl -fsS http://127.0.0.1:8000/health >/tmp/node-health.json; then
+              break
+            fi
             sleep 1
           done
-          curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/status | grep -q 'node-typescript'
-          curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/self/roadmap >/tmp/legacy-proxy-smoke.json
+          grep -q 'node-typescript' <(curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/status)
+          proxy_ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/self/roadmap >/tmp/legacy-proxy-smoke.json; then
+              proxy_ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "$proxy_ok" -eq 1
           test -s /tmp/legacy-proxy-smoke.json
 
   node-supply-chain:
