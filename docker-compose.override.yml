@@ -1,0 +1,32 @@
+# Default migration overlay loaded automatically with docker-compose.yml.
+# The rollback command `docker compose -f docker-compose.python.yml ...` does not load this file.
+services:
+  agenelf:
+    volumes:
+      - ./local/prompts:/agenelf/local/prompts:ro
+      - ./data/validation-requests:/agenelf/data/validation-requests:rw
+
+  cli:
+    volumes:
+      - ./local/prompts:/agenelf/local/prompts:ro
+      - ./data/validation-requests:/agenelf/data/validation-requests:rw
+
+  validation-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    command: [node, node/apps/validation-runner/src/main.ts]
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_LOCAL_DIR: /agenelf/local
+      AGENELF_VALIDATION_FILE: /agenelf/local/validation.yaml
+      AGENELF_RUNTIME_SOURCE: node-typescript
+      AGENELF_VALIDATION_INTERVAL_MS: "1000"
+
+  self-upgrade-runner:
+    volumes:
+      - ./node:/agenelf/upgrade-target/node:rw
+      - ./Dockerfile.node:/agenelf/upgrade-target/Dockerfile.node:rw
+      - ./package.json:/agenelf/upgrade-target/package.json:rw
+      - ./package-lock.json:/agenelf/upgrade-target/package-lock.json:rw
+      - ./docker-compose.override.yml:/agenelf/upgrade-target/docker-compose.override.yml:rw
