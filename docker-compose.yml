@@ -1,19 +1,31 @@
-# Agenelf production topology: Node.js/TypeScript is the public Agent/API/CLI.
-# The Python API remains internal-only as a compatibility adapter for endpoints
-# that have not yet migrated. Deterministic security runners keep their original
-# isolated trust domains until each one is migrated and re-validated separately.
+# Agenelf production topology: Node.js/TypeScript public runtime with explicit isolated runners.
 services:
   approval-key-init:
-    extends:
-      file: docker-compose.python.yml
-      service: approval-key-init
-
+    build: .
+    command:
+    - python
+    - /agenelf/scripts/init_approval_key.py
+    user: 0:0
+    environment:
+      AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
+    volumes:
+    - ./scripts:/agenelf/scripts:ro
+    - approval-key:/agenelf/approval:rw
+    network_mode: none
+    read_only: true
+    tmpfs:
+    - /tmp
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    restart: 'no'
   legacy-agent:
     build:
       context: .
       dockerfile: Dockerfile
     env_file: .env
-    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    user: ${AGENELF_UID:-1000}:${AGENELF_GID:-1000}
     depends_on:
       approval-key-init:
         condition: service_completed_successfully
@@ -28,78 +40,78 @@ services:
       AGENELF_SCRATCH_DIR: /agenelf/workspace/scratch
       AGENELF_RUNTIME_SOURCE: app-bind
     expose:
-      - "8000"
+    - '8000'
     volumes:
-      - ./app:/agenelf/app-fork:ro
-      - ./app-tmp:/agenelf/app-tmp:rw
-      - ./scripts:/agenelf/scripts:ro
-      - ./policy:/agenelf/policy:ro
-      - ./.github:/agenelf/repo-source/.github:ro
-      - ./docs:/agenelf/repo-source/docs:ro
-      - ./Dockerfile:/agenelf/repo-source/Dockerfile:ro
-      - ./Dockerfile.node:/agenelf/repo-source/Dockerfile.node:ro
-      - ./Makefile:/agenelf/repo-source/Makefile:ro
-      - ./README.md:/agenelf/repo-source/README.md:ro
-      - ./docker-compose.yml:/agenelf/repo-source/docker-compose.yml:ro
-      - ./docker-compose.python.yml:/agenelf/repo-source/docker-compose.python.yml:ro
-      - ./package.json:/agenelf/repo-source/package.json:ro
-      - ./package-lock.json:/agenelf/repo-source/package-lock.json:ro
-      - ./node:/agenelf/repo-source/node:ro
-      - ./.env.example:/agenelf/repo-source/.env.example:ro
-      - ./.ops-runner.env.example:/agenelf/repo-source/.ops-runner.env.example:ro
-      - ./.gitignore:/agenelf/repo-source/.gitignore:ro
-      - ./.gitleaks.toml:/agenelf/repo-source/.gitleaks.toml:ro
-      - ./config/servers.example.yaml:/agenelf/repo-source/config/servers.example.yaml:ro
-      - ./local/profile.example.yaml:/agenelf/repo-source/local/profile.example.yaml:ro
-      - ./local/preferences.example.yaml:/agenelf/repo-source/local/preferences.example.yaml:ro
-      - ./local/servers.example.yaml:/agenelf/repo-source/local/servers.example.yaml:ro
-      - ./local/validation.example.yaml:/agenelf/repo-source/local/validation.example.yaml:ro
-      - ./local/models.example.yaml:/agenelf/repo-source/local/models.example.yaml:ro
-      - ./local/repositories.example.yaml:/agenelf/repo-source/local/repositories.example.yaml:ro
-      - ./local/context.example.md:/agenelf/repo-source/local/context.example.md:ro
-      - ./local/self/intentions.template.json:/agenelf/repo-source/local/self/intentions.template.json:ro
-      - ./data:/agenelf/data:rw
-      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
-      - ./data/ops-results:/agenelf/data/ops-results:ro
-      - ./data/ops-locks:/agenelf/data/ops-locks:ro
-      - ./data/approval-commands:/agenelf/data/approval-commands:ro
-      - ./data/approval-results:/agenelf/data/approval-results:ro
-      - ./data/approval-locks:/agenelf/data/approval-locks:ro
-      - ./data/validation-results:/agenelf/data/validation-results:ro
-      - ./data/validation-locks:/agenelf/data/validation-locks:ro
-      - ./data/repair-results:/agenelf/data/repair-results:ro
-      - ./data/repair-locks:/agenelf/data/repair-locks:ro
-      - ./data/self-upgrade-results:/agenelf/data/self-upgrade-results:ro
-      - ./data/self-upgrade-locks:/agenelf/data/self-upgrade-locks:ro
-      - ./data/promote-requests:/agenelf/data/promote-requests:ro
-      - ./data/promotion-history:/agenelf/data/promotion-history:ro
-      - ./data/runner-health:/agenelf/data/runner-health:ro
-      - ./logs:/agenelf/logs:rw
-      - ./workspace:/agenelf/workspace:rw
-      - ./app-space:/agenelf/app-space:rw
-      - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
-      - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
-      - ./local/context:/agenelf/local/context:ro
-      - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
-      - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
-      - ./local/models.yaml:/agenelf/local/models.yaml:ro
-      - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
-      - ./local/memory:/agenelf/local/memory:rw
-      - ./local/self:/agenelf/local/self:rw
+    - ./app:/agenelf/app-fork:ro
+    - ./app-tmp:/agenelf/app-tmp:rw
+    - ./scripts:/agenelf/scripts:ro
+    - ./policy:/agenelf/policy:ro
+    - ./.github:/agenelf/repo-source/.github:ro
+    - ./docs:/agenelf/repo-source/docs:ro
+    - ./Dockerfile:/agenelf/repo-source/Dockerfile:ro
+    - ./Dockerfile.node:/agenelf/repo-source/Dockerfile.node:ro
+    - ./Makefile:/agenelf/repo-source/Makefile:ro
+    - ./README.md:/agenelf/repo-source/README.md:ro
+    - ./docker-compose.yml:/agenelf/repo-source/docker-compose.yml:ro
+    - ./docker-compose.python.yml:/agenelf/repo-source/docker-compose.python.yml:ro
+    - ./package.json:/agenelf/repo-source/package.json:ro
+    - ./package-lock.json:/agenelf/repo-source/package-lock.json:ro
+    - ./node:/agenelf/repo-source/node:ro
+    - ./.env.example:/agenelf/repo-source/.env.example:ro
+    - ./.ops-runner.env.example:/agenelf/repo-source/.ops-runner.env.example:ro
+    - ./.gitignore:/agenelf/repo-source/.gitignore:ro
+    - ./.gitleaks.toml:/agenelf/repo-source/.gitleaks.toml:ro
+    - ./config/servers.example.yaml:/agenelf/repo-source/config/servers.example.yaml:ro
+    - ./local/profile.example.yaml:/agenelf/repo-source/local/profile.example.yaml:ro
+    - ./local/preferences.example.yaml:/agenelf/repo-source/local/preferences.example.yaml:ro
+    - ./local/servers.example.yaml:/agenelf/repo-source/local/servers.example.yaml:ro
+    - ./local/validation.example.yaml:/agenelf/repo-source/local/validation.example.yaml:ro
+    - ./local/models.example.yaml:/agenelf/repo-source/local/models.example.yaml:ro
+    - ./local/repositories.example.yaml:/agenelf/repo-source/local/repositories.example.yaml:ro
+    - ./local/context.example.md:/agenelf/repo-source/local/context.example.md:ro
+    - ./local/self/intentions.template.json:/agenelf/repo-source/local/self/intentions.template.json:ro
+    - ./data:/agenelf/data:rw
+    - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+    - ./data/ops-results:/agenelf/data/ops-results:ro
+    - ./data/ops-locks:/agenelf/data/ops-locks:ro
+    - ./data/approval-commands:/agenelf/data/approval-commands:ro
+    - ./data/approval-results:/agenelf/data/approval-results:ro
+    - ./data/approval-locks:/agenelf/data/approval-locks:ro
+    - ./data/validation-results:/agenelf/data/validation-results:ro
+    - ./data/validation-locks:/agenelf/data/validation-locks:ro
+    - ./data/repair-results:/agenelf/data/repair-results:ro
+    - ./data/repair-locks:/agenelf/data/repair-locks:ro
+    - ./data/self-upgrade-results:/agenelf/data/self-upgrade-results:ro
+    - ./data/self-upgrade-locks:/agenelf/data/self-upgrade-locks:ro
+    - ./data/promote-requests:/agenelf/data/promote-requests:ro
+    - ./data/promotion-history:/agenelf/data/promotion-history:ro
+    - ./data/runner-health:/agenelf/data/runner-health:ro
+    - ./logs:/agenelf/logs:rw
+    - ./workspace:/agenelf/workspace:rw
+    - ./app-space:/agenelf/app-space:rw
+    - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
+    - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
+    - ./local/context:/agenelf/local/context:ro
+    - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+    - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
+    - ./local/models.yaml:/agenelf/local/models.yaml:ro
+    - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
+    - ./local/memory:/agenelf/local/memory:rw
+    - ./local/self:/agenelf/local/self:rw
     read_only: true
     tmpfs:
-      - /tmp
-    cap_drop: ["ALL"]
+    - /tmp
+    cap_drop:
+    - ALL
     security_opt:
-      - no-new-privileges:true
+    - no-new-privileges:true
     restart: unless-stopped
-
   agenelf:
     build:
       context: .
       dockerfile: Dockerfile.node
     env_file: .env
-    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    user: ${AGENELF_UID:-1000}:${AGENELF_GID:-1000}
     depends_on:
       legacy-agent:
         condition: service_started
@@ -108,120 +120,354 @@ services:
       AGENELF_HOST: 0.0.0.0
       AGENELF_PORT: 8000
       AGENELF_LEGACY_API_URL: http://legacy-agent:8000
+      AGENELF_RUNTIME_SOURCE: app-bind
+      AGENELF_LOCAL_DIR: /agenelf/local
+      AGENELF_SELF_DIR: /agenelf/local/self
+      AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
+      AGENELF_VALIDATION_FILE: /agenelf/local/validation.yaml
+      AGENELF_MODELS_FILE: /agenelf/local/models.yaml
+      AGENELF_REPOSITORIES_FILE: /agenelf/local/repositories.yaml
+      AGENELF_SCRATCH_DIR: /agenelf/workspace/scratch
     ports:
-      - "127.0.0.1:8000:8000"
+    - 127.0.0.1:8000:8000
     volumes:
-      - ./node:/agenelf/node:ro
-      - ./web:/agenelf/web:ro
-      - ./docs:/agenelf/docs:ro
-      - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
-      - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
-      - ./local/context:/agenelf/local/context:ro
-      - ./local/memory:/agenelf/local/memory:rw
-      - ./local/self:/agenelf/local/self:rw
-      - ./data/node-tasks:/agenelf/data/node-tasks:rw
-      - ./data/ops-requests:/agenelf/data/ops-requests:rw
-      - ./data/ops-results:/agenelf/data/ops-results:ro
-      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
-      - ./data/node-runner-requests:/agenelf/data/node-runner-requests:rw
-      - ./data/node-runner-results:/agenelf/data/node-runner-results:ro
-      - ./logs:/agenelf/logs:rw
+    - ./node:/agenelf/node:ro
+    - ./web:/agenelf/web:ro
+    - ./docs:/agenelf/docs:ro
+    - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
+    - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
+    - ./local/context:/agenelf/local/context:ro
+    - ./local/memory:/agenelf/local/memory:rw
+    - ./local/self:/agenelf/local/self:rw
+    - ./data/node-tasks:/agenelf/data/node-tasks:rw
+    - ./data/ops-requests:/agenelf/data/ops-requests:rw
+    - ./data/ops-results:/agenelf/data/ops-results:ro
+    - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+    - ./data/node-runner-requests:/agenelf/data/node-runner-requests:rw
+    - ./data/node-runner-results:/agenelf/data/node-runner-results:ro
+    - ./logs:/agenelf/logs:rw
+    - ./app:/agenelf/app-fork:ro
+    - ./policy:/agenelf/policy:ro
+    - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+   - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
+   - ./local/models.yaml:/agenelf/local/models.yaml:ro
+    - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
+   - ./data/approval-commands:/agenelf/data/approval-commands:ro
+    - ./data/approval-results:/agenelf/data/approval-results:ro
+   - ./data/runner-health:/agenelf/data/runner-health:ro
     read_only: true
     tmpfs:
-      - /tmp
-    cap_drop: ["ALL"]
+    - /tmp
+    cap_drop:
+    - ALL
     security_opt:
-      - no-new-privileges:true
+    - no-new-privileges:true
     restart: unless-stopped
-
   cli:
     build:
       context: .
       dockerfile: Dockerfile.node
-    profiles: ["cli"]
-    command: ["node", "node/apps/cli/src/main.ts"]
+    profiles:
+    - cli
+    command:
+    - node
+    - node/apps/cli/src/main.ts
     env_file: .env
-    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    user: ${AGENELF_UID:-1000}:${AGENELF_GID:-1000}
     environment:
       AGENELF_ROOT: /agenelf
       AGENELF_LEGACY_API_URL: http://legacy-agent:8000
+      AGENELF_RUNTIME_SOURCE: app-bind
     volumes:
-      - ./node:/agenelf/node:ro
-      - ./docs:/agenelf/docs:ro
-      - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
-      - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
-      - ./local/context:/agenelf/local/context:ro
-      - ./local/memory:/agenelf/local/memory:rw
-      - ./local/self:/agenelf/local/self:rw
-      - ./data/node-tasks:/agenelf/data/node-tasks:rw
-      - ./data/ops-requests:/agenelf/data/ops-requests:rw
-      - ./data/ops-results:/agenelf/data/ops-results:ro
-      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
-      - ./logs:/agenelf/logs:rw
+    - ./node:/agenelf/node:ro
+    - ./docs:/agenelf/docs:ro
+    - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
+    - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
+    - ./local/context:/agenelf/local/context:ro
+    - ./local/memory:/agenelf/local/memory:rw
+   - ./local/self:/agenelf/local/self:rw
+    - ./data/node-tasks:/agenelf/data/node-tasks:rw
+   - ./data/ops-requests:/agenelf/data/ops-requests:rw
+    - ./data/ops-results:/agenelf/data/ops-results:ro
+    - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+    - ./logs:/agenelf/logs:rw
+    - ./app:/agenelf/app-fork:ro
+    - ./policy:/agenelf/policy:ro
+    - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+   - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
+   - ./local/models.yaml:/agenelf/local/models.yaml:ro
+    - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
+   - ./data/approval-commands:/agenelf/data/approval-commands:ro
+    - ./data/runner-health:/agenelf/data/runner-health:ro
     read_only: true
     tmpfs:
-      - /tmp
-    cap_drop: ["ALL"]
+    - /tmp
+    cap_drop:
+    - ALL
     security_opt:
-      - no-new-privileges:true
-    restart: "no"
-
+    - no-new-privileges:true
+    restart: 'no'
   legacy-cli:
     extends:
       file: docker-compose.python.yml
       service: cli
-    profiles: ["legacy-cli"]
-
+    profiles:
+    - legacy-cli
   node-runner:
     build:
       context: .
       dockerfile: Dockerfile.node
-    command: ["node", "node/apps/runner/src/main.ts"]
-    profiles: ["node-runner"]
-    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    command:
+    - node
+    - node/apps/runner/src/main.ts
+    profiles:
+    - node-runner
+    user: ${AGENELF_UID:-1000}:${AGENELF_GID:-1000}
     environment:
       AGENELF_ROOT: /agenelf
     volumes:
-      - ./node:/agenelf/node:ro
-      - ./local/node-runner.json:/agenelf/local/node-runner.json:ro
-      - ./data/node-runner-requests:/agenelf/data/node-runner-requests:ro
-      - ./data/node-runner-results:/agenelf/data/node-runner-results:rw
-      - ./data/node-runner-locks:/agenelf/data/node-runner-locks:rw
-      - ./workspace:/agenelf/workspace:ro
-      - ./repair-space:/agenelf/repair-space:ro
+   - ./node:/agenelf/node:ro
+    - ./local/node-runner.json:/agenelf/local/node-runner.json:ro
+    - ./data/node-runner-requests:/agenelf/data/node-runner-requests:ro
+    - ./data/node-runner-results:/agenelf/data/node-runner-results:rw
+   - ./data/node-runner-locks:/agenelf/data/node-runner-locks:rw
+    - ./workspace:/agenelf/workspace:ro
+   - ./repair-space:/agenelf/repair-space:ro
     network_mode: none
     read_only: true
     tmpfs:
-      - /tmp
-    cap_drop: ["ALL"]
+    - /tmp
+    cap_drop:
+    - ALL
     security_opt:
-      - no-new-privileges:true
+    - no-new-privileges:true
     restart: unless-stopped
-
   ops-runner:
-    extends:
-      file: docker-compose.python.yml
-      service: ops-runner
-
+    build: .
+    command:
+    - python
+    - /agenelf/scripts/runner_supervisor.py
+    - --name
+    - ops-runner
+    - --heartbeat-interval
+    - '1'
+    - --
+    - python
+    - /agenelf/scripts/ops_runner_entry.py
+    - --interval
+    - '1'
+    env_file: .ops-runner.env
+    user: ${AGENELF_UID:-1000}:${AGENELF_GID:-1000}
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_LOCAL_DIR: /agenelf/local
+      AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
+      AGENELF_SECRETS_DIR: /agenelf/local/secrets
+      AGENELF_RUNTIME_SOURCE: app-bind
+    volumes:
+    - ./app:/agenelf/app-fork:ro
+    - ./scripts:/agenelf/scripts:ro
+    - ./policy:/agenelf/policy:ro
+    - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+    - ./local/secrets:/agenelf/local/secrets:ro
+    - ./data/ops-requests:/agenelf/data/ops-requests:ro
+    - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+    - ./data/ops-results:/agenelf/data/ops-results:rw
+    - ./data/ops-locks:/agenelf/data/ops-locks:rw
+    - ./data/runner-health:/agenelf/data/runner-health:rw
+   - ./logs:/agenelf/logs:rw
+    read_only: true
+    tmpfs:
+    - /tmp
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    restart: unless-stopped
   approval-runner:
-    extends:
-      file: docker-compose.python.yml
-      service: approval-runner
-
+    build: .
+    command:
+    - python
+    - /agenelf/scripts/runner_supervisor.py
+    - --name
+   - approval-runner
+   - --heartbeat-interval
+    - '0.5'
+    - --
+    - python
+   - /agenelf/scripts/approval_runner.py
+    - --interval
+    - '0.25'
+    user: ${AGENELF_UID:-1000}:${AGENELF_GID:-1000}
+    depends_on:
+      approval-key-init:
+        condition: service_completed_successfully
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
+      AGENELF_RUNTIME_SOURCE: app-bind
+    volumes:
+    - ./app:/agenelf/app-fork:ro
+    - ./scripts:/agenelf/scripts:ro
+    - ./data/ops-requests:/agenelf/data/ops-requests:ro
+   - ./data/auth-requests:/agenelf/data/auth-requests:ro
+   - ./data/approval-commands:/agenelf/data/approval-commands:ro
+    - ./data/auth-decisions:/agenelf/data/auth-decisions:rw
+    - ./data/approval-results:/agenelf/data/approval-results:rw
+   - ./data/approval-locks:/agenelf/data/approval-locks:rw
+    - ./data/runner-health:/agenelf/data/runner-health:rw
+   - ./logs:/agenelf/logs:rw
+    - approval-key:/agenelf/approval:ro
+    network_mode: none
+    read_only: true
+    tmpfs:
+    - /tmp
+    pids_limit: 64
+    mem_limit: 256m
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    restart: unless-stopped
   self-upgrade-runner:
-    extends:
-      file: docker-compose.python.yml
-      service: self-upgrade-runner
-
+    build: .
+    command:
+    - python
+    - /agenelf/scripts/runner_supervisor.py
+    - --name
+    - self-upgrade-runner
+   - --heartbeat-interval
+    - '1'
+   - --
+    - python
+   - /agenelf/scripts/self_upgrade_runner_entry.py
+   - --interval
+    - '1'
+    user: ${AGENELF_UID:-1000}:${AGENELF_GID:-1000}
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_UPGRADE_TARGET: /agenelf/upgrade-target
+      AGENELF_REDLINE_BASE_ROOT: /agenelf/upgrade-target
+      AGENELF_RUNTIME_SOURCE: app-bind
+    volumes:
+    - ./app:/agenelf/app-fork:ro
+    - ./scripts:/agenelf/scripts:ro
+    - ./app-tmp:/agenelf/app-tmp:ro
+    - ./data/authorized-upgrades:/agenelf/data/authorized-upgrades:ro
+   - ./data/self-upgrade-requests:/agenelf/data/self-upgrade-requests:ro
+    - ./data/self-upgrade-results:/agenelf/data/self-upgrade-results:rw
+    - ./data/self-upgrade-locks:/agenelf/data/self-upgrade-locks:rw
+   - ./data/self-upgrade-backups:/agenelf/data/self-upgrade-backups:rw
+    - ./data/auth-requests:/agenelf/data/auth-requests:ro
+   - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+    - ./data/auth-consumed:/agenelf/data/auth-consumed:rw
+   - ./data/runner-health:/agenelf/data/runner-health:rw
+   - ./logs:/agenelf/logs:rw
+    - ./app:/agenelf/upgrade-target/app:rw
+   - ./scripts:/agenelf/upgrade-target/scripts:rw
+    - ./policy:/agenelf/upgrade-target/policy:rw
+   - ./.github:/agenelf/upgrade-target/.github:rw
+    - ./docs:/agenelf/upgrade-target/docs:rw
+    - ./README.md:/agenelf/upgrade-target/README.md:rw
+   - ./Makefile:/agenelf/upgrade-target/Makefile:rw
+    - ./Dockerfile:/agenelf/upgrade-target/Dockerfile:rw
+    - ./docker-compose.yml:/agenelf/upgrade-target/docker-compose.yml:rw
+    - ./.env.example:/agenelf/upgrade-target/.env.example:rw
+   - ./.ops-runner.env.example:/agenelf/upgrade-target/.ops-runner.env.example:rw
+    - ./.gitignore:/agenelf/upgrade-target/.gitignore:rw
+    - ./.gitleaks.toml:/agenelf/upgrade-target/.gitleaks.toml:rw
+    network_mode: none
+    read_only: true
+    tmpfs:
+    - /tmp
+    pids_limit: 256
+    mem_limit: 2g
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    restart: unless-stopped
   validation-runner:
-    extends:
-      file: docker-compose.python.yml
-      service: validation-runner
-
+    build: .
+    command:
+    - python
+    - /agenelf/scripts/runner_supervisor.py
+   - --name
+   - validation-runner
+    - --heartbeat-interval
+    - '1'
+   - --
+    - python
+   - /agenelf/scripts/validation_runner.py
+    - --interval
+   - '1'
+    user: ${AGENELF_UID:-1000}:${AGENELF_GID:-1000}
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_LOCAL_DIR: /agenelf/local
+      AGENELF_VALIDATION_FILE: /agenelf/local/validation.yaml
+      AGENELF_RUNTIME_SOURCE: app-bind
+    volumes:
+   - ./app:/agenelf/app-fork:ro
+    - ./scripts:/agenelf/scripts:ro
+    - ./policy:/agenelf/policy:ro
+   - ./local/validation.yaml:/agenelf/local/validation.yaml:ro
+   - ./data/validation-requests:/agenelf/data/validation-requests:ro
+   - ./data/validation-results:/agenelf/data/validation-results:rw
+    - ./data/validation-locks:/agenelf/data/validation-locks:rw
+    - ./data/runner-health:/agenelf/data/runner-health:rw
+   - ./logs:/agenelf/logs:rw
+    read_only: true
+    tmpfs:
+    - /tmp
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    restart: unless-stopped
   repair-runner:
-    extends:
-      file: docker-compose.python.yml
-      service: repair-runner
-
+    build: .
+    command:
+    - python
+    - /agenelf/scripts/runner_supervisor.py
+   - --name
+   - repair-runner
+    - --heartbeat-interval
+    - '1'
+    - --
+    - python
+   - /agenelf/scripts/repair_runner.py
+   - --interval
+    - '1'
+    user: ${AGENELF_UID:-1000}:${AGENELF_GID:-1000}
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_REPOSITORIES_FILE: /agenelf/local/repositories.yaml
+      AGENELF_CODE_WORKSPACES: /agenelf/code-workspaces
+      AGENELF_REPAIR_SPACE: /agenelf/repair-space
+      AGENELF_RUNTIME_SOURCE: app-bind
+    volumes:
+   - ./app:/agenelf/app-fork:ro
+    - ./scripts:/agenelf/scripts:ro
+    - ./policy:/agenelf/policy:ro
+   - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
+    - ./code-workspaces:/agenelf/code-workspaces:ro
+    - ./repair-space:/agenelf/repair-space:rw
+   - ./data/repair-requests:/agenelf/data/repair-requests:ro
+    - ./data/repair-results:/agenelf/data/repair-results:rw
+    - ./data/repair-locks:/agenelf/data/repair-locks:rw
+   - ./data/runner-health:/agenelf/data/runner-health:rw
+   - ./logs:/agenelf/logs:rw
+    network_mode: none
+    read_only: true
+    tmpfs:
+    - /tmp
+    pids_limit: 128
+    mem_limit: 1g
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    restart: unless-stopped
 volumes:
-  approval-key:
+  approval-key: null
