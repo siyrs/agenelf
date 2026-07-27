@@ -10,8 +10,7 @@ RUN npm ci --ignore-scripts --omit=dev
 
 COPY node ./node
 
-RUN useradd --create-home --uid 1000 agenelf \
-    && chown -R agenelf:agenelf /agenelf
-USER agenelf
+RUN chown -R node:node /agenelf
+USER node
 
 CMD ["node", "node/apps/api/src/main.ts"]
