@@ -32,7 +32,7 @@ class SessionLedgerStoreTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def test_append_builds_tree_and_hash_chain(self) -> None:
+    def test_append_builds_tree_hash_chain_and_origin(self) -> None:
         first = self.store.append(
             "demo-session",
             "message",
@@ -42,14 +42,17 @@ class SessionLedgerStoreTest(unittest.TestCase):
             "demo-session",
             "message",
             {"role": "assistant", "content": "hi"},
+            origin="owner",
         )
 
         self.assertEqual(first["seq"], 1)
         self.assertIsNone(first["parent_id"])
         self.assertEqual(first["branch_id"], "main")
+        self.assertEqual(first["origin"], "runtime")
         self.assertEqual(second["seq"], 2)
         self.assertEqual(second["parent_id"], first["id"])
         self.assertEqual(second["prev_hash"], first["entry_hash"])
+        self.assertEqual(second["origin"], "owner")
         self.assertEqual(self.store.verify("demo-session")["integrity"], "ok")
 
     def test_create_branch_keeps_append_order_and_tree_parent(self) -> None:
@@ -60,11 +63,13 @@ class SessionLedgerStoreTest(unittest.TestCase):
             root["id"],
             label="alternative",
             summary="try another route",
+            origin="agent_skill",
         )
 
         self.assertTrue(branch["branch_id"].startswith("br-"))
         self.assertEqual(branch["parent_id"], root["id"])
         self.assertEqual(branch["type"], "branch_summary")
+        self.assertEqual(branch["origin"], "agent_skill")
         verification = self.store.verify("branch-demo")
         self.assertEqual(verification["integrity"], "ok")
         self.assertIn("main", verification["branches"])
@@ -125,7 +130,7 @@ class SessionLedgerStoreTest(unittest.TestCase):
             verification,
         )
 
-    def test_missing_parent_and_blank_branch_label_are_rejected(self) -> None:
+    def test_missing_parent_blank_label_and_invalid_origin_are_rejected(self) -> None:
         with self.assertRaises(SessionLedgerError):
             self.store.append(
                 "parent-demo",
@@ -136,6 +141,13 @@ class SessionLedgerStoreTest(unittest.TestCase):
         root = self.store.append("parent-demo", "message", {"content": "root"})
         with self.assertRaises(SessionLedgerError):
             self.store.create_branch("parent-demo", root["id"], label="   ")
+        with self.assertRaises(SessionLedgerError):
+            self.store.append(
+                "parent-demo",
+                "custom",
+                {"content": "bad origin"},
+                origin="trusted-because-model-said-so",
+            )
 
     def test_invalid_session_and_oversized_payload_are_rejected(self) -> None:
         with self.assertRaises(SessionLedgerError):
@@ -154,7 +166,7 @@ class SessionLedgerStoreTest(unittest.TestCase):
         self.assertEqual(status["integrity"], "ok")
         self.assertFalse(ledger_dir.exists())
 
-    def test_malformed_persisted_parent_is_reported_not_raised(self) -> None:
+    def test_malformed_persisted_parent_or_origin_is_reported_not_raised(self) -> None:
         self.store.append("malformed-demo", "message", {"content": "original"})
         path = (
             self.root
@@ -165,10 +177,12 @@ class SessionLedgerStoreTest(unittest.TestCase):
         )
         row = json.loads(path.read_text(encoding="utf-8").strip())
         row["parent_id"] = {"unexpected": True}
+        row["origin"] = "invented"
         path.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
         result = self.store.verify("malformed-demo")
         self.assertEqual(result["integrity"], "failed")
         self.assertTrue(any("parent_id 格式非法" in item for item in result["errors"]))
+        self.assertTrue(any("origin 未注册" in item for item in result["errors"]))
 
     def test_concurrent_processes_preserve_sequence_and_hash_chain(self) -> None:
         context = multiprocessing.get_context("spawn")
@@ -189,6 +203,7 @@ class SessionLedgerStoreTest(unittest.TestCase):
         entries = self.store.entries("process-demo", limit=100)
         self.assertEqual(len(entries), 24)
         self.assertEqual([item["seq"] for item in entries], list(range(1, 25)))
+        self.assertTrue(all(item["origin"] == "runtime" for item in entries))
         self.assertEqual(self.store.verify("process-demo")["integrity"], "ok")
 
     def test_language_neutral_schema_stays_in_sync(self) -> None:
@@ -199,6 +214,7 @@ class SessionLedgerStoreTest(unittest.TestCase):
             )
         )
         self.assertEqual(schema["properties"]["schema_version"]["const"], 1)
+        self.assertIn("origin", schema["required"])
         self.assertEqual(
             set(schema["properties"]["type"]["enum"]),
             {
@@ -215,6 +231,10 @@ class SessionLedgerStoreTest(unittest.TestCase):
                 "label",
                 "custom",
             },
+        )
+        self.assertEqual(
+            set(schema["properties"]["origin"]["enum"]),
+            {"runtime", "agent_skill", "owner", "runner", "migration"},
         )
 
 
