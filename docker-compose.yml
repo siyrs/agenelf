@@ -107,7 +107,7 @@ services:
       - "1"
       - --
       - python
-      - /agenelf/scripts/unified_ops_runner.py
+      - /agenelf/scripts/ops_runner_entry.py
       - --interval
       - "1"
     env_file: .ops-runner.env
