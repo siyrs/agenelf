@@ -5,10 +5,6 @@ Examples:
   python scripts/approve.py op-0123456789abcdef approve
   py -3 scripts\\approve.py latest approve --as sirius
   python scripts/approve.py op-0123456789abcdef deny "暂不执行"
-
-Host-side control commands deliberately import ``app/`` first. ``app-fork/`` is a
-runtime copy and can be stale immediately after ``git pull``; approval must not depend
-on synchronizing that copy before the owner can make a decision.
 """
 from __future__ import annotations
 
@@ -18,11 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_APP = ROOT / "app"
-RUNTIME_APP = ROOT / "app-fork"
-APP_DIR = SOURCE_APP if SOURCE_APP.is_dir() else RUNTIME_APP
-if not APP_DIR.is_dir():
-    raise SystemExit(f"Agenelf app source not found: {SOURCE_APP} or {RUNTIME_APP}")
+APP_DIR = ROOT / ("app-fork" if (ROOT / "app-fork").is_dir() else "app")
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
@@ -50,10 +42,7 @@ def main() -> int:
             root=ROOT,
         )
     except owner_approval.ApprovalError as exc:
-        print(
-            json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2),
-            file=sys.stderr,
-        )
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
     print(json.dumps({"ok": True, "decision": result}, ensure_ascii=False, indent=2))
     return 0

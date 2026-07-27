@@ -67,12 +67,6 @@ def _ensure_runtime_directories(actions: list[str]) -> None:
         ROOT / "data" / "repair-requests",
         ROOT / "data" / "repair-results",
         ROOT / "data" / "repair-locks",
-        ROOT / "data" / "authorized-upgrades",
-        ROOT / "data" / "self-upgrade-requests",
-        ROOT / "data" / "self-upgrade-results",
-        ROOT / "data" / "self-upgrade-locks",
-        ROOT / "data" / "self-upgrade-backups",
-        ROOT / "data" / "runner-health",
         ROOT / "data" / "tasks",
         ROOT / "data" / "channel-requests",
         ROOT / "data" / "promote-requests",
@@ -215,11 +209,6 @@ def status() -> dict:
         else 0,
         "approval_queue": (ROOT / "data" / "approval-commands").is_dir(),
         "approval_results": (ROOT / "data" / "approval-results").is_dir(),
-        "authorized_upgrades": (ROOT / "data" / "authorized-upgrades").is_dir(),
-        "self_upgrade_queue": (ROOT / "data" / "self-upgrade-requests").is_dir(),
-        "self_upgrade_results": (ROOT / "data" / "self-upgrade-results").is_dir(),
-        "self_upgrade_backups": (ROOT / "data" / "self-upgrade-backups").is_dir(),
-        "runner_health": (ROOT / "data" / "runner-health").is_dir(),
     }
 
 

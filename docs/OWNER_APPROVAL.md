@@ -79,32 +79,19 @@ py -3 .\scripts\approve.py op-0123456789abcdef approve
 .\scripts\approve.ps1 op-0123456789abcdef deny "暂不执行"
 ```
 
-宿主机审批工具始终优先导入 `app/` 源码真理源，所以刚执行 `git pull`、尚未同步旧的 `app-fork/` 时也能完成审批。
-
 Linux/macOS 的旧命令仍可用：
 
 ```bash
 bash scripts/approve.sh op-0123456789abcdef approve
 ```
 
-完整仓库中 `approve.sh` 会优先调用相同的 Python 实现。为兼容旧安装和“只复制一个脚本”的场景，它仍保留已测试的单文件后备实现。
+`approve.sh` 现在只是同一个 Python 实现的兼容包装，因此三种平台生成完全相同的裁决文件。
 
 ## 部署升级
 
-本版本新增 `approval-key-init` 和 `approval-runner`，首次升级需要重新创建 Compose 服务。
-
-Windows PowerShell 原生方式：
+本版本新增 `approval-key-init` 和 `approval-runner`，首次升级需要重新创建 Compose 服务：
 
 ```powershell
-git switch main
-git pull --ff-only origin main
-powershell -ExecutionPolicy Bypass -File .\scripts\sync_fork.ps1
-docker compose up -d --build --force-recreate
-```
-
-Git Bash、WSL、Linux 或 macOS 也可继续使用：
-
-```bash
 git switch main
 git pull --ff-only origin main
 bash scripts/sync_fork.sh
@@ -114,11 +101,11 @@ docker compose up -d --build --force-recreate
 确认：
 
 ```powershell
-docker compose ps -a
+docker compose ps
 docker compose logs --tail=100 approval-key-init approval-runner ops-runner
 ```
 
-`approval-key-init` 是一次性初始化任务，显示 `Exited (0)` 属于正常状态。它把随机控制密钥保存在 Docker 命名卷中，不写入 Git，也不需要主人手工配置。`approval-runner` 不挂载 SSH 私钥、没有网络，仅能读取请求和签名命令、写入裁决与审批结果。
+`approval-key-init` 将随机控制密钥保存在 Docker 命名卷中，不写入 Git，也不需要主人手工配置。`approval-runner` 不挂载 SSH 私钥、没有网络，仅能读取请求和签名命令、写入裁决与审批结果。
 
 ## 故障排查
 
