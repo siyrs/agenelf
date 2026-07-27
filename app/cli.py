@@ -56,19 +56,6 @@ def cmd_help() -> None:
     console.print("[dim]输入 / 自动打开菜单；↑↓ 选择，Tab 补全，Enter 执行。[/dim]")
 
 
-def cmd_doctor(agent: Agent) -> None:
-    value = _dispatch_json(agent, "runtime_doctor")
-    status = str(value.get("status", "unknown")) if isinstance(value, dict) else "unknown"
-    border = "green" if status == "healthy" else "yellow" if status == "degraded" else "red"
-    console.print(
-        Panel(
-            json.dumps(value, ensure_ascii=False, indent=2),
-            title="Agenelf 运行时体检",
-            border_style=border,
-        )
-    )
-
-
 def cmd_skills(agent: Agent) -> None:
     table = Table(title="已加载技能")
     table.add_column("技能", style="cyan")
@@ -282,30 +269,6 @@ def cmd_autonomy(agent: Agent, arguments: str, *, force_apply: bool = False) -> 
     _json_panel(result, title)
 
 
-def cmd_upgrade(agent: Agent, arguments: str = "") -> None:
-    """Create, inspect or continue an owner-authorized upgrade session."""
-
-    text = arguments.strip()
-    with console.status("Agenelf 正在处理主人授权升级..."):
-        if not text or text.lower() == "status":
-            value = _dispatch_json(agent, "authorized_self_upgrade_status")
-        elif text.lower() == "scopes":
-            value = _dispatch_json(agent, "list_authorized_upgrade_scopes")
-        elif text.startswith("upgrade-"):
-            value = _dispatch_json(
-                agent,
-                "continue_authorized_self_upgrade",
-                {"session_id": text, "wait_seconds": 3},
-            )
-        else:
-            value = _dispatch_json(
-                agent,
-                "request_authorized_self_upgrade",
-                {"goal": text},
-            )
-    _json_panel(value, "主人授权自我升级")
-
-
 def cmd_remember(agent: Agent, arguments: str) -> None:
     parts = arguments.split(maxsplit=1)
     if len(parts) != 2 or parts[0] not in {"fact", "preference"}:
@@ -376,8 +339,6 @@ def main() -> int:
                 break
             if command in {"/", "/help"}:
                 cmd_help()
-            elif command == "/doctor":
-                cmd_doctor(agent)
             elif command == "/skills":
                 cmd_skills(agent)
             elif command == "/capabilities":
@@ -413,8 +374,6 @@ def main() -> int:
                 cmd_pursue(agent, rest)
             elif command == "/autonomy":
                 cmd_autonomy(agent, rest)
-            elif command == "/upgrade":
-                cmd_upgrade(agent, rest)
             elif command == "/validate":
                 cmd_validation(agent, rest)
             elif command == "/ops":
