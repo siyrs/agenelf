@@ -4,7 +4,7 @@
 Docker Compose supplies a fixed argv sequence after ``--``. The supervisor never
 interprets a shell command. It owns an exclusive per-runner lease, publishes a bounded
 liveness heartbeat, and removes queue ``.lock`` files only after proving that no other
-supervisor for the same runner is active in the current PID namespace.
+supervisor for the same runner is active.
 
 Heartbeats and leases contain only process/liveness metadata. They never contain request
 parameters, credentials, environment values, model output, command argv, stdout or
@@ -179,13 +179,19 @@ class SupervisorLease:
     def _owner_is_live(self, owner: dict[str, Any] | None) -> bool:
         if not owner:
             return False
-        if str(owner.get("pid_namespace", "")) != self.pid_namespace:
-            return False
         heartbeat_at = _parse_time(owner.get("heartbeat_at"))
         if heartbeat_at is None:
             return False
+        same_namespace = str(owner.get("pid_namespace", "")) == self.pid_namespace
+        if same_namespace:
+            # A live PID in the same namespace wins even if its heartbeat is delayed.
+            # This favors at-most-once execution over automatic takeover of a hung peer.
+            return _process_alive(owner.get("supervisor_pid"))
+        # PIDs cannot be inspected across container namespaces. A fresh shared-volume
+        # heartbeat therefore proves another container may still be active. Takeover is
+        # allowed only after that heartbeat expires.
         age = max(0.0, (now_utc() - heartbeat_at).total_seconds())
-        return age <= self.stale_after_seconds and _process_alive(owner.get("supervisor_pid"))
+        return age <= self.stale_after_seconds
 
     def acquire(self) -> None:
         self.directory.parent.mkdir(parents=True, exist_ok=True)
@@ -428,7 +434,7 @@ def supervise(
                 exit_code=exit_code,
                 error=f"{type(exc).__name__}: {exc}",
             )
-        except OSError:
+        except Exception:
             pass
         if process is not None:
             _terminate_child(process)
