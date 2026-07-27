@@ -1,12 +1,13 @@
-import { join } from "node:path";
 import { AgentEventHub, type RunEventStream } from "./agent-events.ts";
 import { sha256 } from "./canonical.ts";
 import { MemoryStore } from "./memory-store.ts";
 import { ModelGateway } from "./model-gateway.ts";
 import { sanitizeJson } from "./privacy.ts";
+import { PromptTemplateLoader } from "./prompt-templates.ts";
 import { ResourceLoader } from "./resource-loader.ts";
 import { SessionLedgerStore } from "./session-ledger.ts";
 import { SkillRegistry } from "./skill-registry.ts";
+import { ValidationQueue } from "./validation.ts";
 import type { ChatMessage, JsonObject, JsonValue, ToolCall } from "./types.ts";
 import { builtinSkills } from "../../skills/src/builtin.ts";
 
@@ -23,6 +24,8 @@ export class AgenelfAgent {
   readonly ledger: SessionLedgerStore;
   readonly memory: MemoryStore;
   readonly resources: ResourceLoader;
+  readonly prompts: PromptTemplateLoader;
+  readonly validation: ValidationQueue;
   private readonly sessionChains = new Map<string, Promise<void>>();
   private initialized = false;
 
@@ -34,31 +37,39 @@ export class AgenelfAgent {
     this.ledger = new SessionLedgerStore(root);
     this.memory = new MemoryStore(root);
     this.resources = new ResourceLoader(root);
+    this.prompts = new PromptTemplateLoader(root);
+    this.validation = new ValidationQueue(root);
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    for (const skill of builtinSkills(this.root, () => this.status())) this.registry.register(skill);
-    await this.resources.discover();
+    await Promise.all([this.resources.discover(), this.prompts.discover(), this.validation.initialize()]);
+    for (const skill of builtinSkills(this.root, () => this.status(), this.validation, this.prompts)) this.registry.register(skill);
     this.initialized = true;
   }
 
   async status(): Promise<JsonObject> {
+    const validationCatalog = this.validation.catalog();
     return {
       status: "ok",
       runtime: "node-typescript",
-      version: "0.9.0",
+      version: "0.10.0",
       node: process.version,
       model: this.model.config.model,
       model_ready: this.model.ready,
       skills: this.registry.catalog().length,
       tools: this.registry.allTools().length,
       resources: this.resources.catalog().length,
+      prompts: this.prompts.catalog().length,
+      validation_checks: Array.isArray(validationCatalog.checks) ? validationCatalog.checks.length : 0,
+      validation_suites: Array.isArray(validationCatalog.suites) ? validationCatalog.suites.length : 0,
       runs: this.events.list().length,
       compatibility: { legacy_api: Boolean(process.env.AGENELF_LEGACY_API_URL) },
       security: {
         policy_default: "fail-closed",
         secrets_in_agent: false,
+        validation_alias_only: true,
+        prompt_code_execution: false,
         runner_protocol: "immutable-file-queue-compatible"
       }
     };
@@ -90,14 +101,16 @@ export class AgenelfAgent {
 
   private async systemPrompt(): Promise<string> {
     const memory = await this.memory.promptBlock(30);
-    const resources = this.resources.catalog();
     return [
       "你是 Agenelf Node Runtime，一个证据驱动、可审计、可持续改进的个人智能体。",
       "安全规则：不得直接读取主人 secrets，不得绕过 Policy、审批、Runner 或证据链。",
       "执行规则：需要外部副作用时只能提交精确、限时、不可变请求给独立 Runner。",
+      "验证规则：只能选择主人 validation.yaml 中的别名；URL、Host、断言和网络执行属于独立 Validation Runner。",
+      "Prompt Templates 只展开 Markdown 文本，不执行脚本、扩展代码或外部动作。",
       "完成声明必须基于工具结果、Runner 结果、验证或晋升证据。",
       `当前能力目录：${JSON.stringify(this.registry.catalog())}`,
-      `按需资源目录（只含元数据）：${JSON.stringify(resources)}`,
+      `按需资源目录（只含元数据）：${JSON.stringify(this.resources.catalog())}`,
+      `Prompt Templates（只含元数据）：${JSON.stringify(this.prompts.catalog())}`,
       memory
     ].filter(Boolean).join("\n\n");
   }
@@ -143,9 +156,7 @@ export class AgenelfAgent {
         }
 
         messages.push({ role: "assistant", content: finalContent || null, reasoningContent: response.reasoningContent, toolCalls: response.toolCalls });
-        for (const call of response.toolCalls) {
-          await this.executeTool(stream, call, messages, subject, round);
-        }
+        for (const call of response.toolCalls) await this.executeTool(stream, call, messages, subject, round);
       }
 
       const checkpoint = `达到 Node Runtime 最大工具轮次，已保存 run ${stream.runId} 的事件账本。`;
@@ -164,9 +175,7 @@ export class AgenelfAgent {
     const tool = this.registry.getTool(call.name);
     const contract = tool?.contract ?? null;
     await stream.emit("tool.preflight", {
-      round,
-      call_id: call.id,
-      tool: call.name,
+      round, call_id: call.id, tool: call.name,
       capability: contract?.capability ?? "unclassified",
       operation: contract?.operation ?? "unclassified",
       risk: contract?.risk ?? "forbidden",
