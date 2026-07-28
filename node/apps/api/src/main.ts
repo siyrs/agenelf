@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -91,9 +91,7 @@ async function proxyLegacy(request: IncomingMessage, response: ServerResponse, u
   } catch (error) {
     sendJson(response, 502, { error: `legacy compatibility API 不可用：${error instanceof Error ? error.message : String(error)}` });
     return true;
-  } finally {
-    clearTimeout(timer);
-  }
+  } finally { clearTimeout(timer); }
 }
 
 async function serveUi(response: ServerResponse, pathname: string, root: string): Promise<boolean> {
@@ -154,11 +152,8 @@ async function streamEvents(
       }
       if (stream.isTerminal && cursor >= stream.snapshot().last_seq) break;
     } catch (error) {
-      if (error instanceof EventCursorExpired) {
-        response.write(`event: replay.required\ndata: ${JSON.stringify({ error: error.message })}\n\n`);
-      } else {
-        response.write(`event: error\ndata: ${JSON.stringify({ error: error instanceof Error ? error.message : String(error) })}\n\n`);
-      }
+      if (error instanceof EventCursorExpired) response.write(`event: replay.required\ndata: ${JSON.stringify({ error: error.message })}\n\n`);
+      else response.write(`event: error\ndata: ${JSON.stringify({ error: error instanceof Error ? error.message : String(error) })}\n\n`);
       break;
     }
   }
@@ -174,16 +169,12 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
     securityHeaders(response);
     const url = parsePath(request);
     try {
-      if (request.method === "GET" && url.pathname === "/") {
-        response.writeHead(302, { location: "/ui/" }); response.end(); return;
-      }
+      if (request.method === "GET" && url.pathname === "/") { response.writeHead(302, { location: "/ui/" }); response.end(); return; }
       if (request.method === "GET" && url.pathname.startsWith("/ui")) {
         if (!(await serveUi(response, url.pathname, root))) sendJson(response, 404, { error: "UI resource not found" });
         return;
       }
-      if (request.method === "GET" && url.pathname === "/health") {
-        sendJson(response, 200, { status: "ok", version: "0.9.0", runtime: "node-typescript" }); return;
-      }
+      if (request.method === "GET" && url.pathname === "/health") { sendJson(response, 200, { status: "ok", version: "0.10.0", runtime: "node-typescript" }); return; }
       if (!authorized(request)) {
         const configured = Boolean(process.env.AGENELF_API_TOKEN);
         sendJson(response, configured ? 401 : 503, { error: configured ? "无效的 Agenelf API Token" : "AGENELF_API_TOKEN 未配置，API fail-closed" }); return;
@@ -191,6 +182,25 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
       if (request.method === "GET" && url.pathname === "/status") { sendJson(response, 200, await agent.status()); return; }
       if (request.method === "GET" && url.pathname === "/capabilities") { sendJson(response, 200, { capabilities: agent.registry.catalog() }); return; }
       if (request.method === "GET" && url.pathname === "/resources") { sendJson(response, 200, { resources: agent.resources.catalog() }); return; }
+      if (request.method === "GET" && url.pathname === "/prompts") { sendJson(response, 200, { prompts: agent.prompts.catalog() }); return; }
+      const promptMatch = url.pathname.match(/^\/prompts\/([a-z][a-z0-9-]{0,47})\/expand$/);
+      if (request.method === "POST" && promptMatch) {
+        const body = await readJsonBody(request);
+        sendJson(response, 200, agent.prompts.expand(promptMatch[1], String(body.input ?? ""))); return;
+      }
+      if (request.method === "GET" && url.pathname === "/validation/catalog") { sendJson(response, 200, agent.validation.catalog()); return; }
+      const validationCheck = url.pathname.match(/^\/validation\/checks\/([A-Za-z0-9._-]{1,64})$/);
+      if (request.method === "POST" && validationCheck) {
+        const body = await readJsonBody(request);
+        sendJson(response, 202, await agent.validation.submit("run_check", validationCheck[1], String(body.summary ?? ""))); return;
+      }
+      const validationSuite = url.pathname.match(/^\/validation\/suites\/([A-Za-z0-9._-]{1,64})$/);
+      if (request.method === "POST" && validationSuite) {
+        const body = await readJsonBody(request);
+        sendJson(response, 202, await agent.validation.submit("run_suite", validationSuite[1], String(body.summary ?? ""))); return;
+      }
+      const validationResult = url.pathname.match(/^\/validation\/results\/(val-[0-9a-f]{16})$/);
+      if (request.method === "GET" && validationResult) { sendJson(response, 200, await agent.validation.get(validationResult[1])); return; }
       if (request.method === "GET" && url.pathname === "/chat/history") {
         const sessionId = String(url.searchParams.get("session_id") || "default");
         const limit = Math.max(0, Math.min(Number(url.searchParams.get("limit") || 50), 200));
