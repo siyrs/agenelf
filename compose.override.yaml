@@ -6,8 +6,16 @@ services:
       - ./local/prompts:/agenelf/local/prompts:ro
 
   cli:
+    group_add: ["0"]
     volumes:
       - ./local/prompts:/agenelf/local/prompts:ro
+      - ./data/auth-requests:/agenelf/data/auth-requests:ro
+      - ./data/ops-requests:/agenelf/data/ops-requests:ro
+      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+      - ./data/ops-results:/agenelf/data/ops-results:ro
+      - ./data/approval-commands:/agenelf/data/approval-commands:rw
+      - ./data/approval-results:/agenelf/data/approval-results:ro
+      - ./data/approval-locks:/agenelf/data/approval-locks:rw
 
   approval-key-init:
     image: agenelf-node:local
@@ -26,6 +34,7 @@ services:
       context: .
       dockerfile: Dockerfile.node
     command: [node, node/apps/approval-runner/src/main.ts]
+    group_add: ["0"]
     environment:
       AGENELF_ROOT: /agenelf
       AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
