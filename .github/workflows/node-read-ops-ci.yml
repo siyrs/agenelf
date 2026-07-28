@@ -6,6 +6,7 @@ on:
     paths:
       - "node/apps/read-ops-runner/**"
       - "node/packages/core/src/read-ops.ts"
+      - "node/packages/core/src/open-ssh.ts"
       - "node/packages/core/src/server-catalog.ts"
       - "node/tests/read-ops.test.ts"
       - "scripts/ops_runner_entry.py"
@@ -17,6 +18,7 @@ on:
     paths:
       - "node/apps/read-ops-runner/**"
       - "node/packages/core/src/read-ops.ts"
+      - "node/packages/core/src/open-ssh.ts"
       - "node/packages/core/src/server-catalog.ts"
       - "node/tests/read-ops.test.ts"
       - "scripts/ops_runner_entry.py"
@@ -66,27 +68,31 @@ jobs:
         run: |
           set -euo pipefail
           docker compose --profile cli config --format json > /tmp/current.json
+          docker compose --profile cli --profile python-ops config --format json > /tmp/profiled.json
           docker compose -f docker-compose.python.yml config --format json > /tmp/rollback.json
           node <<'NODE'
           const fs = require('node:fs');
           const current = JSON.parse(fs.readFileSync('/tmp/current.json','utf8')).services || {};
+          const profiled = JSON.parse(fs.readFileSync('/tmp/profiled.json','utf8')).services || {};
           const rollback = JSON.parse(fs.readFileSync('/tmp/rollback.json','utf8')).services || {};
           const read = current['read-ops-runner'];
-          if (!read) throw new Error('missing read-ops-runner');
+          const change = current['change-ops-runner'];
+          if (!read || !change) throw new Error('Node Ops partition incomplete');
+          if (current['ops-runner']) throw new Error('default topology unexpectedly starts Python Ops');
+          if (!profiled['ops-runner']?.profiles?.includes('python-ops')) throw new Error('Python Ops diagnostic profile missing');
           if (!String(read.build?.dockerfile || '').endsWith('Dockerfile.ops-read')) throw new Error('wrong read runner image');
-          if (String(current['ops-runner']?.environment?.AGENELF_OPS_RUNNER_MODE || '') !== 'change-only') throw new Error('Python runner is not change-only');
           const volumes = (service) => service?.volumes || [];
           const text = (service) => volumes(service).map((item) => typeof item === 'string' ? item : `${item.source || ''}:${item.target || ''}:${item.read_only ? 'ro' : 'rw'}`).join('\n');
           const readMounts = text(read);
           for (const required of ['/agenelf/local/secrets:ro','/agenelf/data/ops-requests:ro','/agenelf/data/ops-results:rw','/agenelf/data/ops-locks:rw','/agenelf/data/ops-events:rw']) {
             if (!readMounts.includes(required)) throw new Error(`missing read runner mount ${required}`);
           }
-          for (const forbidden of ['/agenelf/approval','docker.sock','local/memory','local/self']) {
+          for (const forbidden of ['/agenelf/approval','docker.sock','local/memory','local/self','/agenelf/data/auth-decisions']) {
             if (readMounts.includes(forbidden)) throw new Error(`forbidden read runner mount ${forbidden}`);
           }
           if (text(current.agenelf).includes('/agenelf/local/secrets')) throw new Error('Agent received SSH secrets');
-          if (rollback['read-ops-runner']) throw new Error('Python rollback unexpectedly includes Node read runner');
-          if (rollback['ops-runner']?.environment?.AGENELF_OPS_RUNNER_MODE) throw new Error('Python rollback is partitioned');
+          if (rollback['read-ops-runner'] || rollback['change-ops-runner']) throw new Error('Python rollback unexpectedly includes Node Ops');
+          if (rollback['ops-runner']?.environment?.AGENELF_OPS_RUNNER_MODE || rollback['ops-runner']?.profiles) throw new Error('Python rollback is partitioned or profile-gated');
           NODE
       - name: Build and smoke minimal read-only Ops image
         run: |
