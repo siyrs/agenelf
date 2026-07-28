@@ -5,26 +5,36 @@ on:
     branches: [main]
     paths:
       - "app/core/node_upgrade_policy.py"
+      - "app/core/self_upgrade_runtime_policy.py"
       - "app/core/__init__.py"
       - "app/core/upgrade_redlines.py"
       - "app/tests/test_node_upgrade_policy.py"
       - "app/tests/test_node_candidate_contract.py"
       - "app/tests/test_node_upgrade_wiring.py"
+      - "app/tests/test_node_self_upgrade_runner.py"
       - "scripts/run_authorized_upgrade_tests.py"
+      - "node/apps/self-upgrade-runner/**"
+      - "node/packages/core/src/self-upgrade.ts"
       - "Dockerfile.control-plane"
       - "docker-compose.yml"
+      - "compose.override.yaml"
       - ".github/workflows/node-upgrade-governance-ci.yml"
   pull_request:
     paths:
       - "app/core/node_upgrade_policy.py"
+      - "app/core/self_upgrade_runtime_policy.py"
       - "app/core/__init__.py"
       - "app/core/upgrade_redlines.py"
       - "app/tests/test_node_upgrade_policy.py"
       - "app/tests/test_node_candidate_contract.py"
       - "app/tests/test_node_upgrade_wiring.py"
+      - "app/tests/test_node_self_upgrade_runner.py"
       - "scripts/run_authorized_upgrade_tests.py"
+      - "node/apps/self-upgrade-runner/**"
+      - "node/packages/core/src/self-upgrade.ts"
       - "Dockerfile.control-plane"
       - "docker-compose.yml"
+      - "compose.override.yaml"
       - ".github/workflows/node-upgrade-governance-ci.yml"
 
 permissions:
@@ -33,7 +43,7 @@ permissions:
 jobs:
   node-upgrade-governance:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -53,7 +63,8 @@ jobs:
         run: |
           PYTHONPATH=app python -m unittest \
             app.tests.test_node_upgrade_policy \
-            app.tests.test_node_upgrade_wiring -v
+            app.tests.test_node_upgrade_wiring \
+            app.tests.test_node_self_upgrade_runner -v
       - name: Prepare owner-authorized candidate fixture
         shell: bash
         run: |
@@ -118,36 +129,51 @@ jobs:
           printf '\nAGENELF_UID=%s\nAGENELF_GID=%s\n' "$(id -u)" "$(id -g)" >>.env
           cp .ops-runner.env.example .ops-runner.env
           python scripts/init_local.py --no-migrate >/tmp/init.json
-          docker compose config --format json >/tmp/compose.json
+          docker compose config --format json >/tmp/default.json
+          docker compose --profile python-self-upgrade config --format json >/tmp/profiled.json
+          docker compose -f docker-compose.python.yml config --format json >/tmp/rollback.json
           node <<'NODE'
           const fs = require('node:fs');
-          const config = JSON.parse(fs.readFileSync('/tmp/compose.json', 'utf8'));
-          const runner = config.services?.['self-upgrade-runner'];
-          if (!runner) throw new Error('missing self-upgrade-runner');
+          const current = JSON.parse(fs.readFileSync('/tmp/default.json', 'utf8')).services || {};
+          const profiled = JSON.parse(fs.readFileSync('/tmp/profiled.json', 'utf8')).services || {};
+          const rollback = JSON.parse(fs.readFileSync('/tmp/rollback.json', 'utf8')).services || {};
+          const runner = current['node-self-upgrade-runner'];
+          if (!runner) throw new Error('missing node-self-upgrade-runner');
+          if (current['self-upgrade-runner']) throw new Error('Python Self-upgrade unexpectedly starts by default');
+          if (!profiled['self-upgrade-runner']?.profiles?.includes('python-self-upgrade')) throw new Error('Python Self-upgrade diagnostic profile missing');
+          if (!rollback['self-upgrade-runner'] || rollback['node-self-upgrade-runner']) throw new Error('Python Self-upgrade rollback changed');
           if (!String(runner.build?.dockerfile || '').endsWith('Dockerfile.control-plane')) throw new Error('wrong control-plane image');
-          if (runner.network_mode !== 'none') throw new Error('self-upgrade runner must be networkless');
+          if (runner.network_mode !== 'none' || !runner.read_only) throw new Error('Node Self-upgrade must be networkless/read-only');
           const volumes = runner.volumes || [];
           const target = (item) => typeof item === 'string' ? item.split(':')[1] : item.target;
           const readOnly = (item) => typeof item === 'string' ? item.split(':')[2] === 'ro' : Boolean(item.read_only);
           const has = (path, ro) => volumes.some((item) => target(item) === path && readOnly(item) === ro);
           for (const path of [
-            '/agenelf/upgrade-target/node',
-            '/agenelf/upgrade-target/contracts',
-            '/agenelf/upgrade-target/package.json',
-            '/agenelf/upgrade-target/package-lock.json',
-            '/agenelf/upgrade-target/Dockerfile.node',
-            '/agenelf/upgrade-target/Dockerfile.control-plane'
+            '/agenelf/upgrade-target/node', '/agenelf/upgrade-target/contracts',
+            '/agenelf/upgrade-target/package.json', '/agenelf/upgrade-target/package-lock.json',
+            '/agenelf/upgrade-target/Dockerfile.node', '/agenelf/upgrade-target/Dockerfile.control-plane',
+            '/agenelf/upgrade-target/compose.override.yaml'
           ]) if (!has(path, false)) throw new Error(`missing writable authorized target: ${path}`);
+          for (const path of [
+            '/agenelf/app-tmp', '/agenelf/data/authorized-upgrades',
+            '/agenelf/data/self-upgrade-requests', '/agenelf/data/auth-requests',
+            '/agenelf/data/auth-decisions'
+          ]) if (!has(path, true)) throw new Error(`missing read-only evidence mount: ${path}`);
+          if (!has('/agenelf/data/auth-consumed', false)) throw new Error('missing authorization consume mount');
           const sources = volumes.map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
-          for (const forbidden of ['local/secrets', 'local/profile', 'local/memory', 'docker.sock']) {
+          for (const forbidden of ['local/secrets', 'local/profile', 'local/memory', 'local/self', 'docker.sock', 'upgrade-target/.git']) {
             if (sources.includes(forbidden)) throw new Error(`forbidden control-plane mount: ${forbidden}`);
           }
           NODE
-      - name: Build and smoke Python plus Node control-plane image
+      - name: Build and smoke Node plus Python control-plane image
         run: |
           docker build -f Dockerfile.control-plane -t agenelf-control-plane:ci .
+          docker run --rm \
+            -v "$PWD/node:/agenelf/node:ro" \
+            agenelf-control-plane:ci \
+            node --input-type=module -e "import {SelfUpgradeRunner} from './node/packages/core/src/self-upgrade.ts'; if(typeof SelfUpgradeRunner!=='function') process.exit(1)"
           docker run --rm \
             -v "$PWD/app:/agenelf/app-fork:ro" \
             -e PYTHONPATH=/agenelf/app-fork \
             agenelf-control-plane:ci \
-            python -c "import sys; from core import authorized_upgrade; assert hasattr(authorized_upgrade, 'NODE_UPGRADE_POLICY_VERSION'); import subprocess; assert subprocess.run(['node','--version']).returncode == 0; print(sys.version)"
+            python -c "import sys; from core import authorized_upgrade; assert hasattr(authorized_upgrade, 'SELF_UPGRADE_RUNTIME_POLICY_VERSION'); import subprocess; assert subprocess.run(['node','--version']).returncode == 0; print(sys.version)"

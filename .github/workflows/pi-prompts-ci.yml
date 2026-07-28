@@ -32,7 +32,7 @@ jobs:
           cp .ops-runner.env.example .ops-runner.env
           python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
           cp local/node-runner.example.json local/node-runner.json
-          mkdir -p local/prompts data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+          mkdir -p local/prompts data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks data/self-upgrade-events
       - name: Validate private prompt mounts
         run: |
           docker compose --profile cli config --format json > /tmp/prompt-compose.json
@@ -52,7 +52,9 @@ jobs:
             const sources = volumes(services[name]).map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
             if (sources.includes('local/secrets')) throw new Error(`${name} must not receive local secrets`);
           }
-          if (!hasTarget(services['self-upgrade-runner'], '/agenelf/upgrade-target/docker-compose.override.yml', false)) {
-            throw new Error('self-upgrade runner must retain governed prompt overlay target');
+          const upgrade = services['node-self-upgrade-runner'];
+          if (!upgrade) throw new Error('missing Node self-upgrade runner');
+          if (!hasTarget(upgrade, '/agenelf/upgrade-target/docker-compose.override.yml', false)) {
+            throw new Error('Node self-upgrade runner must retain governed prompt overlay target');
           }
           NODE

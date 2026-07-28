@@ -12,7 +12,8 @@ WORKDIR /agenelf
 
 # Node and Python use the same Debian base generation. Copy the official Node
 # distribution into the isolated control-plane image instead of adding an external apt
-# repository or downloading a runtime during build.
+# repository or downloading a runtime during build. Python remains a trusted candidate
+# test tool; Node is the production runner process.
 COPY --from=node-runtime /usr/local/ /usr/local/
 
 COPY app/requirements.txt /tmp/requirements.txt
@@ -27,4 +28,4 @@ RUN useradd --create-home --uid 1000 agenelf \
     && chown -R agenelf:agenelf /agenelf
 USER agenelf
 
-CMD ["python", "/agenelf/scripts/self_upgrade_runner_entry.py", "--interval", "1"]
+CMD ["node", "node/apps/self-upgrade-runner/src/main.ts"]

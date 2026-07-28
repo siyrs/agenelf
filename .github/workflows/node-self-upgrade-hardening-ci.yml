@@ -1,0 +1,48 @@
+name: Node Self-upgrade Hardening CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "node/packages/core/src/self-upgrade-hardening.ts"
+      - "node/apps/self-upgrade-runner/src/main.ts"
+      - "node/tests/self-upgrade-hardening.test.ts"
+      - "app/core/self_upgrade_runtime_policy.py"
+      - "app/tests/test_node_self_upgrade_runner.py"
+      - ".github/workflows/node-self-upgrade-hardening-ci.yml"
+  pull_request:
+    paths:
+      - "node/packages/core/src/self-upgrade-hardening.ts"
+      - "node/apps/self-upgrade-runner/src/main.ts"
+      - "node/tests/self-upgrade-hardening.test.ts"
+      - "app/core/self_upgrade_runtime_policy.py"
+      - "app/tests/test_node_self_upgrade_runner.py"
+      - ".github/workflows/node-self-upgrade-hardening-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          npm ci --ignore-scripts
+          pip install -r app/requirements.txt
+      - name: Run focused hardening tests
+        run: |
+          node --test node/tests/self-upgrade.test.ts node/tests/self-upgrade-hardening.test.ts
+          PYTHONPATH=app python -m unittest app.tests.test_node_self_upgrade_runner -v
+      - name: Verify production entrypoint uses hardening layer
+        run: |
+          grep -q 'HardenedSelfUpgradeRunner' node/apps/self-upgrade-runner/src/main.ts
+          node --input-type=module -e "import {HardenedSelfUpgradeRunner} from './node/packages/core/src/self-upgrade-hardening.ts'; if(typeof HardenedSelfUpgradeRunner!=='function') process.exit(1)"

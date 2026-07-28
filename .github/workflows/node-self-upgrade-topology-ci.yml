@@ -1,0 +1,98 @@
+name: Node Self-upgrade Topology CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "compose.override.yaml"
+      - "docker-compose.yml"
+      - "docker-compose.python.yml"
+      - "Dockerfile.control-plane"
+      - "node/apps/self-upgrade-runner/**"
+      - ".github/workflows/node-self-upgrade-topology-ci.yml"
+  pull_request:
+    paths:
+      - "compose.override.yaml"
+      - "docker-compose.yml"
+      - "docker-compose.python.yml"
+      - "Dockerfile.control-plane"
+      - "node/apps/self-upgrade-runner/**"
+      - ".github/workflows/node-self-upgrade-topology-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  topology:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Compose fixtures
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=self-upgrade-topology-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p local/prompts data/ops-events data/repair-events data/self-upgrade-events data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate rendered Self-upgrade trust boundaries
+        id: topology_check
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            docker compose --profile cli config --format json > self-upgrade-default.json
+            docker compose --profile cli --profile python-self-upgrade config --format json > self-upgrade-profiled.json
+            docker compose -f docker-compose.python.yml config --format json > self-upgrade-rollback.json
+            node <<'NODE'
+          const fs = require('node:fs');
+          const current = JSON.parse(fs.readFileSync('self-upgrade-default.json','utf8')).services || {};
+          const profiled = JSON.parse(fs.readFileSync('self-upgrade-profiled.json','utf8')).services || {};
+          const rollback = JSON.parse(fs.readFileSync('self-upgrade-rollback.json','utf8')).services || {};
+          const runner = current['node-self-upgrade-runner'];
+          if (!runner) throw new Error('missing node-self-upgrade-runner');
+          if (current['self-upgrade-runner']) throw new Error('default topology unexpectedly starts Python Self-upgrade');
+          if (!profiled['self-upgrade-runner']?.profiles?.includes('python-self-upgrade')) throw new Error('Python Self-upgrade diagnostic profile missing');
+          if (!String(runner.build?.dockerfile || '').endsWith('Dockerfile.control-plane')) throw new Error('wrong Self-upgrade image');
+          if (runner.network_mode !== 'none' || !runner.read_only) throw new Error('Node Self-upgrade must be networkless/read-only');
+          const volumes = Array.isArray(runner.volumes) ? runner.volumes : [];
+          const target = (item) => typeof item === 'string' ? item.split(':')[1] : item.target;
+          const readOnly = (item) => typeof item === 'string' ? item.split(':')[2] === 'ro' : Boolean(item.read_only);
+          const has = (path, ro) => volumes.some((item) => target(item) === path && readOnly(item) === ro);
+          for (const path of ['/agenelf/app-tmp','/agenelf/data/authorized-upgrades','/agenelf/data/self-upgrade-requests','/agenelf/data/auth-requests','/agenelf/data/auth-decisions']) {
+            if (!has(path, true)) throw new Error(`missing read-only evidence mount: ${path}`);
+          }
+          for (const path of ['/agenelf/data/auth-consumed','/agenelf/data/self-upgrade-results','/agenelf/data/self-upgrade-backups','/agenelf/data/self-upgrade-events','/agenelf/upgrade-target/node','/agenelf/upgrade-target/policy','/agenelf/upgrade-target/compose.override.yaml']) {
+            if (!has(path, false)) throw new Error(`missing writable authorized target: ${path}`);
+          }
+          const sources = volumes.map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
+          for (const forbidden of ['local/secrets','local/profile','local/memory','local/self','docker.sock','upgrade-target/.git','/agenelf/approval']) {
+            if (sources.includes(forbidden)) throw new Error(`forbidden control-plane source: ${forbidden}`);
+          }
+          if (!rollback['self-upgrade-runner']) throw new Error('Python rollback Self-upgrade missing');
+          if (rollback['self-upgrade-runner'].profiles) throw new Error('Python rollback Self-upgrade must not be profile-gated');
+          if (rollback['node-self-upgrade-runner']) throw new Error('Python rollback unexpectedly contains Node Self-upgrade');
+          console.log(JSON.stringify({default_services:Object.keys(current),profiled_services:Object.keys(profiled),targets:volumes.map(target)},null,2));
+          NODE
+          } 2>&1 | tee self-upgrade-topology.log
+      - name: Upload Self-upgrade topology diagnostics
+        if: steps.topology_check.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-self-upgrade-topology-diagnostics
+          path: |
+            self-upgrade-topology.log
+            self-upgrade-default.json
+            self-upgrade-profiled.json
+            self-upgrade-rollback.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop after topology failure
+        if: steps.topology_check.outcome == 'failure'
+        run: exit 1

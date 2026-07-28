@@ -1,0 +1,280 @@
+name: Node Self-upgrade Migration CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "node/apps/self-upgrade-runner/**"
+      - "node/packages/core/src/self-upgrade.ts"
+      - "node/packages/core/src/self-upgrade-hardening.ts"
+      - "node/tests/self-upgrade.test.ts"
+      - "node/tests/self-upgrade-hardening.test.ts"
+      - "Dockerfile.control-plane"
+      - "compose.override.yaml"
+      - "app/core/self_upgrade_runtime_policy.py"
+      - "app/tests/test_node_self_upgrade_runner.py"
+      - ".github/workflows/node-self-upgrade-ci.yml"
+  pull_request:
+    paths:
+      - "node/apps/self-upgrade-runner/**"
+      - "node/packages/core/src/self-upgrade.ts"
+      - "node/packages/core/src/self-upgrade-hardening.ts"
+      - "node/tests/self-upgrade.test.ts"
+      - "node/tests/self-upgrade-hardening.test.ts"
+      - "Dockerfile.control-plane"
+      - "compose.override.yaml"
+      - "app/core/self_upgrade_runtime_policy.py"
+      - "app/tests/test_node_self_upgrade_runner.py"
+      - ".github/workflows/node-self-upgrade-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  self-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          pip install -r app/requirements.txt
+      - name: Run Self-upgrade unit and topology tests
+        run: |
+          node --test node/tests/self-upgrade.test.ts node/tests/self-upgrade-hardening.test.ts
+          PYTHONPATH=app python -m unittest app.tests.test_node_self_upgrade_runner -v
+      - name: Prepare Compose fixtures
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=self-upgrade-ci-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p local/prompts data/ops-events data/repair-events data/self-upgrade-events data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate production, profiled and rollback trust boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --profile cli config --format json > /tmp/default.json
+          docker compose --profile cli --profile python-self-upgrade config --format json > /tmp/profiled.json
+          docker compose -f docker-compose.python.yml config --format json > /tmp/rollback.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const current = JSON.parse(fs.readFileSync('/tmp/default.json','utf8')).services || {};
+          const profiled = JSON.parse(fs.readFileSync('/tmp/profiled.json','utf8')).services || {};
+          const rollback = JSON.parse(fs.readFileSync('/tmp/rollback.json','utf8')).services || {};
+          const runner = current['node-self-upgrade-runner'];
+          if (!runner) throw new Error('missing node-self-upgrade-runner');
+          if (current['self-upgrade-runner']) throw new Error('default topology unexpectedly starts Python Self-upgrade');
+          if (!profiled['self-upgrade-runner']?.profiles?.includes('python-self-upgrade')) throw new Error('Python Self-upgrade diagnostic profile missing');
+          if (!String(runner.build?.dockerfile || '').endsWith('Dockerfile.control-plane')) throw new Error('wrong Self-upgrade image');
+          if (runner.network_mode !== 'none' || !runner.read_only) throw new Error('Node Self-upgrade must be networkless/read-only');
+          const volumes = Array.isArray(runner.volumes) ? runner.volumes : [];
+          const target = (item) => typeof item === 'string' ? item.split(':')[1] : item.target;
+          const readOnly = (item) => typeof item === 'string' ? item.split(':')[2] === 'ro' : Boolean(item.read_only);
+          const has = (path, ro) => volumes.some((item) => target(item) === path && readOnly(item) === ro);
+          for (const path of ['/agenelf/app-tmp','/agenelf/data/authorized-upgrades','/agenelf/data/self-upgrade-requests','/agenelf/data/auth-requests','/agenelf/data/auth-decisions']) {
+            if (!has(path, true)) throw new Error(`missing read-only evidence mount: ${path}`);
+          }
+          for (const path of ['/agenelf/data/auth-consumed','/agenelf/data/self-upgrade-results','/agenelf/data/self-upgrade-backups','/agenelf/data/self-upgrade-events','/agenelf/upgrade-target/node','/agenelf/upgrade-target/policy','/agenelf/upgrade-target/compose.override.yaml']) {
+            if (!has(path, false)) throw new Error(`missing writable authorized target: ${path}`);
+          }
+          const sources = volumes.map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
+          for (const forbidden of ['local/secrets','local/profile','local/memory','local/self','docker.sock']) {
+            if (sources.includes(forbidden)) throw new Error(`forbidden Self-upgrade source ${forbidden}`);
+          }
+          if (volumes.some((item) => target(item) === '/agenelf/approval')) throw new Error('Self-upgrade received approval HMAC key');
+          if (volumes.some((item) => target(item) === '/agenelf/upgrade-target/.git')) throw new Error('Self-upgrade received Git metadata');
+          if (!rollback['self-upgrade-runner']) throw new Error('Python rollback Self-upgrade missing');
+          if (rollback['self-upgrade-runner'].profiles) throw new Error('Python rollback Self-upgrade must not be profile-gated');
+          if (rollback['node-self-upgrade-runner']) throw new Error('Python rollback unexpectedly contains Node Self-upgrade');
+          NODE
+      - name: Build and smoke dual-runtime control-plane image
+        run: |
+          docker build -f Dockerfile.control-plane -t agenelf-control-plane:ci .
+          docker run --rm agenelf-control-plane:ci node --version
+          docker run --rm agenelf-control-plane:ci python --version
+          docker run --rm --entrypoint git agenelf-control-plane:ci --version
+      - name: Prepare exact owner-authorized candidate fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf app-tmp/repo /tmp/agenelf-self-upgrade-target
+          mkdir -p app-tmp/repo /tmp/agenelf-self-upgrade-target/docs data/self-upgrade-events
+          git archive HEAD | tar -x -C app-tmp/repo
+          printf '{"schema_version":1,"kind":"owner-authorized-candidate"}\n' > app-tmp/repo/.agenelf-evolution-workspace.json
+          printf 'new-from-node-self-upgrade\n' > app-tmp/repo/docs/self-upgrade-e2e.md
+          printf 'old-before-node-self-upgrade\n' > /tmp/agenelf-self-upgrade-target/docs/self-upgrade-e2e.md
+          PYTHONPATH=app python <<'PY'
+          import datetime as dt
+          import hashlib
+          import json
+          from pathlib import Path
+          from core import authorized_upgrade
+
+          root = Path.cwd()
+          candidate = root / "app-tmp" / "repo"
+          session_id = "upgrade-20260728-130000-1234abcd"
+          request_id = "self-upgrade-2222222222222222"
+          intent_auth_id = "auth-self-intent-ci"
+          candidate_auth_id = "auth-self-candidate-ci"
+          evidence = root / "data" / "authorized-upgrades" / session_id
+          evidence.mkdir(parents=True, exist_ok=True)
+          baseline = {}
+          for base in (root / "app" / "tests", root / "node" / "tests"):
+              for path in sorted(base.rglob("*")):
+                  if path.is_file() and not path.is_symlink():
+                      baseline[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+          baseline_path = evidence / "baseline-manifest.json"
+          baseline_path.write_text(json.dumps(baseline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          report_path = evidence / "test-report.json"
+          report_path.write_text(json.dumps({"status": "passed", "created_by": "ci-fixture"}, indent=2) + "\n", encoding="utf-8")
+          target_before = hashlib.sha256(b"old-before-node-self-upgrade\n").hexdigest()
+          candidate_after = hashlib.sha256((candidate / "docs" / "self-upgrade-e2e.md").read_bytes()).hexdigest()
+          changed = [{
+              "path": "docs/self-upgrade-e2e.md",
+              "before_sha256": target_before,
+              "after_sha256": candidate_after,
+              "changed_lines": 2,
+              "created": False,
+          }]
+          manifest = authorized_upgrade._tree_manifest(candidate)
+          candidate_digest = authorized_upgrade._json_digest(manifest)
+          binding = {
+              "schema_version": 1,
+              "kind": "owner_authorized_self_upgrade_candidate",
+              "session_id": session_id,
+              "intent_auth_id": intent_auth_id,
+              "goal_sha256": hashlib.sha256(b"CI Self-upgrade fixture").hexdigest(),
+              "scopes": ["docs"],
+              "allowed_paths": ["docs/"],
+              "changed_files": changed,
+              "candidate_tree_sha256": candidate_digest,
+              "test_report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+              "baseline_manifest_sha256": hashlib.sha256(baseline_path.read_bytes()).hexdigest(),
+          }
+          session = {
+              "schema_version": 1,
+              "id": session_id,
+              "status": "apply_queued",
+              "goal": "CI Self-upgrade fixture",
+              "plan": {"allowed_paths": ["docs/"]},
+              "intent_auth_id": intent_auth_id,
+              "candidate_auth_id": candidate_auth_id,
+              "intent_consumed": True,
+              "changed_file_records": changed,
+              "candidate_binding": binding,
+              "candidate_digest": candidate_digest,
+              "baseline_manifest_path": f"/agenelf/data/authorized-upgrades/{session_id}/baseline-manifest.json",
+              "test_report_path": f"/agenelf/data/authorized-upgrades/{session_id}/test-report.json",
+          }
+          (root / "data" / "authorized-upgrades" / f"{session_id}.json").write_text(json.dumps(session, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          payload = {
+              "schema_version": 1,
+              "session_id": session_id,
+              "intent_auth_id": intent_auth_id,
+              "candidate_auth_id": candidate_auth_id,
+              "candidate_binding": binding,
+              "candidate_digest": candidate_digest,
+              "changed_files": changed,
+              "candidate_repo": "/agenelf/app-tmp/repo",
+          }
+          request = {"id": request_id, "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), **payload, "fingerprint": authorized_upgrade._json_digest(payload)}
+          (root / "data" / "self-upgrade-requests" / f"{request_id}.json").write_text(json.dumps(request, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=30)).isoformat()
+          auth_request = {"schema_version": 2, "id": candidate_auth_id, "binding": binding, "fingerprint": authorized_upgrade._json_digest(binding), "expires_at": expires, "required_approvers": 1}
+          (root / "data" / "auth-requests" / f"{candidate_auth_id}.json").write_text(json.dumps(auth_request, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          decision = {"request_id": candidate_auth_id, "decision": "approve", "fingerprint": authorized_upgrade._json_digest(binding), "expires_at": expires, "decided_by": "owner-ci"}
+          (root / "data" / "auth-decisions" / f"{candidate_auth_id}.json").write_text(json.dumps(decision, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+      - name: Run real networkless Node Self-upgrade E2E
+        id: upgrade_e2e
+        continue-on-error: true
+        shell: bash
+        run: |
+          status=0
+          (
+            set -euxo pipefail
+            docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL \
+              --security-opt no-new-privileges:true --user "$(id -u):$(id -g)" \
+              -e AGENELF_ROOT=/agenelf \
+              -e AGENELF_UPGRADE_TARGET=/agenelf/upgrade-target \
+              -v "$PWD/node:/agenelf/node:ro" \
+              -v "$PWD/scripts:/agenelf/scripts:ro" \
+              -v "$PWD/app-tmp:/agenelf/app-tmp:ro" \
+              -v "$PWD/data/authorized-upgrades:/agenelf/data/authorized-upgrades:ro" \
+              -v "$PWD/data/self-upgrade-requests:/agenelf/data/self-upgrade-requests:ro" \
+              -v "$PWD/data/self-upgrade-results:/agenelf/data/self-upgrade-results:rw" \
+              -v "$PWD/data/self-upgrade-locks:/agenelf/data/self-upgrade-locks:rw" \
+              -v "$PWD/data/self-upgrade-backups:/agenelf/data/self-upgrade-backups:rw" \
+              -v "$PWD/data/self-upgrade-events:/agenelf/data/self-upgrade-events:rw" \
+              -v "$PWD/data/auth-requests:/agenelf/data/auth-requests:ro" \
+              -v "$PWD/data/auth-decisions:/agenelf/data/auth-decisions:ro" \
+              -v "$PWD/data/auth-consumed:/agenelf/data/auth-consumed:rw" \
+              -v "$PWD/data/runner-health:/agenelf/data/runner-health:rw" \
+              -v "$PWD/logs:/agenelf/logs:rw" \
+              -v "/tmp/agenelf-self-upgrade-target:/agenelf/upgrade-target:rw" \
+              agenelf-control-plane:ci node node/apps/self-upgrade-runner/src/main.ts --once
+            request_id=self-upgrade-2222222222222222
+            candidate_auth_id=auth-self-candidate-ci
+            test -s "data/self-upgrade-results/${request_id}.json"
+            grep -q '"status": "succeeded"' "data/self-upgrade-results/${request_id}.json"
+            grep -q 'new-from-node-self-upgrade' /tmp/agenelf-self-upgrade-target/docs/self-upgrade-e2e.md
+            test -s "data/auth-consumed/${candidate_auth_id}.json"
+            test -s "data/self-upgrade-events/${request_id}.jsonl"
+            grep -q '"type":"upgrade.tests.completed"' "data/self-upgrade-events/${request_id}.jsonl"
+            grep -q '"type":"upgrade.result.persisted"' "data/self-upgrade-events/${request_id}.jsonl"
+            grep -q 'node-typescript' data/runner-health/self-upgrade-runner.json
+            backup=$(find data/self-upgrade-backups/${request_id}/files -name self-upgrade-e2e.md -print -quit)
+            test -n "$backup"
+            grep -q 'old-before-node-self-upgrade' "$backup"
+            test ! -e approval/key
+            docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL \
+              --security-opt no-new-privileges:true --user "$(id -u):$(id -g)" \
+              -e AGENELF_ROOT=/agenelf \
+              -e AGENELF_UPGRADE_TARGET=/agenelf/upgrade-target \
+              -v "$PWD/node:/agenelf/node:ro" \
+              -v "$PWD/scripts:/agenelf/scripts:ro" \
+              -v "$PWD/app-tmp:/agenelf/app-tmp:ro" \
+              -v "$PWD/data/authorized-upgrades:/agenelf/data/authorized-upgrades:ro" \
+              -v "$PWD/data/self-upgrade-requests:/agenelf/data/self-upgrade-requests:ro" \
+              -v "$PWD/data/self-upgrade-results:/agenelf/data/self-upgrade-results:rw" \
+              -v "$PWD/data/self-upgrade-locks:/agenelf/data/self-upgrade-locks:rw" \
+              -v "$PWD/data/self-upgrade-backups:/agenelf/data/self-upgrade-backups:rw" \
+              -v "$PWD/data/self-upgrade-events:/agenelf/data/self-upgrade-events:rw" \
+              -v "$PWD/data/auth-requests:/agenelf/data/auth-requests:ro" \
+              -v "$PWD/data/auth-decisions:/agenelf/data/auth-decisions:ro" \
+              -v "$PWD/data/auth-consumed:/agenelf/data/auth-consumed:rw" \
+              -v "$PWD/data/runner-health:/agenelf/data/runner-health:rw" \
+              -v "$PWD/logs:/agenelf/logs:rw" \
+              -v "/tmp/agenelf-self-upgrade-target:/agenelf/upgrade-target:rw" \
+              agenelf-control-plane:ci node node/apps/self-upgrade-runner/src/main.ts --once | grep -q '"done":1'
+          ) > self-upgrade-e2e.log 2>&1 || status=$?
+          find data/authorized-upgrades data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-backups data/self-upgrade-events data/auth-consumed data/runner-health -maxdepth 3 -type f -print > self-upgrade-files.log 2>&1 || true
+          cat self-upgrade-e2e.log
+          exit "$status"
+      - name: Upload Self-upgrade E2E diagnostics
+        if: steps.upgrade_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-self-upgrade-e2e
+          path: |
+            self-upgrade-e2e.log
+            self-upgrade-files.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop after Self-upgrade E2E failure
+        if: steps.upgrade_e2e.outcome == 'failure'
+        run: exit 1
