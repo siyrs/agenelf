@@ -73,6 +73,15 @@ class NodeUpgradeWiringTest(unittest.TestCase):
         self.assertIn(".agenelf-evolution-workspace.json", source)
         self.assertIn('"ci", "--ignore-scripts"', source)
         self.assertIn('"run", "test:node"', source)
+        self.assertIn('key.startswith("AGENELF_")', source)
+
+    def test_trusted_candidate_runner_hashes_existing_python_and_node_tests(self) -> None:
+        source = (ROOT / "scripts" / "run_authorized_upgrade_tests.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('_TEST_ROOTS = ("app/tests/", "node/tests/")', source)
+        self.assertIn("baseline manifest contains no node/tests files", source)
+        self.assertIn('"trusted_node_tests"', source)
 
 
 if __name__ == "__main__":
