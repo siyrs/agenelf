@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atomicWriteJson } from "../../../packages/core/src/fs-store.ts";
-import { SelfUpgradeRunner } from "../../../packages/core/src/self-upgrade.ts";
+import { HardenedSelfUpgradeRunner } from "../../../packages/core/src/self-upgrade-hardening.ts";
 
 function intervalMs(): number {
   const value = Number(process.env.AGENELF_SELF_UPGRADE_INTERVAL_MS ?? 500);
@@ -23,7 +23,7 @@ async function heartbeat(root: string, counts: Record<string, number>, status = 
 
 export async function runOnce(root = process.env.AGENELF_ROOT || process.cwd()): Promise<Record<string, number>> {
   const resolved = resolve(root);
-  const runner = new SelfUpgradeRunner(resolved);
+  const runner = new HardenedSelfUpgradeRunner(resolved);
   await runner.initialize();
   try {
     const counts = await runner.processOnce();
@@ -38,7 +38,7 @@ export async function runOnce(root = process.env.AGENELF_ROOT || process.cwd()):
 
 export async function runLoop(root = process.env.AGENELF_ROOT || process.cwd()): Promise<void> {
   const resolved = resolve(root);
-  const runner = new SelfUpgradeRunner(resolved);
+  const runner = new HardenedSelfUpgradeRunner(resolved);
   await runner.initialize();
   while (true) {
     try {
