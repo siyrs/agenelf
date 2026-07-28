@@ -178,15 +178,17 @@ test("Validation API fails closed instead of falling back to legacy", async () =
   }
 });
 
-test("API proxies unmigrated compatibility routes to internal legacy API", async () => {
+test("only explicit migration allowlist routes proxy to internal legacy API", async () => {
   const previousToken = process.env.AGENELF_API_TOKEN;
   const previousLegacy = process.env.AGENELF_LEGACY_API_URL;
   process.env.AGENELF_API_TOKEN = "proxy-token";
   let forwardedToken = "";
+  let calls = 0;
   const legacy = (await import("node:http")).createServer((request, response) => {
+    calls += 1;
     forwardedToken = String(request.headers["x-agenelf-token"] || "");
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ roadmap: [{ title: "legacy-compatible" }] }));
+    response.end(JSON.stringify({ cycles: [{ title: "legacy-compatible" }] }));
   });
   legacy.listen(0, "127.0.0.1");
   await once(legacy, "listening");
@@ -195,10 +197,14 @@ test("API proxies unmigrated compatibility routes to internal legacy API", async
   process.env.AGENELF_LEGACY_API_URL = `http://127.0.0.1:${legacyAddress.port}`;
   const { server, base } = await setup();
   try {
-    const response = await fetch(`${base}/self/roadmap`, { headers: { "x-agenelf-token": "proxy-token" } });
+    const roadmap = await fetch(`${base}/self/roadmap`, { headers: { "x-agenelf-token": "proxy-token" } });
+    assert.equal(roadmap.status, 200);
+    assert.equal(calls, 0);
+    const response = await fetch(`${base}/autonomy/cycles`, { headers: { "x-agenelf-token": "proxy-token" } });
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).roadmap[0].title, "legacy-compatible");
+    assert.equal((await response.json()).cycles[0].title, "legacy-compatible");
     assert.equal(forwardedToken, "proxy-token");
+    assert.equal(calls, 1);
   } finally {
     server.close(); legacy.close();
     if (previousToken === undefined) delete process.env.AGENELF_API_TOKEN; else process.env.AGENELF_API_TOKEN = previousToken;

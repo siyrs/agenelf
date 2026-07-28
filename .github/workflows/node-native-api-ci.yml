@@ -1,0 +1,101 @@
+name: Node Native API Cutover CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "node/apps/api/**"
+      - "node/packages/core/src/native-compatibility.ts"
+      - "node/tests/api.test.ts"
+      - "node/tests/native-compat-api.test.ts"
+      - "compose.override.yaml"
+      - "docs/NODE_NATIVE_API_CUTOVER.md"
+      - ".github/workflows/node-native-api-ci.yml"
+  pull_request:
+    paths:
+      - "node/apps/api/**"
+      - "node/packages/core/src/native-compatibility.ts"
+      - "node/tests/api.test.ts"
+      - "node/tests/native-compat-api.test.ts"
+      - "compose.override.yaml"
+      - "docs/NODE_NATIVE_API_CUTOVER.md"
+      - ".github/workflows/node-native-api-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  native-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - name: Install locked dependency-free workspace
+        run: npm ci --ignore-scripts
+      - name: Run focused native API contracts
+        run: node --test --test-reporter=spec node/tests/api.test.ts node/tests/native-compat-api.test.ts
+      - name: Assert proxy is explicit and bounded
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const source = fs.readFileSync('node/apps/api/src/main.ts', 'utf8');
+          if (!source.includes('LEGACY_COMPATIBILITY_PATHS')) throw new Error('missing explicit legacy allowlist');
+          for (const required of ['/self\\/optimization', '/autonomy\\/cycles']) {
+            if (!source.includes(required)) throw new Error(`missing bounded compatibility path ${required}`);
+          }
+          if (/if\s*\(await proxyLegacy\([^)]*\)\)\s*return;\s*sendJson/.test(source) && !source.includes('LEGACY_COMPATIBILITY_PATHS.some')) {
+            throw new Error('unbounded legacy proxy detected');
+          }
+          NODE
+      - name: Build and smoke Node API without legacy upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile.node -t agenelf-node-native-api:ci .
+          root=$(mktemp -d)
+          mkdir -p "$root/local/self" "$root/local/memory" "$root/data/node-tasks" "$root/data/repair-requests" "$root/data/repair-results" "$root/data/repair-locks" "$root/data/runner-health" "$root/web"
+          printf '<html>native</html>\n' > "$root/web/index.html"
+          cat > "$root/local/repositories.yaml" <<'YAML'
+          schema_version: 1
+          repositories:
+            demo:
+              source_dir: demo
+              default_test_profile: node
+              allowed_test_profiles: [node]
+          test_profiles:
+            node:
+              commands:
+                - [node, --test]
+              timeout_seconds: 120
+          YAML
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then docker logs agenelf-node-native-api-ci || true; fi
+            docker rm -f agenelf-node-native-api-ci >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          docker run -d --rm --name agenelf-node-native-api-ci \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e AGENELF_API_TOKEN=native-ci-token \
+            -e AGENELF_ROOT=/agenelf \
+            -p 127.0.0.1:18081:8000 \
+            -v "$root/local:/agenelf/local:rw" \
+            -v "$root/data:/agenelf/data:rw" \
+            -v "$root/web:/agenelf/web:ro" \
+            agenelf-node-native-api:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18081/health >/tmp/native-health.json; then break; fi
+            sleep 1
+          done
+          grep -q 'node-typescript' /tmp/native-health.json
+          curl -fsS -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/self/development | grep -q 'continuity_id'
+          curl -fsS -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/tasks | grep -q '"tasks"'
+          test "$(curl -sS -o /tmp/unknown.json -w '%{http_code}' -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/not-migrated)" = 404
+          test "$(curl -sS -o /tmp/pending.json -w '%{http_code}' -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/self/optimization)" = 501
+          grep -q 'migration_pending' /tmp/pending.json
