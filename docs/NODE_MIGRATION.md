@@ -1,6 +1,6 @@
 # Agenelf Node.js / TypeScript 迁移基线
 
-> 状态：Node Agent/API/CLI、Approval、Validation 与 read-only Ops 已迁移；Node 生产代码已纳入主人授权自升级治理；其余高风险 Runner 分批迁移  
+> 状态：Node Agent/API/CLI、Approval、Validation、read-only Ops 与 Repair 已迁移；Node 生产代码已纳入主人授权自升级治理；其余高风险控制面分批迁移  
 > 目标运行时：Node.js 24 LTS 原生 TypeScript type stripping  
 > 迁移原则：统一语言栈，但不合并信任域。
 
@@ -18,6 +18,7 @@
 - Node Validation Queue/Runner：严格 YAML、alias-only、HTTP/TCP、suite、可信结果与 heartbeat；
 - Node Approval Key Init/Broker：主人 CLI 签名、networkless 验签与裁决、Python rollback；
 - Node Read-only Ops Runner：固定 SSH 命令目录、语义风险分流、可信结果与事件回放；
+- Node Repair Runner：隔离 Git 副本、指纹绑定补丁、主人配置测试 argv、可信 artifact/result/event；
 - Node owner-authorized upgrade scopes、TypeScript 语法、测试哈希保护、永久红线和双运行时控制面；
 - 完整 Node、Python、Compose、安全和供应链门禁。
 
@@ -38,9 +39,10 @@ node/
 │   ├── approval-key-init/   # 审批 HMAC key 初始化
 │   ├── approval-runner/     # networkless 审批 Broker
 │   ├── validation-runner/   # 独立软件验证 Runner
-│   └── read-ops-runner/     # 独立只读 SSH Runner
+│   ├── read-ops-runner/     # 独立只读 SSH Runner
+│   └── repair-runner/       # 独立无网络代码修复 Runner
 ├── packages/
-│   ├── core/                # Agent/Event/Ledger/Policy/Model/Validation/Ops
+│   ├── core/                # Agent/Event/Ledger/Policy/Model/Validation/Ops/Repair
 │   └── skills/              # 内置技能
 ├── resources/               # progressive disclosure manifests
 ├── scripts/                 # 无依赖检查
@@ -77,6 +79,16 @@ OperationQueue 继续复用 `op-*`、canonical payload、SHA-256 fingerprint、T
 
 Node Validation 继续复用 `val-*` 和 `data/validation-*` 协议。Node Approval 继续复用
 `auth-* / op-* / apc-*`、Python canonical HMAC、裁决与结果协议。
+
+Node Repair 继续复用：
+
+- `repair-*` ID；
+- `code.repair / apply_patch_and_test` capability/operation；
+- 原始 UTF-8 patch SHA-256；
+- canonical payload fingerprint；
+- `data/repair-requests/results/locks` 与 `repair-space`；
+- Python-compatible result/evidence 字段；
+- 显式 Python Repair rollback。
 
 主人授权升级仍复用 Python `authorized_upgrade` 工作流和审批/证据协议。Node 扩展只增加
 Node scopes、语法、测试保护、红线和双运行时验证，不创建第二套授权事实源。详细说明见
@@ -121,17 +133,26 @@ Node scopes、语法、测试保护、红线和双运行时验证，不创建第
 - append-only `ops-events` 供 Web/CLI/审计回放，`ops-results` 仍是可信事实源；
 - 真实本机 OpenSSH E2E、篡改、过期、脱敏、共享协议与 rollback 已验收。
 
+### Batch N3.5：Repair Runner（已完成）
+
+- Node 在无网络容器中复制主人只读 Git 仓库；
+- patch SHA、请求 fingerprint、expected base、保护路径和文件/字节上限重新校验；
+- 固定 Git argv 与主人配置测试 argv 使用 `shell:false`，禁止 shell/python `-c`；
+- 逃逸符号链接、二进制/重命名补丁和凭据内容 fail-closed；
+- 永不 commit、push、merge 或修改源仓库；
+- append-only `repair-events` 供 Web/CLI/审计回放，result 与 artifact 仍是可信事实源；
+- 真实 Docker 隔离 Git Repair E2E 与完整 Python rollback 已验收。
+
 ### 后续批次
 
 按风险从低到高继续：
 
-1. Repair Runner；
-2. change/privileged Ops；
-3. Self-upgrade Runner 本体；
-4. 移除 internal legacy API；
-5. Python runtime 归档。
+1. change/privileged Ops；
+2. Self-upgrade Runner 本体；
+3. 移除 internal legacy API；
+4. Python runtime 归档。
 
-每个 Runner 单独 PR，不允许一次性重写全部安全控制面。
+每个高风险控制面单独 PR，不允许一次性重写后降低可审计性。
 
 ## 7. Python 退役条件
 
@@ -150,6 +171,7 @@ node node/apps/api/src/main.ts
 node node/apps/cli/src/main.ts
 node node/apps/validation-runner/src/main.ts
 node node/apps/read-ops-runner/src/main.ts --once
+node node/apps/repair-runner/src/main.ts --once
 ```
 
 要求：Node test、Python regression、专项 Runner/Upgrade E2E、Security、CodeQL、Compose smoke 全绿后才能切换默认运行时或扩大自升级范围。
