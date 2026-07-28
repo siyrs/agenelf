@@ -104,21 +104,29 @@ jobs:
               docker compose logs --no-color --tail=300 agenelf legacy-agent validation-runner >validation-container.log 2>&1 || true
               cp -a data/validation-requests data/validation-results data/runner-health validation-e2e-data/ 2>/dev/null || true
               cp -a logs/validation.log validation-e2e-data/ 2>/dev/null || true
+              cp -a local/validation.yaml validation-e2e-data/ 2>/dev/null || true
+              cp -a validation-status.json validation-catalog.json validation-request-response.json validation-e2e-data/ 2>/dev/null || true
             fi
             docker compose down -v >/dev/null 2>&1 || true
             exit "$status"
           }
           trap cleanup EXIT
           docker compose up -d --build approval-key-init legacy-agent agenelf validation-runner
+          ready=0
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then break; fi
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then ready=1; break; fi
             sleep 1
           done
-          request_json=$(curl -fsS -X POST \
+          test "$ready" -eq 1
+          curl -sS -H 'X-Agenelf-Token: node-validation-ci-token' http://127.0.0.1:8000/status >validation-status.json
+          curl -sS -H 'X-Agenelf-Token: node-validation-ci-token' http://127.0.0.1:8000/validation/catalog >validation-catalog.json
+          request_code=$(curl -sS -o validation-request-response.json -w '%{http_code}' -X POST \
             -H 'X-Agenelf-Token: node-validation-ci-token' \
             -H 'Content-Type: application/json' \
             -d '{}' \
             http://127.0.0.1:8000/validation/checks/agenelf-health)
+          test "$request_code" = 202
+          request_json=$(cat validation-request-response.json)
           validation_id=$(node -e 'const value=JSON.parse(process.argv[1]); if(!/^val-[0-9a-f]{16}$/.test(value.id||"")) process.exit(2); process.stdout.write(value.id)' "$request_json")
           result_json=''
           for i in $(seq 1 60); do
@@ -150,4 +158,3 @@ jobs:
       - name: Stop after validation E2E failure
         if: steps.validation_e2e.outcome == 'failure'
         run: exit 1
-
