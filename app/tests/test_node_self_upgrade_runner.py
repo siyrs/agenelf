@@ -26,7 +26,8 @@ class NodeSelfUpgradeRunnerTest(unittest.TestCase):
         self.assertIn("node/apps/self-upgrade-runner/src/main.ts", runner["command"])
         self.assertEqual(runner["network_mode"], "none")
         self.assertTrue(runner["read_only"])
-        volumes = "\n".join(str(item) for item in runner["volumes"])
+        volume_items = [str(item) for item in runner["volumes"]]
+        volumes = "\n".join(volume_items)
         for required in (
             "./app-tmp:/agenelf/app-tmp:ro",
             "./data/authorized-upgrades:/agenelf/data/authorized-upgrades:ro",
@@ -47,9 +48,14 @@ class NodeSelfUpgradeRunnerTest(unittest.TestCase):
             "local/memory",
             "local/self",
             "docker.sock",
-            "/agenelf/upgrade-target/.git",
         ):
             self.assertNotIn(forbidden, volumes)
+        targets = {
+            item.split(":", 2)[1]
+            for item in volume_items
+            if item.count(":") >= 1
+        }
+        self.assertNotIn("/agenelf/upgrade-target/.git", targets)
 
     def test_python_rollback_remains_profile_free(self) -> None:
         rollback = yaml.safe_load(
