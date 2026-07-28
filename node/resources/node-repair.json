@@ -1,0 +1,12 @@
+{
+  "id": "code.repair.runner.catalog",
+  "name": "Node Repair Runner",
+  "description": "隔离补丁、主人配置测试 argv、可信证据和 repair event 回放协议。",
+  "version": "1.0.0",
+  "kind": "policy",
+  "trust": "builtin",
+  "path": "docs/NODE_REPAIR_RUNNER.md",
+  "capabilities": [
+    "code.repair"
+  ]
+}

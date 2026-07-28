@@ -15,12 +15,12 @@ init: ## Create/migrate private config, prompts, Node state, controlled queues a
 		data/ops-requests data/ops-results data/ops-locks data/ops-events \
 		data/approval-commands data/approval-results data/approval-locks \
 		data/validation-requests data/validation-results data/validation-locks \
-		data/repair-requests data/repair-results data/repair-locks \
+		data/repair-requests data/repair-results data/repair-locks data/repair-events \
 		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks \
 		data/self-upgrade-backups data/authorized-upgrades data/runner-health data/app-backups \
 		data/tasks data/node-tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles \
 		data/node-runner-requests data/node-runner-results data/node-runner-locks
-	@echo "初始化完成。默认 Agent/API/CLI、Approval、Validation 与只读 Ops 为 Node；Python legacy API 与变更/高权限 Runner 保留为内部兼容控制面。"
+	@echo "初始化完成。默认 Agent/API/CLI、Approval、Validation、只读 Ops 与 Repair 为 Node；Python legacy API 与变更/高权限 Runner 保留为内部兼容控制面。"
 
 local: ## Validate local personalization without printing secrets
 	@python3 scripts/init_local.py --status
@@ -36,7 +36,7 @@ workflow: ## Show governed Python and Node workflow task files
 	@echo "== Node workflow tasks =="; ls -lt data/node-tasks 2>/dev/null | head -20 || true
 	@echo "== channel requests =="; ls -lt data/channel-requests 2>/dev/null | head -20 || true
 
-start: ## Start Node Agent/API/Validation/read-only Ops plus isolated compatibility runners
+start: ## Start Node Agent/API/Validation/read-only Ops/Repair plus isolated compatibility runners
 	@test -f .env || (echo "缺少 .env，请先 make init"; exit 1)
 	@test -f .ops-runner.env || (echo "缺少 .ops-runner.env，请先 make init"; exit 1)
 	@test -f local/profile.yaml || (echo "缺少 local/profile.yaml，请先 make init"; exit 1)
@@ -53,7 +53,7 @@ start: ## Start Node Agent/API/Validation/read-only Ops plus isolated compatibil
 		data/approval-commands data/approval-results data/approval-locks data/auth-decisions data/auth-consumed \
 		data/ops-requests data/ops-results data/ops-locks data/ops-events \
 		data/validation-requests data/validation-results data/validation-locks \
-		data/repair-requests data/repair-results data/repair-locks \
+		data/repair-requests data/repair-results data/repair-locks data/repair-events \
 		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks \
 		data/promote-requests data/promotion-history data/runner-health data/node-tasks \
 		data/node-runner-requests data/node-runner-results data/node-runner-locks
@@ -134,14 +134,15 @@ validation: ## Show Node validation configuration and trusted queues
 	@echo "== validation requests =="; ls -lt data/validation-requests 2>/dev/null | head -20 || true
 	@echo "== validation results =="; ls -lt data/validation-results 2>/dev/null | head -20 || true
 
-repair: ## Show code repair aliases, queues and evidence
+repair: ## Show Node repair aliases, queues, artifacts and replay events
 	@echo "== repositories config =="; python3 scripts/init_local.py --status | grep -E 'repositories|code_workspaces|repair_space' || true
 	@echo "== repair requests =="; ls -lt data/repair-requests 2>/dev/null | head -20 || true
 	@echo "== repair results =="; ls -lt data/repair-results 2>/dev/null | head -20 || true
+	@echo "== repair events =="; ls -lt data/repair-events 2>/dev/null | head -20 || true
 	@echo "== repair artifacts =="; ls -lt repair-space 2>/dev/null | head -20 || true
 
-logs: ## Follow Node Agent, read-only Ops and isolated compatibility runners
-	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner read-ops-runner ops-runner validation-runner repair-runner self-upgrade-runner
+logs: ## Follow Node Agent and isolated runners
+	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner read-ops-runner ops-runner validation-runner node-repair-runner self-upgrade-runner
 
 status: ## Show containers, local state and all controlled queues
 	-docker compose ps
@@ -162,4 +163,4 @@ clean: ## Clear transient queues; preserve owner data and trusted result evidenc
 		data/validation-requests/* data/validation-locks/* \
 		data/repair-requests/* data/repair-locks/* \
 		data/node-runner-requests/* data/node-runner-locks/*
-	@echo "已清空；local/、Node/Python 结果证据、Ops 事件、repair-space、自主循环、裁决与晋升证据均保留。"
+	@echo "已清空；local/、Node/Python 结果证据、Ops/Repair 事件、repair-space、自主循环、裁决与晋升证据均保留。"

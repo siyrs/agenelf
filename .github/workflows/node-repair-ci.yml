@@ -1,0 +1,178 @@
+name: Node Repair Migration CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "node/apps/repair-runner/**"
+      - "node/packages/core/src/repair.ts"
+      - "node/tests/repair.test.ts"
+      - "Dockerfile.repair"
+      - "compose.override.yaml"
+      - "app/core/repair_upgrade_policy.py"
+      - "app/tests/test_node_repair_runner.py"
+      - ".github/workflows/node-repair-ci.yml"
+  pull_request:
+    paths:
+      - "node/apps/repair-runner/**"
+      - "node/packages/core/src/repair.ts"
+      - "node/tests/repair.test.ts"
+      - "Dockerfile.repair"
+      - "compose.override.yaml"
+      - "app/core/repair_upgrade_policy.py"
+      - "app/tests/test_node_repair_runner.py"
+      - ".github/workflows/node-repair-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  node-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          pip install -r app/requirements.txt
+      - name: Run Node Repair unit and topology tests
+        run: |
+          node --test node/tests/repair.test.ts
+          PYTHONPATH=app python -m unittest app.tests.test_node_repair_runner -v
+      - name: Prepare Compose fixtures
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=repair-ci-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p local/prompts data/ops-events data/repair-events data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate production and rollback trust boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --profile cli config --format json > /tmp/default.json
+          docker compose --profile cli --profile python-repair config --format json > /tmp/profiled.json
+          docker compose -f docker-compose.python.yml config --format json > /tmp/rollback.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const current = JSON.parse(fs.readFileSync('/tmp/default.json','utf8')).services || {};
+          const profiled = JSON.parse(fs.readFileSync('/tmp/profiled.json','utf8')).services || {};
+          const rollback = JSON.parse(fs.readFileSync('/tmp/rollback.json','utf8')).services || {};
+          const nodeRepair = current['node-repair-runner'];
+          if (!nodeRepair) throw new Error('missing node-repair-runner');
+          if (current['repair-runner']) throw new Error('default topology unexpectedly starts Python repair');
+          if (!Array.isArray(profiled['repair-runner']?.profiles) || !profiled['repair-runner'].profiles.includes('python-repair')) throw new Error('Python repair is not profile-gated');
+          if (!String(nodeRepair.build?.dockerfile || '').endsWith('Dockerfile.repair')) throw new Error('wrong Node Repair image');
+          if (nodeRepair.network_mode !== 'none' || !nodeRepair.read_only) throw new Error('Node Repair must be networkless/read-only');
+          const volumes = (service) => service?.volumes || [];
+          const text = (service) => volumes(service).map((item) => typeof item === 'string' ? item : `${item.source || ''}:${item.target || ''}:${item.read_only ? 'ro' : 'rw'}`).join('\n');
+          const mounts = text(nodeRepair);
+          for (const required of ['/agenelf/code-workspaces:ro','/agenelf/repair-space:rw','/agenelf/data/repair-requests:ro','/agenelf/data/repair-results:rw','/agenelf/data/repair-locks:rw','/agenelf/data/repair-events:rw']) {
+            if (!mounts.includes(required)) throw new Error(`missing Node Repair mount ${required}`);
+          }
+          for (const forbidden of ['/agenelf/app-fork','/agenelf/scripts','/agenelf/policy','/agenelf/approval','local/secrets','local/memory','local/self','docker.sock']) {
+            if (mounts.includes(forbidden)) throw new Error(`forbidden Node Repair mount ${forbidden}`);
+          }
+          if (!rollback['repair-runner']) throw new Error('Python rollback repair missing');
+          const rollbackCommand = Array.isArray(rollback['repair-runner'].command) ? rollback['repair-runner'].command.join(' ') : String(rollback['repair-runner'].command || '');
+          if (!rollbackCommand.includes('scripts/repair_runner.py')) throw new Error('Python rollback repair command changed');
+          if (rollback['node-repair-runner']) throw new Error('Python rollback unexpectedly includes Node Repair');
+          NODE
+      - name: Build and smoke dual-runtime Repair image
+        run: |
+          docker build -f Dockerfile.repair -t agenelf-repair:ci .
+          docker run --rm agenelf-repair:ci node --version
+          docker run --rm agenelf-repair:ci python --version
+          docker run --rm --entrypoint git agenelf-repair:ci --version
+      - name: Run isolated Git repair E2E
+        id: repair_e2e
+        continue-on-error: true
+        shell: bash
+        run: |
+          status=0
+          (
+            set -euxo pipefail
+            rm -rf code-workspaces/demo repair-space/repair-5555555555555555
+            mkdir -p code-workspaces/demo/tests data/repair-events
+            cat > code-workspaces/demo/app.py <<'PY'
+          def value():
+              return "old"
+          PY
+            cat > code-workspaces/demo/tests/test_app.py <<'PY'
+          import unittest
+          from app import value
+
+          class ValueTest(unittest.TestCase):
+              def test_value(self):
+                  self.assertEqual(value(), "new")
+          PY
+            git -C code-workspaces/demo init -q
+            git -C code-workspaces/demo add .
+            git -C code-workspaces/demo -c user.name='Agenelf CI' -c user.email='ci@example.invalid' commit -q -m initial
+            base=$(git -C code-workspaces/demo rev-parse HEAD)
+            cat > local/repositories.yaml <<'YAML'
+          schema_version: 1
+          repositories:
+            demo:
+              source_dir: demo
+              default_test_profile: python-unittest
+              allowed_test_profiles: [python-unittest]
+              protected_paths: [policy/, .github/workflows/]
+              max_patch_files: 10
+              max_patch_bytes: 262144
+          test_profiles:
+            python-unittest:
+              commands:
+                - [python, -m, unittest, discover, -s, tests, -v]
+              timeout_seconds: 120
+          YAML
+            cat > /tmp/candidate.patch <<'PATCH'
+          diff --git a/app.py b/app.py
+          --- a/app.py
+          +++ b/app.py
+          @@ -1,2 +1,2 @@
+           def value():
+          -    return "old"
+          +    return "new"
+          PATCH
+            BASE_COMMIT="$base" node --input-type=module -e "import {createHash} from 'node:crypto'; import {readFile,writeFile} from 'node:fs/promises'; import {sha256} from './node/packages/core/src/canonical.ts'; const patch=await readFile('/tmp/candidate.patch','utf8'); const parameters={test_profile:'python-unittest',patch_sha256:createHash('sha256').update(patch,'utf8').digest('hex'),patch_bytes:Buffer.byteLength(patch,'utf8'),expected_base:process.env.BASE_COMMIT}; const payload={capability:'code.repair',operation:'apply_patch_and_test',target:'demo',parameters}; const request={schema_version:1,id:'repair-5555555555555555',capability:'code.repair',operation:'apply_patch_and_test',target:'demo',parameters,risk:'read',summary:'Repair Docker E2E',patch,fingerprint:sha256(payload),created_at:new Date().toISOString(),created_by:'agenelf-node-agent'}; await writeFile('data/repair-requests/'+request.id+'.json',JSON.stringify(request,null,2)+'\n');"
+            docker compose run --rm --no-deps --build node-repair-runner node node/apps/repair-runner/src/main.ts --once
+            test -s data/repair-results/repair-5555555555555555.json
+            grep -q '"status": "succeeded"' data/repair-results/repair-5555555555555555.json
+            test -s data/repair-events/repair-5555555555555555.jsonl
+            grep -q '"type":"repair.result.persisted"' data/repair-events/repair-5555555555555555.jsonl
+            grep -q 'node-typescript' data/runner-health/repair-runner.json
+            grep -q 'return "old"' code-workspaces/demo/app.py
+            test -z "$(git -C code-workspaces/demo status --porcelain)"
+            grep -q 'return "new"' repair-space/repair-5555555555555555/worktree/app.py
+            test "$(git -C code-workspaces/demo rev-parse HEAD)" = "$base"
+          ) > repair-e2e.log 2>&1 || status=$?
+          find data/repair-requests data/repair-results data/repair-events data/runner-health repair-space -maxdepth 2 -type f -print > repair-files.log 2>&1 || true
+          cat repair-e2e.log
+          exit "$status"
+      - name: Upload Repair E2E diagnostics
+        if: steps.repair_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-repair-e2e
+          path: |
+            repair-e2e.log
+            repair-files.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop after Repair E2E failure
+        if: steps.repair_e2e.outcome == 'failure'
+        run: exit 1
