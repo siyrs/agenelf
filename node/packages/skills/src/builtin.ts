@@ -1,5 +1,6 @@
 import { MemoryStore } from "../../core/src/memory-store.ts";
 import { OperationQueue } from "../../core/src/operation-queue.ts";
+import { PromptTemplateLoader } from "../../core/src/prompt-templates.ts";
 import { SessionLedgerStore } from "../../core/src/session-ledger.ts";
 import { TaskStore, type TaskStatus } from "../../core/src/task-store.ts";
 import { ValidationQueue } from "../../core/src/validation.ts";
@@ -8,7 +9,8 @@ import type { JsonObject, SkillDescriptor } from "../../core/src/types.ts";
 export function builtinSkills(
   root: string,
   statusProvider: () => Promise<JsonObject>,
-  validation?: ValidationQueue
+  validation: ValidationQueue | undefined,
+  prompts: PromptTemplateLoader
 ): SkillDescriptor[] {
   const memory = new MemoryStore(root);
   const tasks = new TaskStore(root);
@@ -20,7 +22,7 @@ export function builtinSkills(
       id: "agent.runtime",
       name: "Node Runtime",
       description: "运行状态、能力目录与健康检查。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "runtime",
       trust: "builtin",
       tools: [
@@ -36,7 +38,7 @@ export function builtinSkills(
       id: "owner.memory",
       name: "主人记忆",
       description: "脱敏保存和检索主人事实、偏好与任务经验。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "owner",
       trust: "builtin",
       tools: [
@@ -58,7 +60,7 @@ export function builtinSkills(
       id: "agent.tasks",
       name: "Node Task Store",
       description: "带 revision 和状态机的 Node 迁移任务存储。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "workflow",
       trust: "builtin",
       tools: [
@@ -86,7 +88,7 @@ export function builtinSkills(
       id: "agent.session-ledger",
       name: "Session Ledger",
       description: "查询 Pi 风格可分支、可回放、带哈希链的会话账本。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "session",
       trust: "builtin",
       tools: [
@@ -97,6 +99,28 @@ export function builtinSkills(
           handler: async (args) => ledger.verify(String(args.session_id ?? "")) as unknown as JsonObject
         }
       ]
+    },
+    {
+      id: "agent.prompt-templates",
+      name: "Markdown Prompt Templates",
+      description: "Pi 风格 Markdown 模板；主人 local/prompts 可同名覆盖。",
+      version: "0.10.0",
+      domain: "prompt",
+      trust: "builtin",
+      tools: [
+        {
+          name: "prompt_template_catalog", description: "列出可用 Prompt Templates 与斜杠命令。",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+          contract: { capability: "agent.prompt_templates", operation: "catalog", risk: "read", executionMode: "pure" },
+          handler: async () => ({ prompts: prompts.catalog() }) as unknown as JsonObject
+        },
+        {
+          name: "expand_prompt_template", description: "展开模板文本，不执行扩展代码或外部动作。",
+          inputSchema: { type: "object", properties: { name: { type: "string" }, input: { type: "string" } }, required: ["name"], additionalProperties: false },
+          contract: { capability: "agent.prompt_templates", operation: "expand", risk: "read", executionMode: "pure" },
+          handler: async (args) => prompts.expand(String(args.name ?? ""), String(args.input ?? ""))
+        }
+      ]
     }
   ];
 
@@ -105,7 +129,7 @@ export function builtinSkills(
       id: "software.validation",
       name: "Node Software Validation",
       description: "只允许主人配置的验证别名，通过独立 Node Runner 生成可信 HTTP/TCP 证据。",
-      version: "0.9.0",
+      version: "0.10.0",
       domain: "validation",
       trust: "builtin",
       tools: [
@@ -141,7 +165,7 @@ export function builtinSkills(
     id: "server.operations",
     name: "Runner Queue Bridge",
     description: "按既有 Python Runner 协议提交不可变操作请求，迁移期间保持安全控制面兼容。",
-    version: "0.9.0",
+    version: "0.10.0",
     domain: "operations",
     trust: "builtin",
     tools: [

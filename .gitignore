@@ -23,6 +23,7 @@ local/repositories.yaml
 local/node-runner.json
 local/context/
 local/memory/
+local/prompts/
 local/self/*
 !local/self/intentions.template.json
 local/secrets/

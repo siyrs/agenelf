@@ -3,6 +3,7 @@ import { sha256 } from "./canonical.ts";
 import { MemoryStore } from "./memory-store.ts";
 import { ModelGateway } from "./model-gateway.ts";
 import { sanitizeJson } from "./privacy.ts";
+import { PromptTemplateLoader } from "./prompt-templates.ts";
 import { ResourceLoader } from "./resource-loader.ts";
 import { SessionLedgerStore } from "./session-ledger.ts";
 import { SkillRegistry } from "./skill-registry.ts";
@@ -23,6 +24,7 @@ export class AgenelfAgent {
   readonly ledger: SessionLedgerStore;
   readonly memory: MemoryStore;
   readonly resources: ResourceLoader;
+  readonly prompts: PromptTemplateLoader;
   readonly validation: ValidationQueue;
   private readonly sessionChains = new Map<string, Promise<void>>();
   private initialized = false;
@@ -37,6 +39,7 @@ export class AgenelfAgent {
     this.ledger = new SessionLedgerStore(root);
     this.memory = new MemoryStore(root);
     this.resources = new ResourceLoader(root);
+    this.prompts = new PromptTemplateLoader(root);
     this.validation = new ValidationQueue(root);
   }
 
@@ -50,12 +53,13 @@ export class AgenelfAgent {
       this.validationReady = false;
       this.validationError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     }
+    await Promise.all([this.resources.discover(), this.prompts.discover()]);
     for (const skill of builtinSkills(
       this.root,
       () => this.status(),
-      this.validationReady ? this.validation : undefined
+      this.validationReady ? this.validation : undefined,
+      this.prompts
     )) this.registry.register(skill);
-    await this.resources.discover();
     this.initialized = true;
   }
 
@@ -67,13 +71,14 @@ export class AgenelfAgent {
     return {
       status: "ok",
       runtime: "node-typescript",
-      version: "0.9.0",
+      version: "0.10.0",
       node: process.version,
       model: this.model.config.model,
       model_ready: this.model.ready,
       skills: this.registry.catalog().length,
       tools: this.registry.allTools().length,
       resources: this.resources.catalog().length,
+      prompts: this.prompts.catalog().length,
       runs: this.events.list().length,
       validation: {
         ready: this.validationReady,
@@ -83,6 +88,7 @@ export class AgenelfAgent {
       security: {
         policy_default: "fail-closed",
         secrets_in_agent: false,
+        prompt_code_execution: false,
         runner_protocol: "immutable-file-queue-compatible"
       }
     };
@@ -115,13 +121,16 @@ export class AgenelfAgent {
   private async systemPrompt(): Promise<string> {
     const memory = await this.memory.promptBlock(30);
     const resources = this.resources.catalog();
+    const prompts = this.prompts.catalog();
     return [
       "你是 Agenelf Node Runtime，一个证据驱动、可审计、可持续改进的个人智能体。",
       "安全规则：不得直接读取主人 secrets，不得绕过 Policy、审批、Runner 或证据链。",
       "执行规则：需要外部副作用时只能提交精确、限时、不可变请求给独立 Runner。",
+      "Prompt Templates 只展开 Markdown 文本，不执行脚本、扩展代码或外部动作。",
       "完成声明必须基于工具结果、Runner 结果、验证或晋升证据。",
       `当前能力目录：${JSON.stringify(this.registry.catalog())}`,
       `按需资源目录（只含元数据）：${JSON.stringify(resources)}`,
+      `Prompt Templates（只含元数据）：${JSON.stringify(prompts)}`,
       memory
     ].filter(Boolean).join("\n\n");
   }
