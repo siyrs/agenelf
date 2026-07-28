@@ -6,8 +6,13 @@ on:
     paths:
       - "node/apps/api/**"
       - "node/packages/core/src/native-compatibility.ts"
+      - "node/packages/core/src/self-optimization.ts"
+      - "node/packages/core/src/autonomy-cycles.ts"
+      - "node/packages/core/src/agent.ts"
+      - "node/packages/core/src/memory-store.ts"
       - "node/tests/api.test.ts"
       - "node/tests/native-compat-api.test.ts"
+      - "node/tests/growth-runtime.test.ts"
       - "compose.override.yaml"
       - "docs/NODE_NATIVE_API_CUTOVER.md"
       - ".github/workflows/node-native-api-ci.yml"
@@ -15,8 +20,13 @@ on:
     paths:
       - "node/apps/api/**"
       - "node/packages/core/src/native-compatibility.ts"
+      - "node/packages/core/src/self-optimization.ts"
+      - "node/packages/core/src/autonomy-cycles.ts"
+      - "node/packages/core/src/agent.ts"
+      - "node/packages/core/src/memory-store.ts"
       - "node/tests/api.test.ts"
       - "node/tests/native-compat-api.test.ts"
+      - "node/tests/growth-runtime.test.ts"
       - "compose.override.yaml"
       - "docs/NODE_NATIVE_API_CUTOVER.md"
       - ".github/workflows/node-native-api-ci.yml"
@@ -27,7 +37,7 @@ permissions:
 jobs:
   native-api:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,28 +46,25 @@ jobs:
           cache: npm
       - name: Install locked dependency-free workspace
         run: npm ci --ignore-scripts
-      - name: Run focused native API contracts
-        run: node --test --test-reporter=spec node/tests/api.test.ts node/tests/native-compat-api.test.ts
-      - name: Assert proxy is explicit and bounded
+      - name: Run focused native API and growth contracts
+        run: node --test --test-reporter=spec node/tests/api.test.ts node/tests/native-compat-api.test.ts node/tests/growth-runtime.test.ts
+      - name: Assert the legacy API proxy is absent
         run: |
           node <<'NODE'
           const fs = require('node:fs');
           const source = fs.readFileSync('node/apps/api/src/main.ts', 'utf8');
-          if (!source.includes('LEGACY_COMPATIBILITY_PATHS')) throw new Error('missing explicit legacy allowlist');
-          for (const required of ['/self\\/optimization', '/autonomy\\/cycles']) {
-            if (!source.includes(required)) throw new Error(`missing bounded compatibility path ${required}`);
+          for (const forbidden of ['proxyLegacy', 'LEGACY_COMPATIBILITY_PATHS', 'AGENELF_LEGACY_API_URL', 'x-agenelf-compatibility']) {
+            if (source.includes(forbidden)) throw new Error(`legacy proxy token remains: ${forbidden}`);
           }
-          if (/if\s*\(await proxyLegacy\([^)]*\)\)\s*return;\s*sendJson/.test(source) && !source.includes('LEGACY_COMPATIBILITY_PATHS.some')) {
-            throw new Error('unbounded legacy proxy detected');
-          }
+          if (/fetch\([^\n]{0,300}legacy/i.test(source)) throw new Error('legacy upstream fetch remains');
           NODE
-      - name: Build and smoke Node API without legacy upstream
+      - name: Build and smoke the standalone Node API
         shell: bash
         run: |
           set -euo pipefail
           docker build -f Dockerfile.node -t agenelf-node-native-api:ci .
           root=$(mktemp -d)
-          mkdir -p "$root/local/self" "$root/local/memory" "$root/data/node-tasks" "$root/data/repair-requests" "$root/data/repair-results" "$root/data/repair-locks" "$root/data/runner-health" "$root/web"
+          mkdir -p "$root/local/self" "$root/local/memory" "$root/data/node-tasks" "$root/data/autonomy-cycles" "$root/data/autonomy-events" "$root/data/repair-requests" "$root/data/repair-results" "$root/data/repair-locks" "$root/data/runner-health" "$root/web"
           printf '<html>native</html>\n' > "$root/web/index.html"
           cat > "$root/local/repositories.yaml" <<'YAML'
           schema_version: 1
@@ -84,6 +91,7 @@ jobs:
             -e HOME=/tmp \
             -e AGENELF_API_TOKEN=native-ci-token \
             -e AGENELF_ROOT=/agenelf \
+            -e AGENELF_OPTIMIZATION_COOLDOWN_SECONDS=0 \
             -p 127.0.0.1:18081:8000 \
             -v "$root/local:/agenelf/local:rw" \
             -v "$root/data:/agenelf/data:rw" \
@@ -95,7 +103,12 @@ jobs:
           done
           grep -q 'node-typescript' /tmp/native-health.json
           curl -fsS -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/self/development | grep -q 'continuity_id'
-          curl -fsS -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/tasks | grep -q '"tasks"'
+          curl -fsS -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/self/optimization | grep -q 'consciousness_claim'
+          curl -fsS -X POST -H 'X-Agenelf-Token: native-ci-token' -H 'Content-Type: application/json' \
+            -d '{"key":"llm.temperature","value":0.2,"reason":"native smoke"}' \
+            http://127.0.0.1:18081/self/optimization/apply | grep -q '"applied":true'
+          curl -fsS -X POST -H 'X-Agenelf-Token: native-ci-token' -H 'Content-Type: application/json' \
+            -d '{"goal":"complete Node migration","apply_changes":false}' \
+            http://127.0.0.1:18081/autonomy/cycles | grep -q 'plan_ready'
+          curl -fsS -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/autonomy/cycles | grep -q '"cycles"'
           test "$(curl -sS -o /tmp/unknown.json -w '%{http_code}' -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/not-migrated)" = 404
-          test "$(curl -sS -o /tmp/pending.json -w '%{http_code}' -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/self/optimization)" = 501
-          grep -q 'migration_pending' /tmp/pending.json
