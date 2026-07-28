@@ -63,17 +63,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker compose --profile cli config --format json > /tmp/current.json
+          docker compose --profile cli config --format json > /tmp/default.json
+          docker compose --profile cli --profile python-repair config --format json > /tmp/profiled.json
           docker compose -f docker-compose.python.yml config --format json > /tmp/rollback.json
           node <<'NODE'
           const fs = require('node:fs');
-          const current = JSON.parse(fs.readFileSync('/tmp/current.json','utf8')).services || {};
+          const current = JSON.parse(fs.readFileSync('/tmp/default.json','utf8')).services || {};
+          const profiled = JSON.parse(fs.readFileSync('/tmp/profiled.json','utf8')).services || {};
           const rollback = JSON.parse(fs.readFileSync('/tmp/rollback.json','utf8')).services || {};
           const nodeRepair = current['node-repair-runner'];
           if (!nodeRepair) throw new Error('missing node-repair-runner');
+          if (current['repair-runner']) throw new Error('default topology unexpectedly starts Python repair');
+          if (!Array.isArray(profiled['repair-runner']?.profiles) || !profiled['repair-runner'].profiles.includes('python-repair')) throw new Error('Python repair is not profile-gated');
           if (!String(nodeRepair.build?.dockerfile || '').endsWith('Dockerfile.repair')) throw new Error('wrong Node Repair image');
           if (nodeRepair.network_mode !== 'none' || !nodeRepair.read_only) throw new Error('Node Repair must be networkless/read-only');
-          if (!Array.isArray(current['repair-runner']?.profiles) || !current['repair-runner'].profiles.includes('python-repair')) throw new Error('Python repair is not profile-gated');
           const volumes = (service) => service?.volumes || [];
           const text = (service) => volumes(service).map((item) => typeof item === 'string' ? item : `${item.source || ''}:${item.target || ''}:${item.read_only ? 'ro' : 'rw'}`).join('\n');
           const mounts = text(nodeRepair);
