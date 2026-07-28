@@ -85,6 +85,7 @@ class NodeSelfUpgradeRunnerTest(unittest.TestCase):
         for expected in (
             "node/apps/self-upgrade-runner/",
             "node/packages/core/src/self-upgrade.ts",
+            "node/packages/core/src/self-upgrade-hardening.ts",
             "Dockerfile.control-plane",
             "compose.override.yaml",
             "node/tests/",
