@@ -1,16 +1,16 @@
 """Agenelf core package initialization.
 
-The owner-authorized upgrade engine is still the shared Python control plane during the
-Node migration. Load that module explicitly to completion, register the module object on
-the package, and only then install Node scopes and the final diff-aware redline scanner.
-All existing ``from core import authorized_upgrade`` consumers therefore receive the
-same fully governed module without relying on import-order side effects.
+Keep ordinary core imports lightweight. Existing consumers import
+``authorized_upgrade`` from this package, so expose a lazy module proxy. The proxy loads
+the complete legacy engine only on first use, then installs Node scopes and the final
+diff-aware redline scanner before forwarding the requested attribute.
 """
 from __future__ import annotations
 
 import importlib
 import re
 from types import ModuleType
+from typing import Any
 
 _AUTHORIZED_UPGRADE: ModuleType | None = None
 
@@ -21,11 +21,12 @@ def load_authorized_upgrade() -> ModuleType:
         return _AUTHORIZED_UPGRADE
 
     module = importlib.import_module(f"{__name__}.authorized_upgrade")
-    globals()["authorized_upgrade"] = module
 
     from .node_upgrade_policy import install as install_node_policy
     from .upgrade_redlines import install as install_diff_redlines
 
+    # importlib registers the concrete submodule on this package before returning, so
+    # node_upgrade_policy's existing compatibility import resolves to the real module.
     install_node_policy()
     install_diff_redlines(module)
 
@@ -46,6 +47,16 @@ def load_authorized_upgrade() -> ModuleType:
     return module
 
 
-authorized_upgrade = load_authorized_upgrade()
+class _AuthorizedUpgradeProxy(ModuleType):
+    def __init__(self) -> None:
+        super().__init__(f"{__name__}.authorized_upgrade_proxy")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(load_authorized_upgrade(), name)
+
+
+# The attribute exists before from-list processing, preventing Python from importing the
+# raw submodule and bypassing governance installation.
+authorized_upgrade = _AuthorizedUpgradeProxy()
 
 __all__ = ["authorized_upgrade", "load_authorized_upgrade"]
