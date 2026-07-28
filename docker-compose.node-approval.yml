@@ -1,0 +1,28 @@
+# Node Approval migration overlay. Compose after docker-compose.yml and docker-compose.override.yml.
+services:
+  approval-key-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    command: [node, node/apps/approval-key-init/src/main.ts]
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
+    user: "0:0"
+
+  approval-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    command: [node, node/apps/approval-runner/src/main.ts]
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
+      AGENELF_APPROVAL_INTERVAL_MS: "250"
+
+  self-upgrade-runner:
+    volumes:
+      - ./docker-compose.node-approval.yml:/agenelf/upgrade-target/docker-compose.node-approval.yml:rw
+      - ./node/apps/approval-key-init:/agenelf/upgrade-target/node/apps/approval-key-init:rw
+      - ./node/apps/approval-runner:/agenelf/upgrade-target/node/apps/approval-runner:rw
+      - ./node/packages/core/src/owner-approval.ts:/agenelf/upgrade-target/node/packages/core/src/owner-approval.ts:rw
