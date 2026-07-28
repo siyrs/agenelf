@@ -6,6 +6,7 @@ import { sanitizeJson } from "./privacy.ts";
 import { PromptTemplateLoader } from "./prompt-templates.ts";
 import { ResourceLoader } from "./resource-loader.ts";
 import { SessionLedgerStore } from "./session-ledger.ts";
+import { SelfOptimizationStore } from "./self-optimization.ts";
 import { SkillRegistry } from "./skill-registry.ts";
 import { ValidationQueue } from "./validation.ts";
 import type { ChatMessage, JsonObject, JsonValue, ToolCall } from "./types.ts";
@@ -26,6 +27,7 @@ export class AgenelfAgent {
   readonly resources: ResourceLoader;
   readonly prompts: PromptTemplateLoader;
   readonly validation: ValidationQueue;
+  readonly optimization: SelfOptimizationStore;
   private readonly sessionChains = new Map<string, Promise<void>>();
   private initialized = false;
   private validationReady = false;
@@ -41,6 +43,7 @@ export class AgenelfAgent {
     this.resources = new ResourceLoader(root);
     this.prompts = new PromptTemplateLoader(root);
     this.validation = new ValidationQueue(root);
+    this.optimization = new SelfOptimizationStore(root);
   }
 
   async initialize(): Promise<void> {
@@ -71,7 +74,7 @@ export class AgenelfAgent {
     return {
       status: "ok",
       runtime: "node-typescript",
-      version: "0.10.0",
+      version: "0.12.0",
       node: process.version,
       model: this.model.config.model,
       model_ready: this.model.ready,
@@ -84,6 +87,7 @@ export class AgenelfAgent {
         ready: this.validationReady,
         error: this.validationReady ? "" : this.validationError.slice(0, 1_000)
       },
+      optimization: await this.optimization.status(),
       compatibility: { legacy_api: Boolean(process.env.AGENELF_LEGACY_API_URL) },
       security: {
         policy_default: "fail-closed",
@@ -119,7 +123,10 @@ export class AgenelfAgent {
   }
 
   private async systemPrompt(): Promise<string> {
-    const memory = await this.memory.promptBlock(30);
+    const memoryLimit = await this.optimization.effective("agent.memory_prompt_limit", 30);
+    const memoryMaxChars = await this.optimization.effective("agent.memory_prompt_max_chars", 8000);
+    this.model.config.temperature = await this.optimization.effective("llm.temperature", this.model.config.temperature);
+    const memory = await this.memory.promptBlock(memoryLimit, memoryMaxChars);
     const resources = this.resources.catalog();
     const prompts = this.prompts.catalog();
     return [
