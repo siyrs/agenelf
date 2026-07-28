@@ -199,6 +199,7 @@ services:
       - ./Dockerfile.repair:/agenelf/upgrade-target/Dockerfile.repair:rw
       - ./compose.yaml:/agenelf/upgrade-target/compose.yaml:rw
       - ./compose.override.yaml:/agenelf/upgrade-target/compose.override.yaml:rw
+      - ./docker-compose.override.yml:/agenelf/upgrade-target/docker-compose.override.yml:rw
       - ./docker-compose.yml:/agenelf/upgrade-target/docker-compose.yml:rw
       - ./docker-compose.python.yml:/agenelf/upgrade-target/docker-compose.python.yml:rw
       - ./docker-compose.node-approval.yml:/agenelf/upgrade-target/docker-compose.node-approval.yml:rw
