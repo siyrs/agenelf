@@ -191,7 +191,7 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
         return;
       }
       if (request.method === "GET" && url.pathname === "/health") {
-        sendJson(response, 200, { status: "ok", version: "0.9.0", runtime: "node-typescript" }); return;
+        sendJson(response, 200, { status: "ok", version: "0.10.0", runtime: "node-typescript" }); return;
       }
       if (!authorized(request)) {
         const configured = Boolean(process.env.AGENELF_API_TOKEN);
@@ -200,6 +200,12 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
       if (request.method === "GET" && url.pathname === "/status") { sendJson(response, 200, await agent.status()); return; }
       if (request.method === "GET" && url.pathname === "/capabilities") { sendJson(response, 200, { capabilities: agent.registry.catalog() }); return; }
       if (request.method === "GET" && url.pathname === "/resources") { sendJson(response, 200, { resources: agent.resources.catalog() }); return; }
+      if (request.method === "GET" && url.pathname === "/prompts") { sendJson(response, 200, { prompts: agent.prompts.catalog() }); return; }
+      const promptMatch = url.pathname.match(/^\/prompts\/([a-z][a-z0-9-]{0,47})\/expand$/);
+      if (request.method === "POST" && promptMatch) {
+        const body = await readJsonBody(request);
+        sendJson(response, 200, agent.prompts.expand(promptMatch[1], String(body.input ?? ""))); return;
+      }
 
       if (url.pathname.startsWith("/validation/")) {
         if (!requireValidation(agent, response)) return;
