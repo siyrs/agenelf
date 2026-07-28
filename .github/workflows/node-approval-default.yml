@@ -32,15 +32,18 @@ jobs:
           cp local/node-runner.example.json local/node-runner.json
           mkdir -p local/prompts data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
       - name: Validate default and rollback topologies
+        id: topology
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          docker compose --profile cli config --format json > /tmp/default-compose.json
-          docker compose -f docker-compose.python.yml config --format json > /tmp/python-compose.json
-          node <<'NODE'
+          set -o pipefail
+          {
+            docker compose --profile cli config --format json > default-compose.json
+            docker compose -f docker-compose.python.yml config --format json > python-compose.json
+            node <<'NODE'
           const fs = require('node:fs');
-          const current = JSON.parse(fs.readFileSync('/tmp/default-compose.json', 'utf8')).services || {};
-          const rollback = JSON.parse(fs.readFileSync('/tmp/python-compose.json', 'utf8')).services || {};
+          const current = JSON.parse(fs.readFileSync('default-compose.json', 'utf8')).services || {};
+          const rollback = JSON.parse(fs.readFileSync('python-compose.json', 'utf8')).services || {};
           const dockerfile = (service) => typeof service?.build === 'object' ? String(service.build.dockerfile || '') : '';
           const command = (service) => Array.isArray(service?.command) ? service.command.join(' ') : String(service?.command || '');
           if (current['approval-key-init'].image !== 'agenelf-node:local') throw new Error('default key init image is not Node');
@@ -66,6 +69,21 @@ jobs:
           if (!command(rollback['approval-runner']).includes('scripts/approval_runner.py')) throw new Error('Python approval rollback changed');
           if (rollback['approval-runner'].image !== 'agenelf:local') throw new Error('Python rollback image changed');
           NODE
+          } 2>&1 | tee topology-validation.log
+      - name: Upload topology diagnostics
+        if: steps.topology.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-approval-default-topology
+          path: |
+            topology-validation.log
+            default-compose.json
+            python-compose.json
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Stop after topology failure
+        if: steps.topology.outcome == 'failure'
+        run: exit 1
       - name: Run default Node approval Docker E2E
         shell: bash
         run: |
