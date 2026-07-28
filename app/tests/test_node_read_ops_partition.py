@@ -8,6 +8,8 @@ from unittest import mock
 
 import yaml
 
+from core import authorized_upgrade
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
@@ -80,6 +82,25 @@ class NodeReadOpsPartitionTest(unittest.TestCase):
         )
         environment = rollback["services"]["ops-runner"].get("environment", {})
         self.assertNotIn("AGENELF_OPS_RUNNER_MODE", environment)
+
+    def test_owner_authorized_upgrade_scope_includes_read_ops_runtime(self) -> None:
+        plan = authorized_upgrade.make_plan(
+            "完善 Node read-only Ops SSH runner 与 Dockerfile.ops-read",
+            scopes=["node_runners", "node_build"],
+        )
+        for expected in (
+            "node/apps/read-ops-runner/",
+            "node/packages/core/src/read-ops.ts",
+            "node/packages/core/src/server-catalog.ts",
+            "Dockerfile.ops-read",
+            "node/tests/",
+            "app/tests/",
+        ):
+            self.assertIn(expected, plan["allowed_paths"])
+        self.assertEqual(
+            authorized_upgrade.READ_OPS_UPGRADE_POLICY_VERSION,
+            "owner-authorized-read-ops-v1",
+        )
 
 
 if __name__ == "__main__":
