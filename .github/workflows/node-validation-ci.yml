@@ -91,15 +91,19 @@ jobs:
           }
           NODE
       - name: End-to-end Node validation runner smoke
+        id: validation_e2e
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           cleanup() {
             status=$?
             if [ "$status" -ne 0 ]; then
-              docker compose ps || true
-              docker compose logs --no-color --tail=250 agenelf legacy-agent validation-runner || true
-              find data/validation-requests data/validation-results data/runner-health -maxdepth 2 -type f -print -exec sed -n '1,160p' {} \; || true
+              mkdir -p validation-e2e-data
+              docker compose ps --all >validation-compose-ps.log 2>&1 || true
+              docker compose logs --no-color --tail=300 agenelf legacy-agent validation-runner >validation-container.log 2>&1 || true
+              cp -a data/validation-requests data/validation-results data/runner-health validation-e2e-data/ 2>/dev/null || true
+              cp -a logs/validation.log validation-e2e-data/ 2>/dev/null || true
             fi
             docker compose down -v >/dev/null 2>&1 || true
             exit "$status"
@@ -132,3 +136,18 @@ jobs:
             sleep 1
           done
           node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync("data/runner-health/validation-runner.json","utf8")); if(value.runtime!=="node-typescript"||value.name!=="validation-runner") process.exit(1)'
+      - name: Upload validation E2E diagnostics
+        if: steps.validation_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-validation-e2e-diagnostics
+          path: |
+            validation-compose-ps.log
+            validation-container.log
+            validation-e2e-data/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop after validation E2E failure
+        if: steps.validation_e2e.outcome == 'failure'
+        run: exit 1
+
