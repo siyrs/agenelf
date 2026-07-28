@@ -1,0 +1,13 @@
+{
+  "id": "operations.read-only.catalog",
+  "name": "Read-only Server Operations",
+  "description": "主人配置的服务器与 Docker 只读操作、风险分流、可信结果和事件回放协议。",
+  "version": "1.0.0",
+  "kind": "policy",
+  "trust": "builtin",
+  "path": "docs/READ_ONLY_OPS_CATALOG.md",
+  "capabilities": [
+    "server.operations",
+    "docker.operations"
+  ]
+}
