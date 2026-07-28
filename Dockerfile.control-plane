@@ -1,0 +1,30 @@
+FROM node:24.18.0-bookworm-slim AS node-runtime
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    npm_config_ignore_scripts=true \
+    npm_config_audit=false \
+    npm_config_fund=false
+
+WORKDIR /agenelf
+
+# Node and Python use the same Debian base generation. Copy the official Node
+# distribution into the isolated control-plane image instead of adding an external apt
+# repository or downloading a runtime during build.
+COPY --from=node-runtime /usr/local/ /usr/local/
+
+COPY app/requirements.txt /tmp/requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates bash \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir -r /tmp/requirements.txt \
+    && node --version \
+    && npm --version
+
+RUN useradd --create-home --uid 1000 agenelf \
+    && chown -R agenelf:agenelf /agenelf
+USER agenelf
+
+CMD ["python", "/agenelf/scripts/self_upgrade_runner_entry.py", "--interval", "1"]
