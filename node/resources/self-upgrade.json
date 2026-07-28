@@ -1,0 +1,14 @@
+{
+  "id": "self-upgrade.runner.protocol",
+  "name": "Owner-authorized self-upgrade runner",
+  "description": "Two-stage owner authorization, immutable candidate binding, complete test revalidation, atomic backup/apply and rollback evidence.",
+  "version": "1.0.0",
+  "kind": "policy",
+  "trust": "builtin",
+  "path": "docs/NODE_SELF_UPGRADE_RUNNER.md",
+  "capabilities": [
+    "agent.authorized_self_upgrade",
+    "owner_authorized_self_upgrade_candidate",
+    "self-upgrade-events"
+  ]
+}
