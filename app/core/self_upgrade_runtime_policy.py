@@ -19,6 +19,7 @@ def install(module: ModuleType) -> None:
         module._SCOPE_PATHS.get("node_runners", ()),
         "node/apps/self-upgrade-runner/",
         "node/packages/core/src/self-upgrade.ts",
+        "node/packages/core/src/self-upgrade-hardening.ts",
     )
     module._SCOPE_PATHS["node_build"] = _extend(
         module._SCOPE_PATHS.get("node_build", ()),
@@ -31,7 +32,7 @@ def install(module: ModuleType) -> None:
     )
     pattern = re.compile(
         r"(?i)self[-_ ]?upgrade.{0,80}(?:Node|TypeScript|runner|执行器)|"
-        r"node/apps/self-upgrade-runner|node/packages/core/src/self-upgrade"
+        r"node/apps/self-upgrade-runner|node/packages/core/src/self-upgrade(?:-hardening)?"
     )
     if not any(scope == "node_runners" and item.pattern == pattern.pattern for scope, item in module._SCOPE_PATTERNS):
         module._SCOPE_PATTERNS = (("node_runners", pattern), *module._SCOPE_PATTERNS)
