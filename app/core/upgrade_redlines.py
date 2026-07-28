@@ -149,6 +149,14 @@ _REQUIRED_TOKENS_BY_PATH: dict[str, tuple[str, ...]] = {
         "FROM python:3.12-slim",
         "npm_config_ignore_scripts=true",
         "USER agenelf",
+        'CMD ["node", "node/apps/self-upgrade-runner/src/main.ts"]',
+    ),
+    "node/packages/core/src/self-upgrade.ts": (
+        "verifyCandidate",
+        "runTrustedTests",
+        "consumeAuthorization",
+        "backupTargets",
+        "rollback",
     ),
 }
 
