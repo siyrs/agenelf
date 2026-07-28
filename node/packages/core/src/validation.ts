@@ -143,7 +143,7 @@ export class ValidationQueue {
     this.auditPath = join(this.root, "logs", "validation.log");
   }
 
-  async initialize(): Promise<void> {
+  async initialize(options: { runner?: boolean } = {}): Promise<void> {
     const info = await lstat(this.validationFile);
     if (!info.isFile() || info.isSymbolicLink()) throw new Error(`验证配置不存在、不是普通文件或是符号链接：${this.validationFile}`);
     const parsed = parseSimpleYaml(await readFile(this.validationFile, "utf8"));
@@ -161,11 +161,16 @@ export class ValidationQueue {
     }
     this.config = { checks, suites };
     await mkdir(this.requests, { recursive: true });
-    await mkdir(this.results, { recursive: true });
-    await mkdir(this.locks, { recursive: true });
+    if (options.runner) {
+      await mkdir(this.results, { recursive: true });
+      await mkdir(this.locks, { recursive: true });
+    }
   }
 
-  async reload(): Promise<void> { this.config = null; await this.initialize(); }
+  async reload(options: { runner?: boolean } = {}): Promise<void> {
+    this.config = null;
+    await this.initialize(options);
+  }
 
   private ready(): ValidationConfig {
     if (!this.config) throw new Error("ValidationQueue 尚未初始化");
@@ -246,7 +251,7 @@ export class ValidationRunner {
   readonly queue: ValidationQueue;
 
   constructor(root: string, validationFile?: string) { this.queue = new ValidationQueue(root, validationFile); }
-  async initialize(): Promise<void> { await this.queue.initialize(); }
+  async initialize(): Promise<void> { await this.queue.initialize({ runner: true }); }
 
   private validateRequest(request: JsonObject): { operation: ValidationOperation; target: string } {
     if (request.schema_version !== 1) throw new Error("不支持的验证请求版本");
