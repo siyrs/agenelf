@@ -20,6 +20,8 @@ services:
       AGENELF_ROOT: /agenelf
       AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
       AGENELF_APPROVAL_INTERVAL_MS: "250"
+    volumes:
+      - ./data/ops-results:/agenelf/data/ops-results:ro
 
   self-upgrade-runner:
     volumes:
