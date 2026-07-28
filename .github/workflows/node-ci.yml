@@ -11,7 +11,7 @@ permissions:
 jobs:
   node-runtime:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -51,7 +51,7 @@ jobs:
           cp .ops-runner.env.example .ops-runner.env
           python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
           cp local/node-runner.example.json local/node-runner.json
-          mkdir -p data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+          mkdir -p local/prompts data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
       - name: Validate default hybrid production topology
         id: topology
         continue-on-error: true
@@ -73,8 +73,12 @@ jobs:
           }
           const node = services.agenelf;
           const legacy = services['legacy-agent'];
-          const dockerfile = typeof node.build === 'object' ? String(node.build.dockerfile || '') : '';
-          if (!dockerfile.endsWith('Dockerfile.node')) throw new Error(`agenelf must build Dockerfile.node, got ${dockerfile}`);
+          const validation = services['validation-runner'];
+          const dockerfileOf = (service) => typeof service.build === 'object' ? String(service.build.dockerfile || '') : '';
+          if (!dockerfileOf(node).endsWith('Dockerfile.node')) throw new Error(`agenelf must build Dockerfile.node, got ${dockerfileOf(node)}`);
+          if (!dockerfileOf(validation).endsWith('Dockerfile.node')) throw new Error(`validation-runner must build Dockerfile.node, got ${dockerfileOf(validation)}`);
+          const validationCommand = Array.isArray(validation.command) ? validation.command.join(' ') : String(validation.command || '');
+          if (!validationCommand.includes('node/apps/validation-runner/src/main.ts')) throw new Error(`unexpected validation command: ${validationCommand}`);
           const envEntries = Array.isArray(node.environment)
             ? Object.fromEntries(node.environment.map((item) => String(item).split(/=(.*)/s).slice(0, 2)))
             : (node.environment || {});
@@ -96,19 +100,29 @@ jobs:
             }
             return item.target === target && (readOnly === undefined || Boolean(item.read_only) === readOnly);
           });
-          const nodeSources = volumes(node).map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
-          if (nodeSources.includes('local/secrets')) throw new Error('Node Agent must not receive local secrets');
+          const sources = (service) => volumes(service).map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
+          if (sources(node).includes('local/secrets')) throw new Error('Node Agent must not receive local secrets');
           if (hasTarget(node, '/agenelf/approval')) throw new Error('Node Agent must not receive approval keys');
           if (!hasTarget(node, '/agenelf/policy', true)) throw new Error('Node Agent must retain read-only policy');
+          if (!hasTarget(node, '/agenelf/local/prompts', true)) throw new Error('Node Agent must mount owner prompts read-only');
           if (!hasTarget(node, '/agenelf/data/runner-health', true)) throw new Error('Node Agent must retain read-only runner health');
+          if (!hasTarget(node, '/agenelf/data/validation-requests', false)) throw new Error('Node Agent must submit validation requests');
           if (!hasTarget(node, '/agenelf/data/validation-results', true)) throw new Error('Node Agent must observe validation results read-only');
           if (!hasTarget(node, '/agenelf/data/repair-results', true)) throw new Error('Node Agent must observe repair results read-only');
           if (!hasTarget(node, '/agenelf/app-tmp', false)) throw new Error('Node Agent must retain the controlled candidate workspace');
           if (!hasTarget(services.cli, '/agenelf/approval', true)) throw new Error('Node CLI must retain owner approval signing access');
+          if (!hasTarget(services.cli, '/agenelf/local/prompts', true)) throw new Error('Node CLI must mount owner prompts read-only');
+          if (sources(validation).includes('local/secrets') || hasTarget(validation, '/agenelf/approval')) throw new Error('Validation Runner must not receive secrets or approval keys');
+          if (!hasTarget(validation, '/agenelf/local/validation.yaml', true)) throw new Error('Validation Runner must read configuration only');
+          if (!hasTarget(validation, '/agenelf/data/validation-requests', true)) throw new Error('Validation Runner requests must be read-only');
+          if (!hasTarget(validation, '/agenelf/data/validation-results', false)) throw new Error('Validation Runner results must be writable');
+          if (!hasTarget(validation, '/agenelf/data/validation-locks', false)) throw new Error('Validation Runner locks must be writable');
+          if (!hasTarget(validation, '/agenelf/data/runner-health', false)) throw new Error('Validation Runner health must be writable');
           if (services['approval-runner'].network_mode !== 'none') throw new Error(`approval network_mode=${services['approval-runner'].network_mode}`);
           if (services['repair-runner'].network_mode !== 'none') throw new Error(`repair network_mode=${services['repair-runner'].network_mode}`);
           if (!hasTarget(services['approval-runner'], '/agenelf/approval', true)) throw new Error('approval-runner must retain read-only HMAC key');
           if (!hasTarget(services['ops-runner'], '/agenelf/local/secrets', true)) throw new Error('ops-runner must read server secrets');
+          if (!hasTarget(services['self-upgrade-runner'], '/agenelf/upgrade-target/node', false)) throw new Error('self-upgrade runner must retain governed Node target');
           console.log(`validated ${Object.keys(services).length} explicit production services`);
           NODE
           } 2>&1 | tee topology-validation.log
@@ -136,12 +150,15 @@ jobs:
           const python = JSON.parse(fs.readFileSync('/tmp/agenelf-python-compose.json', 'utf8'));
           const optional = JSON.parse(fs.readFileSync('/tmp/agenelf-node-runner-compose.json', 'utf8'));
           if (!python.services?.agenelf || !python.services?.['approval-runner']) throw new Error('Python rollback topology incomplete');
+          const rollbackValidation = python.services?.['validation-runner'];
+          const rollbackCommand = Array.isArray(rollbackValidation?.command) ? rollbackValidation.command.join(' ') : String(rollbackValidation?.command || '');
+          if (!rollbackCommand.includes('scripts/validation_runner.py')) throw new Error('Python rollback validation runner changed unexpectedly');
           if (!optional.services?.['node-runner']) throw new Error('optional Node runner profile missing');
           if (optional.services['node-runner'].network_mode !== 'none') throw new Error('Node runner must remain networkless');
           NODE
       - name: Build Node production image
         run: docker build -f Dockerfile.node -t agenelf-node:ci .
-      - name: Smoke Node API container
+      - name: Smoke standalone Node API container
         env:
           AGENELF_API_TOKEN: node-ci-token
         run: |
@@ -155,7 +172,8 @@ jobs:
             sleep 1
           done
           curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:18080/status | grep -q 'node-typescript'
-      - name: Smoke default Node plus internal legacy topology
+          curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:18080/prompts | grep -q '"/plan"'
+      - name: Smoke Node API, Node Validation Runner and internal legacy topology
         shell: bash
         run: |
           set -euo pipefail
@@ -163,13 +181,13 @@ jobs:
             status=$?
             if [ "$status" -ne 0 ]; then
               docker compose ps || true
-              docker compose logs --no-color --tail=200 legacy-agent agenelf || true
+              docker compose logs --no-color --tail=200 legacy-agent agenelf validation-runner || true
             fi
             docker compose down -v >/dev/null 2>&1 || true
             exit "$status"
           }
           trap cleanup EXIT
-          docker compose up -d --build approval-key-init legacy-agent agenelf
+          docker compose up -d --build approval-key-init legacy-agent agenelf validation-runner
           for i in $(seq 1 45); do
             if curl -fsS http://127.0.0.1:8000/health >/tmp/node-health.json; then
               break
@@ -177,6 +195,18 @@ jobs:
             sleep 1
           done
           grep -q 'node-typescript' <(curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/status)
+          curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/prompts | grep -q '"/review"'
+          validation_id=$(curl -fsS -X POST -H 'X-Agenelf-Token: node-ci-token' -H 'Content-Type: application/json' \
+            -d '{"summary":"compose smoke"}' http://127.0.0.1:8000/validation/suites/agenelf-smoke \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          validation_ok=0
+          for i in $(seq 1 30); do
+            curl -fsS -H 'X-Agenelf-Token: node-ci-token' "http://127.0.0.1:8000/validation/results/${validation_id}" >/tmp/validation-smoke.json
+            if grep -q '"status":"succeeded"' /tmp/validation-smoke.json; then validation_ok=1; break; fi
+            sleep 1
+          done
+          test "$validation_ok" -eq 1
+          test -s data/runner-health/validation-runner.json
           proxy_ok=0
           for i in $(seq 1 30); do
             if curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/self/roadmap >/tmp/legacy-proxy-smoke.json; then
