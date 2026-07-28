@@ -4,12 +4,12 @@
 help: ## Show commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-init: ## Create/migrate private config, Node state, controlled queues and workspaces
+init: ## Create/migrate private config, Node state, prompt templates, controlled queues and workspaces
 	@test -f .env || cp .env.example .env
 	@test -f .ops-runner.env || cp .ops-runner.env.example .ops-runner.env
 	@python3 scripts/init_local.py
 	@test -f local/node-runner.json || cp local/node-runner.example.json local/node-runner.json
-	@mkdir -p logs workspace/scratch app-space/skills app-tmp app-fork code-workspaces repair-space \
+	@mkdir -p logs workspace/scratch app-space/skills app-tmp app-fork code-workspaces repair-space local/prompts \
 		app-tmp/promote-requests \
 		data/auth-requests data/auth-decisions data/auth-consumed \
 		data/ops-requests data/ops-results data/ops-locks \
@@ -20,7 +20,7 @@ init: ## Create/migrate private config, Node state, controlled queues and worksp
 		data/self-upgrade-backups data/authorized-upgrades data/runner-health data/app-backups \
 		data/tasks data/node-tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles \
 		data/node-runner-requests data/node-runner-results data/node-runner-locks
-	@echo "初始化完成。默认 Agent/API/CLI 为 Node；Python legacy API 与安全 Runner 保留为内部兼容控制面。"
+	@echo "初始化完成。默认 Agent/API/CLI 与 Validation Runner 为 Node；Python legacy API 与其余安全 Runner 保留为内部兼容控制面。"
 
 local: ## Validate local personalization without printing secrets
 	@python3 scripts/init_local.py --status
@@ -36,7 +36,7 @@ workflow: ## Show governed Python and Node workflow task files
 	@echo "== Node workflow tasks =="; ls -lt data/node-tasks 2>/dev/null | head -20 || true
 	@echo "== channel requests =="; ls -lt data/channel-requests 2>/dev/null | head -20 || true
 
-start: ## Start Node Agent/API plus internal Python compatibility API and deterministic runners
+start: ## Start Node Agent/API/Validation plus internal compatibility API and isolated runners
 	@test -f .env || (echo "缺少 .env，请先 make init"; exit 1)
 	@test -f .ops-runner.env || (echo "缺少 .ops-runner.env，请先 make init"; exit 1)
 	@test -f local/profile.yaml || (echo "缺少 local/profile.yaml，请先 make init"; exit 1)
@@ -49,7 +49,7 @@ start: ## Start Node Agent/API plus internal Python compatibility API and determ
 	@test -d local/memory || (echo "缺少 local/memory，请先 make init"; exit 1)
 	@test -d local/self || (echo "缺少 local/self，请先 make init"; exit 1)
 	@test -d local/secrets || (echo "缺少 local/secrets，请先 make init"; exit 1)
-	@mkdir -p app-tmp/promote-requests \
+	@mkdir -p local/prompts app-tmp/promote-requests \
 		data/approval-commands data/approval-results data/approval-locks data/auth-decisions data/auth-consumed \
 		data/ops-requests data/ops-results data/ops-locks \
 		data/validation-requests data/validation-results data/validation-locks \
@@ -66,10 +66,10 @@ stop: ## Stop all services
 restart: ## Restart all services
 	docker compose restart
 
-build: ## Rebuild Node, legacy Python and runner images
+build: ## Rebuild Node, legacy Python and isolated runner images
 	docker compose build
 
-chat: ## Open the default Node CLI chat
+chat: ## Open the default Node CLI chat with slash autocomplete
 	docker compose --profile cli run --rm cli
 
 legacy-chat: ## Open the legacy Python CLI for migration diagnostics
@@ -128,7 +128,7 @@ ops: ## Show recent operation requests and results
 	@echo "== decisions =="; ls -lt data/auth-decisions 2>/dev/null | head -20 || true
 	@echo "== results =="; ls -lt data/ops-results 2>/dev/null | head -20 || true
 
-validation: ## Show validation configuration and trusted queues
+validation: ## Show Node validation configuration, requests and trusted evidence
 	@echo "== validation config =="; python3 scripts/init_local.py --status | grep -E 'validation|local_dir' || true
 	@echo "== validation requests =="; ls -lt data/validation-requests 2>/dev/null | head -20 || true
 	@echo "== validation results =="; ls -lt data/validation-results 2>/dev/null | head -20 || true
@@ -139,7 +139,7 @@ repair: ## Show code repair aliases, queues and evidence
 	@echo "== repair results =="; ls -lt data/repair-results 2>/dev/null | head -20 || true
 	@echo "== repair artifacts =="; ls -lt repair-space 2>/dev/null | head -20 || true
 
-logs: ## Follow Node Agent, internal legacy API and deterministic runners
+logs: ## Follow Node Agent, internal legacy API and isolated runners
 	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner ops-runner validation-runner repair-runner self-upgrade-runner
 
 status: ## Show containers, local state and all controlled queues
