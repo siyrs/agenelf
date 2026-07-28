@@ -8,6 +8,6 @@ services:
     volumes:
       - ./local/prompts:/agenelf/local/prompts:ro
 
-  self-upgrade-runner:
+  node-self-upgrade-runner:
     volumes:
       - ./docker-compose.override.yml:/agenelf/upgrade-target/docker-compose.override.yml:rw
