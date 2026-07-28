@@ -5,10 +5,8 @@ and governance terms. Scanning the entire replacement file would therefore rejec
 legitimate maintenance change. This module scans only newly introduced lines while also
 requiring critical root-of-trust tokens to remain present.
 
-It is installed into the trusted ``core.authorized_upgrade`` module in both the Agent
-candidate stage and the isolated application runner. The baseline root is the staged
-candidate before edits for the Agent and the live explicit upgrade target for the
-runner.
+The scanner is language-neutral for the production control plane: Python and
+Node.js/TypeScript candidates pass through the same final diff-aware redline source.
 """
 from __future__ import annotations
 
@@ -64,6 +62,31 @@ _REDLINE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "直接主分支发布",
         re.compile(r"git[^\n]{0,160}(?:push|merge)[^\n]{0,160}\bmain\b", re.I),
     ),
+    (
+        "Node 任意 Shell",
+        re.compile(
+            r"(?:from\s+['\"]node:child_process['\"]|"
+            r"require\(['\"](?:node:)?child_process['\"]\))"
+            r"[\s\S]{0,1600}(?:\bexecSync?\s*\(|"
+            r"\bspawnSync?\s*\([^\n]{0,360}\bshell\s*:\s*true)",
+            re.I,
+        ),
+    ),
+    (
+        "Node 动态代码执行",
+        re.compile(r"\b(?:eval|Function)\s*\(|\bvm\.(?:runIn|compileFunction)", re.I),
+    ),
+    (
+        "关闭 TLS 校验",
+        re.compile(r"NODE_TLS_REJECT_UNAUTHORIZED\s*[:=]\s*['\"]?0", re.I),
+    ),
+    (
+        "npm 生命周期脚本",
+        re.compile(
+            r"['\"](?:preinstall|install|postinstall|prepublish|prepublishOnly|prepare)['\"]\s*:",
+            re.I,
+        ),
+    ),
     ("明显 API Key", re.compile(r"sk-[A-Za-z0-9_-]{20,}")),
 )
 
@@ -100,6 +123,12 @@ _REQUIRED_TOKENS_BY_PATH: dict[str, tuple[str, ...]] = {
         "candidate_tree_sha256",
         "scan_redlines",
     ),
+    "app/core/node_upgrade_policy.py": (
+        "_NODE_SCOPES",
+        "_prepare_changes",
+        "_validate_node_syntax",
+        "_FORBIDDEN_LIFECYCLE_SCRIPTS",
+    ),
     "app/core/cli_approval.py": (
         "parse_owner_decision",
         "submit_owner_command",
@@ -109,6 +138,17 @@ _REQUIRED_TOKENS_BY_PATH: dict[str, tuple[str, ...]] = {
         "request_authorized_self_upgrade",
         "continue_authorized_self_upgrade",
         "_ORDINARY_SANDBOX_PROTECTED",
+    ),
+    "app/tests/test_node_candidate_contract.py": (
+        ".agenelf-evolution-workspace.json",
+        '"ci", "--ignore-scripts"',
+        '"run", "test:node"',
+    ),
+    "Dockerfile.control-plane": (
+        "FROM node:24.18.0-bookworm-slim AS node-runtime",
+        "FROM python:3.12-slim",
+        "npm_config_ignore_scripts=true",
+        "USER agenelf",
     ),
 }
 
