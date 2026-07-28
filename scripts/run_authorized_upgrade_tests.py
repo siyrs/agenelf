@@ -2,11 +2,12 @@
 """Deterministic verification for an owner-authorized repository candidate.
 
 The candidate may change approved production/control-plane files, but every pre-existing
-``app/tests`` file must remain byte-identical. The verifier compiles Python sources,
-parses YAML/JSON/TOML, checks shell syntax, runs the current trusted governance
-validator against the candidate policy, and runs the complete unittest suite. It never
-imports a candidate control-plane helper into this verifier process and writes bytecode
-only to a temporary cache, so the candidate can remain read-only.
+``app/tests`` and ``node/tests`` file must remain byte-identical. The verifier compiles
+Python sources, parses YAML/JSON/TOML, checks shell syntax, runs the current trusted
+governance validator against the candidate policy, and runs the complete Python suite.
+A protected Python contract test separately runs the complete locked Node suite. This
+verifier never imports a candidate control-plane helper into its own process and writes
+bytecode only to a temporary cache, so the candidate can remain read-only.
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from typing import Any
 import yaml
 
 MAX_OUTPUT = 80_000
+_TEST_ROOTS = ("app/tests/", "node/tests/")
 
 
 def sha256(path: Path) -> str:
@@ -45,17 +47,24 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def verify_existing_tests(repo: Path, baseline: dict[str, str]) -> list[str]:
     checked: list[str] = []
+    counts = {root: 0 for root in _TEST_ROOTS}
     for relative, expected in sorted(baseline.items()):
-        if not relative.startswith("app/tests/"):
+        root = next((prefix for prefix in _TEST_ROOTS if relative.startswith(prefix)), None)
+        if root is None:
             continue
         path = repo / relative
         if not path.is_file():
             raise RuntimeError(f"existing test removed: {relative}")
+        if path.is_symlink():
+            raise RuntimeError(f"existing test replaced by symlink: {relative}")
         if sha256(path) != expected:
             raise RuntimeError(f"existing test modified: {relative}")
         checked.append(relative)
-    if not checked:
+        counts[root] += 1
+    if counts["app/tests/"] == 0:
         raise RuntimeError("baseline manifest contains no app/tests files")
+    if (repo / "node" / "tests").is_dir() and counts["node/tests/"] == 0:
+        raise RuntimeError("baseline manifest contains no node/tests files")
     return checked
 
 
@@ -185,8 +194,6 @@ def trusted_governance_check(
     policy = repo / "policy" / "safety-constraints.v1.yaml"
     policy_was_in_baseline = "policy/safety-constraints.v1.yaml" in baseline
     if not policy_was_in_baseline and not policy.is_file():
-        # Lightweight isolated unit fixtures can omit repository governance files. Real
-        # staged Agenelf repositories always include them in the baseline manifest.
         return None
     if not policy.is_file():
         raise RuntimeError("candidate removed policy/safety-constraints.v1.yaml")
@@ -247,6 +254,8 @@ def evaluate(
             "status": "passed",
             "candidate_repo": str(repo),
             "trusted_existing_tests": len(trusted_tests),
+            "trusted_app_tests": sum(item.startswith("app/tests/") for item in trusted_tests),
+            "trusted_node_tests": sum(item.startswith("node/tests/") for item in trusted_tests),
             "structured_files": structured,
             "shell_scripts": len(shell),
             "trusted_governance": governance,
