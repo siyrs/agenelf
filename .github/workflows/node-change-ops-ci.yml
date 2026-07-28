@@ -1,0 +1,218 @@
+name: Node Change Ops Migration CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "node/apps/change-ops-runner/**"
+      - "node/packages/core/src/change-ops.ts"
+      - "node/packages/core/src/open-ssh.ts"
+      - "node/packages/core/src/read-ops.ts"
+      - "node/packages/core/src/server-catalog.ts"
+      - "node/tests/change-ops.test.ts"
+      - "Dockerfile.ops-change"
+      - "compose.override.yaml"
+      - "app/core/change_ops_upgrade_policy.py"
+      - "app/tests/test_node_change_ops_runner.py"
+      - ".github/workflows/node-change-ops-ci.yml"
+  pull_request:
+    paths:
+      - "node/apps/change-ops-runner/**"
+      - "node/packages/core/src/change-ops.ts"
+      - "node/packages/core/src/open-ssh.ts"
+      - "node/packages/core/src/read-ops.ts"
+      - "node/packages/core/src/server-catalog.ts"
+      - "node/tests/change-ops.test.ts"
+      - "Dockerfile.ops-change"
+      - "compose.override.yaml"
+      - "app/core/change_ops_upgrade_policy.py"
+      - "app/tests/test_node_change_ops_runner.py"
+      - ".github/workflows/node-change-ops-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  change-ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          pip install -r app/requirements.txt
+      - name: Run change Ops unit and topology tests
+        run: |
+          node --test node/tests/change-ops.test.ts node/tests/read-ops.test.ts
+          PYTHONPATH=app python -m unittest app.tests.test_node_change_ops_runner app.tests.test_node_read_ops_partition -v
+      - name: Prepare Compose fixtures
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=change-ops-ci-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p local/prompts data/ops-events data/repair-events data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate production, profiled and rollback trust boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --profile cli config --format json > /tmp/default.json
+          docker compose --profile cli --profile python-ops config --format json > /tmp/profiled.json
+          docker compose -f docker-compose.python.yml config --format json > /tmp/rollback.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const current = JSON.parse(fs.readFileSync('/tmp/default.json','utf8')).services || {};
+          const profiled = JSON.parse(fs.readFileSync('/tmp/profiled.json','utf8')).services || {};
+          const rollback = JSON.parse(fs.readFileSync('/tmp/rollback.json','utf8')).services || {};
+          const change = current['change-ops-runner'];
+          const read = current['read-ops-runner'];
+          if (!change || !read) throw new Error('Node Ops partition incomplete');
+          if (current['ops-runner']) throw new Error('default topology unexpectedly starts Python Ops');
+          if (!profiled['ops-runner']?.profiles?.includes('python-ops')) throw new Error('Python Ops diagnostic profile missing');
+          if (!String(change.build?.dockerfile || '').endsWith('Dockerfile.ops-change')) throw new Error('wrong change Ops image');
+          if (!change.read_only) throw new Error('change Ops root filesystem must be read-only');
+          const volumes = (service) => service?.volumes || [];
+          const text = (service) => volumes(service).map((item) => typeof item === 'string' ? item : `${item.source || ''}:${item.target || ''}:${item.read_only ? 'ro' : 'rw'}`).join('\n');
+          const mounts = text(change);
+          for (const required of ['/agenelf/local/secrets:ro','/agenelf/data/ops-requests:ro','/agenelf/data/auth-decisions:ro','/agenelf/data/ops-results:rw','/agenelf/data/ops-locks:rw','/agenelf/data/ops-events:rw']) {
+            if (!mounts.includes(required)) throw new Error(`missing change Ops mount ${required}`);
+          }
+          for (const forbidden of ['/agenelf/approval','docker.sock','local/memory','local/self','/agenelf/app-fork','/agenelf/policy']) {
+            if (mounts.includes(forbidden)) throw new Error(`forbidden change Ops mount ${forbidden}`);
+          }
+          if (!rollback['ops-runner']) throw new Error('Python rollback Ops missing');
+          if (rollback['ops-runner'].profiles) throw new Error('Python rollback Ops must not be profile-gated');
+          if (rollback['change-ops-runner'] || rollback['read-ops-runner']) throw new Error('Python rollback unexpectedly contains Node Ops');
+          NODE
+      - name: Build and smoke minimal change Ops image
+        run: |
+          docker build -f Dockerfile.ops-change -t agenelf-change-ops:ci .
+          docker run --rm agenelf-change-ops:ci node --version
+          docker run --rm --entrypoint ssh agenelf-change-ops:ci -V
+      - name: Run real local OpenSSH and Docker restart E2E
+        id: change_e2e
+        continue-on-error: true
+        shell: bash
+        run: |
+          status=0
+          (
+            set -euxo pipefail
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends openssh-server
+            id -u agenelfci >/dev/null 2>&1 || sudo useradd --create-home --shell /bin/bash agenelfci
+            sudo usermod -aG docker agenelfci
+            mkdir -p local/secrets data/ops-events
+            ssh-keygen -q -t ed25519 -N '' -f local/secrets/ci_ed25519
+            sudo install -d -m 700 -o agenelfci -g agenelfci /home/agenelfci/.ssh
+            sudo cp local/secrets/ci_ed25519.pub /home/agenelfci/.ssh/authorized_keys
+            sudo chown agenelfci:agenelfci /home/agenelfci/.ssh/authorized_keys
+            sudo chmod 600 /home/agenelfci/.ssh/authorized_keys
+            sudo ssh-keygen -A
+            cat > /tmp/agenelf-change-sshd.conf <<'EOF'
+          Port 22223
+          ListenAddress 127.0.0.1
+          HostKey /etc/ssh/ssh_host_ed25519_key
+          PidFile /tmp/agenelf-change-sshd.pid
+          AuthorizedKeysFile .ssh/authorized_keys
+          PasswordAuthentication no
+          PubkeyAuthentication yes
+          PermitRootLogin no
+          ChallengeResponseAuthentication no
+          UsePAM no
+          StrictModes yes
+          LogLevel VERBOSE
+          EOF
+            sudo /usr/sbin/sshd -f /tmp/agenelf-change-sshd.conf -E /tmp/agenelf-change-sshd.log
+            ssh-keyscan -p 22223 127.0.0.1 > local/secrets/known_hosts
+            chmod 600 local/secrets/ci_ed25519 local/secrets/known_hosts
+            cat > local/servers.yaml <<'EOF'
+          servers:
+            local-ci:
+              host: 127.0.0.1
+              port: 22223
+              username: agenelfci
+              connect_timeout: 5
+              auth:
+                type: private_key
+                private_key: ci_ed25519
+              known_hosts: known_hosts
+              allow_unknown_host_key: false
+              docker_command: docker
+              managed_root: /tmp/agenelf-managed
+              allowed_bind_roots: [/tmp/agenelf-data]
+              allowed_operations: [apt_update, compose_deploy, compose_down, service_restart, docker_install]
+              allowed_docker_operations: [restart_docker_container]
+              allowed_containers: [change-ops-demo]
+              allowed_services: []
+          EOF
+            docker rm -f change-ops-demo >/dev/null 2>&1 || true
+            docker run -d --name change-ops-demo agenelf-change-ops:ci sleep 300
+            before=$(docker inspect --format '{{.State.StartedAt}}' change-ops-demo)
+            node --input-type=module <<'NODE'
+          import { writeFile } from 'node:fs/promises';
+          import { OperationQueue } from './node/packages/core/src/operation-queue.ts';
+          const queue = new OperationQueue(process.cwd());
+          const request = await queue.submit({
+            capability: 'docker.operations',
+            operation: 'restart_docker_container',
+            target: 'local-ci',
+            parameters: { container: 'change-ops-demo', timeout_seconds: 2 },
+            risk: 'change',
+            summary: 'real SSH container restart'
+          });
+          await writeFile(`data/auth-decisions/${request.id}.json`, `${JSON.stringify({
+            schema_version: 1,
+            request_id: request.id,
+            decision: 'approve',
+            fingerprint: request.fingerprint,
+            decided_at: new Date().toISOString(),
+            decided_by: 'owner-ci',
+            reason: 'change Ops E2E'
+          }, null, 2)}\n`);
+          await writeFile('/tmp/change-op-id', request.id);
+          NODE
+            sleep 1
+            AGENELF_ROOT="$PWD" node node/apps/change-ops-runner/src/main.ts --once
+            op_id=$(cat /tmp/change-op-id)
+            after=$(docker inspect --format '{{.State.StartedAt}}' change-ops-demo)
+            test "$before" != "$after"
+            test -s "data/ops-results/${op_id}.json"
+            grep -q '"status": "succeeded"' "data/ops-results/${op_id}.json"
+            test -s "data/ops-events/${op_id}.jsonl"
+            grep -q '"type":"ops.approval.checked"' "data/ops-events/${op_id}.jsonl"
+            grep -q '"type":"ops.result.persisted"' "data/ops-events/${op_id}.jsonl"
+            grep -q 'node-typescript' data/runner-health/ops-runner.json
+            test ! -e approval/key
+          ) > change-ops-e2e.log 2>&1 || status=$?
+          sudo cat /tmp/agenelf-change-sshd.log > change-ops-sshd.log 2>&1 || true
+          find data/ops-requests data/auth-decisions data/ops-results data/ops-events data/runner-health -maxdepth 1 -type f -print > change-ops-files.log 2>&1 || true
+          docker rm -f change-ops-demo >/dev/null 2>&1 || true
+          cat change-ops-e2e.log
+          exit "$status"
+      - name: Upload change Ops E2E diagnostics
+        if: steps.change_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-change-ops-e2e
+          path: |
+            change-ops-e2e.log
+            change-ops-sshd.log
+            change-ops-files.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop after change Ops E2E failure
+        if: steps.change_e2e.outcome == 'failure'
+        run: exit 1
