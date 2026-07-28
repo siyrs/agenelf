@@ -1,13 +1,15 @@
-# Default Node personalization and owner-approval overlay.
+# Default Node personalization, approval and read-only operations overlay.
 # Explicit `docker compose -f docker-compose.python.yml ...` rollback does not load it.
 services:
   agenelf:
     volumes:
       - ./local/prompts:/agenelf/local/prompts:ro
+      - ./data/ops-events:/agenelf/data/ops-events:ro
 
   cli:
     volumes:
       - ./local/prompts:/agenelf/local/prompts:ro
+      - ./data/ops-events:/agenelf/data/ops-events:ro
 
   approval-key-init:
     image: agenelf-node:local
@@ -31,12 +33,49 @@ services:
       AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
       AGENELF_APPROVAL_INTERVAL_MS: "250"
 
+  ops-runner:
+    environment:
+      AGENELF_OPS_RUNNER_MODE: change-only
+
+  read-ops-runner:
+    image: agenelf-read-ops:local
+    build:
+      context: .
+      dockerfile: Dockerfile.ops-read
+    command: [node, node/apps/read-ops-runner/src/main.ts]
+    env_file: .ops-runner.env
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
+      AGENELF_SECRETS_DIR: /agenelf/local/secrets
+      AGENELF_READ_OPS_INTERVAL_MS: "500"
+    volumes:
+      - ./node:/agenelf/node:ro
+      - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+      - ./local/secrets:/agenelf/local/secrets:ro
+      - ./data/ops-requests:/agenelf/data/ops-requests:ro
+      - ./data/ops-results:/agenelf/data/ops-results:rw
+      - ./data/ops-locks:/agenelf/data/ops-locks:rw
+      - ./data/ops-events:/agenelf/data/ops-events:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
+      - ./logs:/agenelf/logs:rw
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
   self-upgrade-runner:
     volumes:
       - ./compose.yaml:/agenelf/upgrade-target/compose.yaml:rw
       - ./compose.override.yaml:/agenelf/upgrade-target/compose.override.yaml:rw
       - ./docker-compose.override.yml:/agenelf/upgrade-target/docker-compose.override.yml:rw
       - ./docker-compose.node-approval.yml:/agenelf/upgrade-target/docker-compose.node-approval.yml:rw
+      - ./Dockerfile.ops-read:/agenelf/upgrade-target/Dockerfile.ops-read:rw
       - ./node/apps/approval-key-init:/agenelf/upgrade-target/node/apps/approval-key-init:rw
       - ./node/apps/approval-runner:/agenelf/upgrade-target/node/apps/approval-runner:rw
+      - ./node/apps/read-ops-runner:/agenelf/upgrade-target/node/apps/read-ops-runner:rw
       - ./node/packages/core/src/owner-approval.ts:/agenelf/upgrade-target/node/packages/core/src/owner-approval.ts:rw
+      - ./node/packages/core/src/read-ops.ts:/agenelf/upgrade-target/node/packages/core/src/read-ops.ts:rw
+      - ./node/packages/core/src/server-catalog.ts:/agenelf/upgrade-target/node/packages/core/src/server-catalog.ts:rw
