@@ -64,7 +64,7 @@ jobs:
           set -euo pipefail
           docker build -f Dockerfile.node -t agenelf-node-native-api:ci .
           root=$(mktemp -d)
-          mkdir -p "$root/local/self" "$root/local/memory" "$root/data/node-tasks" "$root/data/autonomy-cycles" "$root/data/autonomy-events" "$root/data/repair-requests" "$root/data/repair-results" "$root/data/repair-locks" "$root/data/runner-health" "$root/web"
+          mkdir -p "$root/local/self" "$root/local/memory" "$root/data/node-tasks" "$root/data/autonomy-cycles" "$root/data/autonomy-events" "$root/data/repair-requests" "$root/data/repair-results" "$root/data/repair-locks" "$root/data/runner-health" "$root/logs" "$root/web"
           printf '<html>native</html>\n' > "$root/web/index.html"
           cat > "$root/local/repositories.yaml" <<'YAML'
           schema_version: 1
@@ -95,6 +95,7 @@ jobs:
             -p 127.0.0.1:18081:8000 \
             -v "$root/local:/agenelf/local:rw" \
             -v "$root/data:/agenelf/data:rw" \
+            -v "$root/logs:/agenelf/logs:rw" \
             -v "$root/web:/agenelf/web:ro" \
             agenelf-node-native-api:ci
           for i in $(seq 1 30); do
