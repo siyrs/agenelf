@@ -66,8 +66,8 @@ jobs:
           if (hasTarget(current.agenelf, '/agenelf/approval')) throw new Error('default Agent/API received approval key');
           if (!hasTarget(current.agenelf, '/agenelf/local/prompts', true)) throw new Error('default Agent prompt mount missing');
           if (!hasTarget(current.cli, '/agenelf/local/prompts', true)) throw new Error('default CLI prompt mount missing');
-          if (!command(rollback['approval-runner']).includes('scripts/approval_runner.py')) throw new Error('Python approval rollback changed');
-          if (rollback['approval-runner'].image !== 'agenelf:local') throw new Error('Python rollback image changed');
+          if (!command(rollback['approval-runner']).includes('scripts/approval_runner.py')) throw new Error('Python approval rollback command changed');
+          if (!dockerfile(rollback['approval-runner']).endsWith('Dockerfile')) throw new Error('Python approval rollback Dockerfile changed');
           NODE
           } 2>&1 | tee topology-validation.log
       - name: Upload topology diagnostics
