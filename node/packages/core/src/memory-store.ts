@@ -53,9 +53,11 @@ export class MemoryStore {
       .map((item) => item.entry);
   }
 
-  async promptBlock(limit = 30): Promise<string> {
+  async promptBlock(limit = 30, maxChars = 8000): Promise<string> {
     const entries = await this.list(limit);
     if (!entries.length) return "";
-    return ["主人长期记忆（已脱敏）：", ...entries.map((entry) => `- [${entry.kind}] ${entry.content}`)].join("\n");
+    const boundedChars = Math.max(500, Math.min(Math.trunc(maxChars), 50_000));
+    const text = ["主人长期记忆（已脱敏）：", ...entries.map((entry) => `- [${entry.kind}] ${entry.content}`)].join("\n");
+    return text.length <= boundedChars ? text : `${text.slice(0, Math.max(0, boundedChars - 1))}…`;
   }
 }
