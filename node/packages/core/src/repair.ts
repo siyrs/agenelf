@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { lstat, mkdir, open, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { appendLine, atomicWriteJson, readJson } from "./fs-store.ts";
-import { canonicalize, randomId, sha256 } from "./canonical.ts";
+import { randomId, sha256 } from "./canonical.ts";
 import { redactSensitiveText, sanitizeObject } from "./privacy.ts";
 import { parseSimpleYaml } from "./simple-yaml.ts";
 import type { JsonObject, JsonValue } from "./types.ts";
@@ -104,7 +105,9 @@ function minimalEnv(home: string): NodeJS.ProcessEnv {
     npm_config_fund: "false"
   };
 }
-function patchDigest(patch: string): string { return sha256(patch as unknown as JsonValue); }
+function patchDigest(patch: string): string {
+  return createHash("sha256").update(patch, "utf8").digest("hex");
+}
 function canonicalPayload(request: RepairRequest): JsonObject {
   return {
     capability: "code.repair",
