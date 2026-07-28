@@ -217,6 +217,8 @@ test("distinct dual approvals are required and exact binding is enforced", async
   decision.approvals = [{ decided_by: "same" }, { decided_by: "same" }];
   await writeJson(decisionPath, decision);
   assert.equal((await checkAuthorization(dual.root, dual.candidateAuthId, dual.candidateBinding)).state, "pending");
+  decision.approvals = [{ decided_by: "owner-1" }, { decided_by: "owner-2" }];
+  await writeJson(decisionPath, decision);
   const wrong = { ...dual.candidateBinding, candidate_tree_sha256: "0".repeat(64) };
   assert.equal((await checkAuthorization(dual.root, dual.candidateAuthId, wrong)).state, "binding_mismatch");
 });
