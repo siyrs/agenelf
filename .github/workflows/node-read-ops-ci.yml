@@ -1,0 +1,175 @@
+name: Node Read-only Ops Migration CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "node/apps/read-ops-runner/**"
+      - "node/packages/core/src/read-ops.ts"
+      - "node/packages/core/src/server-catalog.ts"
+      - "node/tests/read-ops.test.ts"
+      - "scripts/ops_runner_entry.py"
+      - "Dockerfile.ops-read"
+      - "compose.override.yaml"
+      - "app/tests/test_node_read_ops_partition.py"
+      - ".github/workflows/node-read-ops-ci.yml"
+  pull_request:
+    paths:
+      - "node/apps/read-ops-runner/**"
+      - "node/packages/core/src/read-ops.ts"
+      - "node/packages/core/src/server-catalog.ts"
+      - "node/tests/read-ops.test.ts"
+      - "scripts/ops_runner_entry.py"
+      - "Dockerfile.ops-read"
+      - "compose.override.yaml"
+      - "app/tests/test_node_read_ops_partition.py"
+      - ".github/workflows/node-read-ops-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  read-ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          pip install -r app/requirements.txt
+      - name: Run read-only Ops unit and partition tests
+        run: |
+          node --test node/tests/read-ops.test.ts
+          PYTHONPATH=app python -m unittest app.tests.test_node_read_ops_partition -v
+      - name: Prepare Compose fixtures
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=read-ops-ci-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p local/prompts data/ops-events data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate production and rollback trust boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --profile cli config --format json > /tmp/current.json
+          docker compose -f docker-compose.python.yml config --format json > /tmp/rollback.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const current = JSON.parse(fs.readFileSync('/tmp/current.json','utf8')).services || {};
+          const rollback = JSON.parse(fs.readFileSync('/tmp/rollback.json','utf8')).services || {};
+          const read = current['read-ops-runner'];
+          if (!read) throw new Error('missing read-ops-runner');
+          if (!String(read.build?.dockerfile || '').endsWith('Dockerfile.ops-read')) throw new Error('wrong read runner image');
+          if (String(current['ops-runner']?.environment?.AGENELF_OPS_RUNNER_MODE || '') !== 'change-only') throw new Error('Python runner is not change-only');
+          const volumes = (service) => service?.volumes || [];
+          const text = (service) => volumes(service).map((item) => typeof item === 'string' ? item : `${item.source || ''}:${item.target || ''}:${item.read_only ? 'ro' : 'rw'}`).join('\n');
+          const readMounts = text(read);
+          for (const required of ['/agenelf/local/secrets:ro','/agenelf/data/ops-requests:ro','/agenelf/data/ops-results:rw','/agenelf/data/ops-locks:rw','/agenelf/data/ops-events:rw']) {
+            if (!readMounts.includes(required)) throw new Error(`missing read runner mount ${required}`);
+          }
+          for (const forbidden of ['/agenelf/approval','docker.sock','local/memory','local/self']) {
+            if (readMounts.includes(forbidden)) throw new Error(`forbidden read runner mount ${forbidden}`);
+          }
+          if (text(current.agenelf).includes('/agenelf/local/secrets')) throw new Error('Agent received SSH secrets');
+          if (rollback['read-ops-runner']) throw new Error('Python rollback unexpectedly includes Node read runner');
+          if (rollback['ops-runner']?.environment?.AGENELF_OPS_RUNNER_MODE) throw new Error('Python rollback is partitioned');
+          NODE
+      - name: Build and smoke minimal read-only Ops image
+        run: |
+          docker build -f Dockerfile.ops-read -t agenelf-read-ops:ci .
+          docker run --rm agenelf-read-ops:ci node --version
+          docker run --rm --entrypoint ssh agenelf-read-ops:ci -V
+      - name: Run real local OpenSSH E2E
+        id: ssh_e2e
+        continue-on-error: true
+        shell: bash
+        run: |
+          status=0
+          (
+            set -euxo pipefail
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends openssh-server
+            id -u agenelfci >/dev/null 2>&1 || sudo useradd --create-home --shell /bin/bash agenelfci
+            mkdir -p local/secrets data/ops-events
+            ssh-keygen -q -t ed25519 -N '' -f local/secrets/ci_ed25519
+            sudo install -d -m 700 -o agenelfci -g agenelfci /home/agenelfci/.ssh
+            sudo cp local/secrets/ci_ed25519.pub /home/agenelfci/.ssh/authorized_keys
+            sudo chown agenelfci:agenelfci /home/agenelfci/.ssh/authorized_keys
+            sudo chmod 600 /home/agenelfci/.ssh/authorized_keys
+            sudo ssh-keygen -A
+            cat > /tmp/agenelf-sshd.conf <<'EOF'
+          Port 22222
+          ListenAddress 127.0.0.1
+          HostKey /etc/ssh/ssh_host_ed25519_key
+          PidFile /tmp/agenelf-sshd.pid
+          AuthorizedKeysFile .ssh/authorized_keys
+          PasswordAuthentication no
+          PubkeyAuthentication yes
+          PermitRootLogin no
+          ChallengeResponseAuthentication no
+          UsePAM no
+          StrictModes yes
+          LogLevel VERBOSE
+          EOF
+            sudo /usr/sbin/sshd -f /tmp/agenelf-sshd.conf -E /tmp/agenelf-sshd.log
+            ssh-keyscan -p 22222 127.0.0.1 > local/secrets/known_hosts
+            chmod 600 local/secrets/ci_ed25519 local/secrets/known_hosts
+            cat > local/servers.yaml <<'EOF'
+          servers:
+            local-ci:
+              host: 127.0.0.1
+              port: 22222
+              username: agenelfci
+              connect_timeout: 5
+              auth:
+                type: private_key
+                private_key: ci_ed25519
+              known_hosts: known_hosts
+              allow_unknown_host_key: false
+              docker_command: docker
+              allowed_operations: [inspect]
+              allowed_docker_operations: []
+              allowed_services: []
+          EOF
+            node --input-type=module -e "import {OperationQueue} from './node/packages/core/src/operation-queue.ts'; const q=new OperationQueue(process.cwd()); const r=await q.submit({capability:'server.operations',operation:'inspect',target:'local-ci',risk:'read',summary:'SSH E2E inspect'}); console.log(r.id);" > /tmp/op-id
+            AGENELF_ROOT="$PWD" node node/apps/read-ops-runner/src/main.ts --once
+            op_id=$(cat /tmp/op-id)
+            test -s "data/ops-results/${op_id}.json"
+            grep -q '"status": "succeeded"' "data/ops-results/${op_id}.json"
+            test -s "data/ops-events/${op_id}.jsonl"
+            grep -q '"type":"ssh.completed"' "data/ops-events/${op_id}.jsonl"
+            grep -q 'node-typescript' data/runner-health/read-ops-runner.json
+            test ! -e "data/auth-decisions/${op_id}.json"
+          ) > read-ops-e2e.log 2>&1 || status=$?
+          sudo cat /tmp/agenelf-sshd.log > read-ops-sshd.log 2>&1 || true
+          find data/ops-requests data/ops-results data/ops-events data/runner-health -maxdepth 1 -type f -print > read-ops-files.log 2>&1 || true
+          cat read-ops-e2e.log
+          exit "$status"
+      - name: Upload SSH E2E diagnostics
+        if: steps.ssh_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-read-ops-e2e
+          path: |
+            read-ops-e2e.log
+            read-ops-sshd.log
+            read-ops-files.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop after SSH E2E failure
+        if: steps.ssh_e2e.outcome == 'failure'
+        run: exit 1
