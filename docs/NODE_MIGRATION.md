@@ -1,6 +1,6 @@
 # Agenelf Node.js / TypeScript 迁移基线
 
-> 状态：Node Agent/API/CLI 已是默认生产入口；Validation Runner 已迁移；Node 生产代码已纳入主人授权自升级治理；其余安全 Runner 分批迁移  
+> 状态：Node Agent/API/CLI、Approval、Validation 与 read-only Ops 已迁移；Node 生产代码已纳入主人授权自升级治理；其余高风险 Runner 分批迁移  
 > 目标运行时：Node.js 24 LTS 原生 TypeScript type stripping  
 > 迁移原则：统一语言栈，但不合并信任域。
 
@@ -14,10 +14,10 @@
 - Skill Registry：内置 Skill、统一合同、统一审计；
 - Pi 风格 ResourceLoader：progressive disclosure、trust/source/hash、默认不执行第三方代码；
 - Owner Memory、Node Task Store；
-- Python Runner 兼容队列：Node Agent 可继续提交 `data/ops-requests`；
-- Node deterministic runner：runtime info、受限文件摘要、精确 allowlist command；
 - Node HTTP API、CLI、真实 lifecycle SSE 与断点游标；
 - Node Validation Queue/Runner：严格 YAML、alias-only、HTTP/TCP、suite、可信结果与 heartbeat；
+- Node Approval Key Init/Broker：主人 CLI 签名、networkless 验签与裁决、Python rollback；
+- Node Read-only Ops Runner：固定 SSH 命令目录、语义风险分流、可信结果与事件回放；
 - Node owner-authorized upgrade scopes、TypeScript 语法、测试哈希保护、永久红线和双运行时控制面；
 - 完整 Node、Python、Compose、安全和供应链门禁。
 
@@ -35,9 +35,12 @@ node/
 │   ├── api/                 # HTTP + SSE
 │   ├── cli/                 # 主人终端
 │   ├── runner/              # 通用 Node deterministic runner
-│   └── validation-runner/   # 独立软件验证 Runner
+│   ├── approval-key-init/   # 审批 HMAC key 初始化
+│   ├── approval-runner/     # networkless 审批 Broker
+│   ├── validation-runner/   # 独立软件验证 Runner
+│   └── read-ops-runner/     # 独立只读 SSH Runner
 ├── packages/
-│   ├── core/                # Agent/Event/Ledger/Policy/Storage/Model/Validation
+│   ├── core/                # Agent/Event/Ledger/Policy/Model/Validation/Ops
 │   └── skills/              # 内置技能
 ├── resources/               # progressive disclosure manifests
 ├── scripts/                 # 无依赖检查
@@ -62,26 +65,18 @@ node/
 除 `/health`、根跳转和 `/ui/*` 外，全部 API 默认要求 `X-Agenelf-Token`；未配置 token
 时 fail-closed。SSE 支持 `Last-Event-ID`/`after_seq`，客户端断开不自动终止已授权 Runner。
 
-Validation 配置缺失或损坏时，Validation API 返回 503 并保持 fail-closed，不会把验证 URL、
-host 或 headers 交给模型，也不会静默回退到 legacy API。
+## 5. 与 Python 控制面的兼容
 
-## 5. 与 Python 运行时的兼容
+OperationQueue 继续复用 `op-*`、canonical payload、SHA-256 fingerprint、TTL、请求、
+裁决、结果和共享锁目录：
 
-迁移期间 Node Agent 继续写入既有 `data/ops-requests`，因此原 approval/ops runner
-可不变地消费请求。请求字段、fingerprint、TTL、审批目录与结果目录保持兼容。
+- 语义 read 请求由 Node read runner 处理；
+- change/privileged 与未知/损坏请求由 Python runner 处理；
+- 请求自报 risk 不改变 Runner 路由；
+- 显式 Python rollback 不加载 Node overlay，原 Runner 处理全部操作。
 
-Node Validation 继续复用：
-
-- `val-*` ID；
-- `software.validation` capability；
-- `run_check / run_suite` operation；
-- alias-only target；
-- 空 `parameters`；
-- Python 同源 canonical JSON 与 SHA-256 fingerprint；
-- `data/validation-requests/results/locks`；
-- `logs/validation.log`。
-
-`docker-compose.python.yml` 保留原 Python Validation Runner 作为明确回滚路径。
+Node Validation 继续复用 `val-*` 和 `data/validation-*` 协议。Node Approval 继续复用
+`auth-* / op-* / apc-*`、Python canonical HMAC、裁决与结果协议。
 
 主人授权升级仍复用 Python `authorized_upgrade` 工作流和审批/证据协议。Node 扩展只增加
 Node scopes、语法、测试保护、红线和双运行时验证，不创建第二套授权事实源。详细说明见
@@ -89,55 +84,64 @@ Node scopes、语法、测试保护、红线和双运行时验证，不创建第
 
 ## 6. Runner 与治理迁移进度
 
-### Batch N2：生产 Agent/API/CLI 切换（已完成）
+### Batch N2：生产 Agent/API/CLI（已完成）
 
-- 默认 Compose 使用 `Dockerfile.node`；
-- Python API 仅作为内部 `legacy-agent` 兼容路由，不公开端口；
-- 默认 CLI 为 Node，旧 Python CLI 保留 `legacy-cli` profile；
-- Web 使用 Node 真实 Event Core，`/chat/stream` 提供旧事件投影；
-- Node 原生会话历史、清空、断点 SSE 和内部代理均有集成测试。
+- Node 为默认公网入口；
+- Python API 仅作内部兼容路由；
+- Web 使用真实 Event Core 与旧 SSE 投影；
+- Session Ledger 提供历史、分支、重放与恢复。
 
 ### Batch N3.1：Validation Runner（已完成）
 
-- Node Agent/API/Skill 共用 `ValidationQueue`；
-- Node Validation Runner 独立容器执行网络检查；
-- 模型只能选择主人配置 alias，不能传自由 URL、host 或 headers；
-- Runner 不挂载 secrets、profile、memory、self、approval key 或 Docker Socket；
-- requests 只读，results/locks/heartbeat/logs 可写；
-- HTTP 重定向、响应大小、断言数量、超时、YAML 大小/深度均有边界；
-- 真实 HTTP/TCP、suite、篡改、幂等与 Docker E2E 已验收。
+- alias-only HTTP/TCP/Suite；
+- Runner 无 secrets、approval key 或 Docker Socket；
+- 真实 Docker E2E 与 Python rollback 已验收。
 
-### Batch N3.2：Node 主人授权自升级治理（已完成）
+### Batch N3.2：主人授权 Node 自升级治理（已完成）
 
 - Node runtime、skills、runners、tests、build 与 contracts 有正式 scope；
-- 既有 Python 与 Node 测试均由基线 SHA-256 保护，不得修改或删除；
-- 生产/控制面变更必须新增回归测试；
+- 既有 Python 与 Node 测试由基线 SHA-256 保护；
 - 候选真实执行完整 Python 与 Node 套件；
-- diff-aware 红线禁止 Node 任意 Shell、动态代码、TLS 绕过和 npm 生命周期脚本；
-- `Dockerfile.control-plane` 提供 network-none Python + Node 可信测试环境；
-- Self-upgrade Runner 仍为 Python 控制面，本批没有宣称该 Runner 本体已 Node 化。
+- diff-aware 红线禁止任意 Shell、动态代码、TLS 绕过和 npm 生命周期脚本。
 
-### Batch N3.3 及以后
+### Batch N3.3：Approval Broker（已完成）
+
+- key 保存在独立卷或明确私有路径；
+- 只有主人 CLI 与 networkless Broker 能读取 key；
+- Agent/API 不挂载 key；
+- Node 签名/验签与 Python canonical/HMAC 兼容；
+- 显式 Python Approval rollback 保留。
+
+### Batch N3.4：Read-only Ops Runner（已完成）
+
+- Node 处理 inspect、docker ps/logs/inspect/check 与 service status；
+- Python `change-only` 处理 APT、Compose、服务/容器重启、Docker 安装；
+- OpenSSH 使用精确 argv、`shell:false` 与固定远程命令模板；
+- 主人配置的服务器、服务、容器和检查 alias 重新校验；
+- append-only `ops-events` 供 Web/CLI/审计回放，`ops-results` 仍是可信事实源；
+- 真实本机 OpenSSH E2E、篡改、过期、脱敏、共享协议与 rollback 已验收。
+
+### 后续批次
 
 按风险从低到高继续：
 
-1. read-only ops；
-2. approval runner；
-3. repair runner；
-4. change/privileged ops；
-5. self-upgrade runner 本体。
+1. Repair Runner；
+2. change/privileged Ops；
+3. Self-upgrade Runner 本体；
+4. 移除 internal legacy API；
+5. Python runtime 归档。
 
 每个 Runner 单独 PR，不允许一次性重写全部安全控制面。
 
-### Batch N4：Python 退役
+## 7. Python 退役条件
 
-- 数据双读、Node 单写；
-- 关键队列 shadow verification；
-- 删除 Python 入口前保留一版回滚 tag；
+- 所有生产 Runner 已有 Node 等价实现和独立 E2E；
+- 关键队列 shadow verification 完成；
+- 删除 Python 入口前保留回滚 tag 和 `docker-compose.python.yml`；
 - 最终生产镜像不再安装 Python；
 - `app/` 归档到 `legacy/python/` 或删除。
 
-## 7. 验收
+## 8. 验收
 
 ```bash
 npm ci --ignore-scripts
@@ -145,6 +149,7 @@ npm run test:node
 node node/apps/api/src/main.ts
 node node/apps/cli/src/main.ts
 node node/apps/validation-runner/src/main.ts
+node node/apps/read-ops-runner/src/main.ts --once
 ```
 
 要求：Node test、Python regression、专项 Runner/Upgrade E2E、Security、CodeQL、Compose smoke 全绿后才能切换默认运行时或扩大自升级范围。
