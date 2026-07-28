@@ -10,6 +10,7 @@ on:
       - "app/tests/test_node_upgrade_policy.py"
       - "app/tests/test_node_candidate_contract.py"
       - "app/tests/test_node_upgrade_wiring.py"
+      - "scripts/run_authorized_upgrade_tests.py"
       - "Dockerfile.control-plane"
       - "docker-compose.yml"
       - ".github/workflows/node-upgrade-governance-ci.yml"
@@ -21,6 +22,7 @@ on:
       - "app/tests/test_node_upgrade_policy.py"
       - "app/tests/test_node_candidate_contract.py"
       - "app/tests/test_node_upgrade_wiring.py"
+      - "scripts/run_authorized_upgrade_tests.py"
       - "Dockerfile.control-plane"
       - "docker-compose.yml"
       - ".github/workflows/node-upgrade-governance-ci.yml"
@@ -65,7 +67,6 @@ jobs:
             --exclude=app-tmp \
             --exclude=data \
             --exclude=logs \
-            --exclude=local \
             --exclude=workspace \
             -cf - . | tar -xf - -C "$candidate"
           printf '{"schema_version":1,"layout":"repository"}\n' >"$candidate/.agenelf-evolution-workspace.json"
@@ -77,9 +78,10 @@ jobs:
 
           root = Path(os.environ["CANDIDATE"])
           manifest = {}
-          for path in sorted((root / "app" / "tests").rglob("*")):
-              if path.is_file() and not path.is_symlink():
-                  manifest[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+          for test_root in (root / "app" / "tests", root / "node" / "tests"):
+              for path in sorted(test_root.rglob("*")):
+                  if path.is_file() and not path.is_symlink():
+                      manifest[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
           (root / "baseline-tests.json").write_text(
               json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
               encoding="utf-8",
@@ -109,7 +111,7 @@ jobs:
         run: exit 1
       - name: Confirm candidate validation report
         run: |
-          node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync("node-upgrade-candidate-report.json","utf8")); if(value.status!=="passed") process.exit(1)'
+          node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync("node-upgrade-candidate-report.json","utf8")); if(value.status!=="passed"||value.trusted_app_tests<1||value.trusted_node_tests<1) process.exit(1)'
       - name: Validate control-plane Compose trust boundary
         run: |
           cp .env.example .env
