@@ -6,7 +6,9 @@ on:
     paths:
       - "node/apps/self-upgrade-runner/**"
       - "node/packages/core/src/self-upgrade.ts"
+      - "node/packages/core/src/self-upgrade-hardening.ts"
       - "node/tests/self-upgrade.test.ts"
+      - "node/tests/self-upgrade-hardening.test.ts"
       - "Dockerfile.control-plane"
       - "compose.override.yaml"
       - "app/core/self_upgrade_runtime_policy.py"
@@ -16,7 +18,9 @@ on:
     paths:
       - "node/apps/self-upgrade-runner/**"
       - "node/packages/core/src/self-upgrade.ts"
+      - "node/packages/core/src/self-upgrade-hardening.ts"
       - "node/tests/self-upgrade.test.ts"
+      - "node/tests/self-upgrade-hardening.test.ts"
       - "Dockerfile.control-plane"
       - "compose.override.yaml"
       - "app/core/self_upgrade_runtime_policy.py"
@@ -45,7 +49,7 @@ jobs:
           pip install -r app/requirements.txt
       - name: Run Self-upgrade unit and topology tests
         run: |
-          node --test node/tests/self-upgrade.test.ts
+          node --test node/tests/self-upgrade.test.ts node/tests/self-upgrade-hardening.test.ts
           PYTHONPATH=app python -m unittest app.tests.test_node_self_upgrade_runner -v
       - name: Prepare Compose fixtures
         run: |
@@ -77,15 +81,22 @@ jobs:
           if (!profiled['self-upgrade-runner']?.profiles?.includes('python-self-upgrade')) throw new Error('Python Self-upgrade diagnostic profile missing');
           if (!String(runner.build?.dockerfile || '').endsWith('Dockerfile.control-plane')) throw new Error('wrong Self-upgrade image');
           if (runner.network_mode !== 'none' || !runner.read_only) throw new Error('Node Self-upgrade must be networkless/read-only');
-          const volumes = (service) => service?.volumes || [];
-          const text = (service) => volumes(service).map((item) => typeof item === 'string' ? item : `${item.source || ''}:${item.target || ''}:${item.read_only ? 'ro' : 'rw'}`).join('\n');
-          const mounts = text(runner);
-          for (const required of ['/agenelf/app-tmp:ro','/agenelf/data/authorized-upgrades:ro','/agenelf/data/self-upgrade-requests:ro','/agenelf/data/auth-requests:ro','/agenelf/data/auth-decisions:ro','/agenelf/data/auth-consumed:rw','/agenelf/data/self-upgrade-results:rw','/agenelf/data/self-upgrade-backups:rw','/agenelf/data/self-upgrade-events:rw','/agenelf/upgrade-target/node:rw','/agenelf/upgrade-target/policy:rw']) {
-            if (!mounts.includes(required)) throw new Error(`missing Self-upgrade mount ${required}`);
+          const volumes = Array.isArray(runner.volumes) ? runner.volumes : [];
+          const target = (item) => typeof item === 'string' ? item.split(':')[1] : item.target;
+          const readOnly = (item) => typeof item === 'string' ? item.split(':')[2] === 'ro' : Boolean(item.read_only);
+          const has = (path, ro) => volumes.some((item) => target(item) === path && readOnly(item) === ro);
+          for (const path of ['/agenelf/app-tmp','/agenelf/data/authorized-upgrades','/agenelf/data/self-upgrade-requests','/agenelf/data/auth-requests','/agenelf/data/auth-decisions']) {
+            if (!has(path, true)) throw new Error(`missing read-only evidence mount: ${path}`);
           }
-          for (const forbidden of ['/agenelf/approval','local/secrets','local/memory','local/self','docker.sock','/agenelf/upgrade-target/.git']) {
-            if (mounts.includes(forbidden)) throw new Error(`forbidden Self-upgrade mount ${forbidden}`);
+          for (const path of ['/agenelf/data/auth-consumed','/agenelf/data/self-upgrade-results','/agenelf/data/self-upgrade-backups','/agenelf/data/self-upgrade-events','/agenelf/upgrade-target/node','/agenelf/upgrade-target/policy','/agenelf/upgrade-target/compose.override.yaml']) {
+            if (!has(path, false)) throw new Error(`missing writable authorized target: ${path}`);
           }
+          const sources = volumes.map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
+          for (const forbidden of ['local/secrets','local/profile','local/memory','local/self','docker.sock']) {
+            if (sources.includes(forbidden)) throw new Error(`forbidden Self-upgrade source ${forbidden}`);
+          }
+          if (volumes.some((item) => target(item) === '/agenelf/approval')) throw new Error('Self-upgrade received approval HMAC key');
+          if (volumes.some((item) => target(item) === '/agenelf/upgrade-target/.git')) throw new Error('Self-upgrade received Git metadata');
           if (!rollback['self-upgrade-runner']) throw new Error('Python rollback Self-upgrade missing');
           if (rollback['self-upgrade-runner'].profiles) throw new Error('Python rollback Self-upgrade must not be profile-gated');
           if (rollback['node-self-upgrade-runner']) throw new Error('Python rollback unexpectedly contains Node Self-upgrade');
@@ -197,7 +208,7 @@ jobs:
           (
             set -euxo pipefail
             docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL \
-              --security-opt no-new-privileges:true \
+              --security-opt no-new-privileges:true --user "$(id -u):$(id -g)" \
               -e AGENELF_ROOT=/agenelf \
               -e AGENELF_UPGRADE_TARGET=/agenelf/upgrade-target \
               -v "$PWD/node:/agenelf/node:ro" \
@@ -231,7 +242,7 @@ jobs:
             grep -q 'old-before-node-self-upgrade' "$backup"
             test ! -e approval/key
             docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL \
-              --security-opt no-new-privileges:true \
+              --security-opt no-new-privileges:true --user "$(id -u):$(id -g)" \
               -e AGENELF_ROOT=/agenelf \
               -e AGENELF_UPGRADE_TARGET=/agenelf/upgrade-target \
               -v "$PWD/node:/agenelf/node:ro" \
