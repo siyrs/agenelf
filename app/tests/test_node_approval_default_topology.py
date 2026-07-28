@@ -25,9 +25,11 @@ class NodeApprovalDefaultTopologyTest(unittest.TestCase):
         self.assertIn("node/apps/approval-key-init/src/main.ts", key_init["command"])
         self.assertEqual(runner["build"]["dockerfile"], "Dockerfile.node")
         self.assertIn("node/apps/approval-runner/src/main.ts", runner["command"])
-        self.assertNotIn("volumes", services.get("agenelf", {}))
-        self.assertIn("./local/prompts:/agenelf/local/prompts:ro", services["agenelf"]["volumes"])
-        self.assertIn("./local/prompts:/agenelf/local/prompts:ro", services["cli"]["volumes"])
+        agent_volumes = [str(item) for item in services["agenelf"]["volumes"]]
+        cli_volumes = [str(item) for item in services["cli"]["volumes"]]
+        self.assertIn("./local/prompts:/agenelf/local/prompts:ro", agent_volumes)
+        self.assertIn("./local/prompts:/agenelf/local/prompts:ro", cli_volumes)
+        self.assertFalse(any("/agenelf/approval" in item for item in agent_volumes))
 
     def test_upgrade_scope_and_targets_include_default_compose_files(self) -> None:
         source = (ROOT / "app" / "core" / "node_upgrade_policy.py").read_text(
