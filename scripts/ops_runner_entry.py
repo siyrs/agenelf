@@ -2,8 +2,12 @@
 """Lifecycle-aware entrypoint for the unified deterministic SSH runner.
 
 The existing unified runner remains responsible for schema, fingerprint, policy,
-approval, allowlist and SSH validation. This entrypoint adds one fail-closed step:
-expired operation requests are finalized without opening an SSH connection.
+approval, allowlist and SSH validation. This entrypoint adds fail-closed lifecycle
+handling and an optional semantic risk partition used during Node migration:
+
+- ``all`` (default) preserves the complete Python rollback runtime;
+- ``change-only`` skips known read operations before taking the shared lock;
+- ``read-only`` is available for shadow verification but is not the production default.
 """
 from __future__ import annotations
 
@@ -22,9 +26,39 @@ from ops_runner import CommandResult, _atomic_json, _read_json, now_iso  # noqa:
 from unified_ops_runner import UnifiedOpsRunner, _sanitize_text  # noqa: E402
 from core import operations  # noqa: E402
 
+_READ_SERVER_OPERATIONS = {"inspect", "docker_ps", "service_status"}
+_READ_DOCKER_OPERATIONS = {
+    "get_docker_logs",
+    "inspect_docker_container",
+    "run_docker_check",
+}
+_RUNNER_MODES = {"all", "change-only", "read-only"}
+
+
+def is_semantic_read_request(request: dict[str, Any]) -> bool:
+    capability = str(request.get("capability", ""))
+    operation = str(request.get("operation", ""))
+    return (
+        capability == "server.operations" and operation in _READ_SERVER_OPERATIONS
+    ) or (
+        capability == "docker.operations" and operation in _READ_DOCKER_OPERATIONS
+    )
+
+
+def runner_accepts_request(request: dict[str, Any], mode: str | None = None) -> bool:
+    selected = str(mode or os.environ.get("AGENELF_OPS_RUNNER_MODE", "all")).strip()
+    if selected not in _RUNNER_MODES:
+        raise RuntimeError(f"AGENELF_OPS_RUNNER_MODE 非法：{selected}")
+    semantic_read = is_semantic_read_request(request)
+    if selected == "change-only":
+        return not semantic_read
+    if selected == "read-only":
+        return semantic_read
+    return True
+
 
 class LifecycleOpsRunner(UnifiedOpsRunner):
-    """Close expired requests before any server profile or SSH work is attempted."""
+    """Close expired accepted requests before any server profile or SSH work."""
 
     def _expire_request(
         self,
@@ -56,6 +90,8 @@ class LifecycleOpsRunner(UnifiedOpsRunner):
         request = _read_json(request_path)
         if request is None:
             return "invalid"
+        if not runner_accepts_request(request):
+            return "skipped"
         request_id = str(request.get("id", ""))
         result_path = self.paths["results"] / f"{request_id}.json"
         if result_path.exists():
@@ -89,7 +125,11 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=1.0)
     args = parser.parse_args()
     try:
+        mode = os.environ.get("AGENELF_OPS_RUNNER_MODE", "all").strip()
+        if mode not in _RUNNER_MODES:
+            raise RuntimeError(f"AGENELF_OPS_RUNNER_MODE 非法：{mode}")
         runner = LifecycleOpsRunner()
+        runner.audit("partition", f"mode={mode}")
         if args.once:
             print(json.dumps(runner.run_once(), ensure_ascii=False))
         else:
