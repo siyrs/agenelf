@@ -1,5 +1,5 @@
 # Agenelf operator commands — Node.js/TypeScript is the default Agent/API/CLI.
-.PHONY: help init local mind models workflow validation repair start stop restart build chat legacy-chat node-test python-test test backup promote watch logs status ops approvals evolution autonomy approve deny clean
+.PHONY: help init local mind models workflow validation repair start stop restart build chat legacy-chat python-ops node-test python-test test backup promote watch logs status ops approvals evolution autonomy approve deny clean
 
 help: ## Show commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -20,7 +20,7 @@ init: ## Create/migrate private config, prompts, Node state, controlled queues a
 		data/self-upgrade-backups data/authorized-upgrades data/runner-health data/app-backups \
 		data/tasks data/node-tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles \
 		data/node-runner-requests data/node-runner-results data/node-runner-locks
-	@echo "初始化完成。默认 Agent/API/CLI、Approval、Validation、只读 Ops 与 Repair 为 Node；Python legacy API 与变更/高权限 Runner 保留为内部兼容控制面。"
+	@echo "初始化完成。默认 Agent/API/CLI、Approval、Validation、read/change Ops 与 Repair 均为 Node；Python 仅保留 legacy API、Self-upgrade 和显式回滚。"
 
 local: ## Validate local personalization without printing secrets
 	@python3 scripts/init_local.py --status
@@ -36,7 +36,7 @@ workflow: ## Show governed Python and Node workflow task files
 	@echo "== Node workflow tasks =="; ls -lt data/node-tasks 2>/dev/null | head -20 || true
 	@echo "== channel requests =="; ls -lt data/channel-requests 2>/dev/null | head -20 || true
 
-start: ## Start Node Agent/API/Validation/read-only Ops/Repair plus isolated compatibility runners
+start: ## Start the default Node control plane plus internal legacy API and Self-upgrade
 	@test -f .env || (echo "缺少 .env，请先 make init"; exit 1)
 	@test -f .ops-runner.env || (echo "缺少 .ops-runner.env，请先 make init"; exit 1)
 	@test -f local/profile.yaml || (echo "缺少 local/profile.yaml，请先 make init"; exit 1)
@@ -74,6 +74,9 @@ chat: ## Open the default Node CLI chat with slash autocomplete
 
 legacy-chat: ## Open the legacy Python CLI for migration diagnostics
 	docker compose --profile legacy-cli run --rm legacy-cli
+
+python-ops: ## Start the profile-gated Python Ops fallback for diagnostics only
+	docker compose --profile python-ops up -d --build ops-runner
 
 node-test: ## Run native TypeScript checks and Node tests
 	npm ci --ignore-scripts
@@ -142,7 +145,7 @@ repair: ## Show Node repair aliases, queues, artifacts and replay events
 	@echo "== repair artifacts =="; ls -lt repair-space 2>/dev/null | head -20 || true
 
 logs: ## Follow Node Agent and isolated runners
-	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner read-ops-runner ops-runner validation-runner node-repair-runner self-upgrade-runner
+	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner read-ops-runner change-ops-runner validation-runner node-repair-runner self-upgrade-runner
 
 status: ## Show containers, local state and all controlled queues
 	-docker compose ps
