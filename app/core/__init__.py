@@ -23,14 +23,14 @@ def load_authorized_upgrade() -> ModuleType:
     module = importlib.import_module(f"{__name__}.authorized_upgrade")
 
     from .node_upgrade_policy import install as install_node_policy
+    from .read_ops_upgrade_policy import install as install_read_ops_policy
     from .upgrade_redlines import install as install_diff_redlines
 
-    # importlib registers the concrete submodule on this package before returning, so
-    # node_upgrade_policy's existing compatibility import resolves to the real module.
+    # Import and install extensions only inside the real upgrade entrypoint. Ordinary
+    # Agent, Approval and Runner imports remain lightweight and side-effect free.
     install_node_policy()
-    # Preserve the public governance contract even when an extension implementation
-    # accidentally uses an internal numeric schema marker.
     module.NODE_UPGRADE_POLICY_VERSION = "owner-authorized-node-upgrade-v1"
+    install_read_ops_policy(module)
     install_diff_redlines(module)
 
     natural_pattern = re.compile(
