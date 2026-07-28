@@ -109,9 +109,9 @@ test("code repair catalog and request are Node-native immutable queue operations
   } finally { server.close(); }
 }));
 
-test("migrated routes never proxy and only explicit compatibility allowlist reaches legacy", async () => withToken(async () => {
+test("all API routes remain Node-native even when a legacy URL is configured", async () => withToken(async () => {
   const previousLegacy = process.env.AGENELF_LEGACY_API_URL;
-  let calls: string[] = [];
+  const calls: string[] = [];
   const legacy = createServer((request, response) => {
     calls.push(request.url || "");
     response.writeHead(200, { "content-type": "application/json" });
@@ -126,14 +126,14 @@ test("migrated routes never proxy and only explicit compatibility allowlist reac
   try {
     const roadmap = await fetch(`${base}/self/roadmap`, { headers: auth });
     assert.equal(roadmap.status, 200);
-    assert.equal(calls.length, 0);
-    const unknown = await fetch(`${base}/legacy-unknown`, { headers: auth });
-    assert.equal(unknown.status, 404);
-    assert.equal(calls.length, 0);
     const optimization = await fetch(`${base}/self/optimization`, { headers: auth });
     assert.equal(optimization.status, 200);
-    assert.deepEqual(calls, ["/self/optimization"]);
-    assert.equal(optimization.headers.get("x-agenelf-compatibility"), "legacy-allowlist");
+    const autonomy = await fetch(`${base}/autonomy/cycles`, { headers: auth });
+    assert.equal(autonomy.status, 200);
+    const unknown = await fetch(`${base}/legacy-unknown`, { headers: auth });
+    assert.equal(unknown.status, 404);
+    assert.deepEqual(calls, []);
+    assert.equal(optimization.headers.get("x-agenelf-compatibility"), null);
   } finally {
     server.close(); legacy.close();
     if (previousLegacy === undefined) delete process.env.AGENELF_LEGACY_API_URL; else process.env.AGENELF_LEGACY_API_URL = previousLegacy;

@@ -149,7 +149,7 @@ test("Node-native Validation API exposes aliases and immutable queue requests", 
   }
 });
 
-test("Validation API fails closed instead of falling back to legacy", async () => {
+test("Validation API fails closed and never contacts a configured legacy service", async () => {
   const previousToken = process.env.AGENELF_API_TOKEN;
   const previousLegacy = process.env.AGENELF_LEGACY_API_URL;
   process.env.AGENELF_API_TOKEN = "validation-closed-token";
@@ -171,24 +171,21 @@ test("Validation API fails closed instead of falling back to legacy", async () =
     assert.match((await response.json()).error, /fail-closed/);
     assert.equal(legacyCalls, 0);
   } finally {
-    server.close();
-    legacy.close();
+    server.close(); legacy.close();
     if (previousToken === undefined) delete process.env.AGENELF_API_TOKEN; else process.env.AGENELF_API_TOKEN = previousToken;
     if (previousLegacy === undefined) delete process.env.AGENELF_LEGACY_API_URL; else process.env.AGENELF_LEGACY_API_URL = previousLegacy;
   }
 });
 
-test("only explicit migration allowlist routes proxy to internal legacy API", async () => {
+test("optimization and autonomy remain Node-native even when a legacy URL is configured", async () => {
   const previousToken = process.env.AGENELF_API_TOKEN;
   const previousLegacy = process.env.AGENELF_LEGACY_API_URL;
-  process.env.AGENELF_API_TOKEN = "proxy-token";
-  let forwardedToken = "";
+  process.env.AGENELF_API_TOKEN = "native-only-token";
   let calls = 0;
-  const legacy = (await import("node:http")).createServer((request, response) => {
+  const legacy = (await import("node:http")).createServer((_request, response) => {
     calls += 1;
-    forwardedToken = String(request.headers["x-agenelf-token"] || "");
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ cycles: [{ title: "legacy-compatible" }] }));
+    response.end(JSON.stringify({ legacy: true }));
   });
   legacy.listen(0, "127.0.0.1");
   await once(legacy, "listening");
@@ -197,14 +194,17 @@ test("only explicit migration allowlist routes proxy to internal legacy API", as
   process.env.AGENELF_LEGACY_API_URL = `http://127.0.0.1:${legacyAddress.port}`;
   const { server, base } = await setup();
   try {
-    const roadmap = await fetch(`${base}/self/roadmap`, { headers: { "x-agenelf-token": "proxy-token" } });
-    assert.equal(roadmap.status, 200);
+    const headers = { "x-agenelf-token": "native-only-token" };
+    const optimization = await fetch(`${base}/self/optimization`, { headers });
+    assert.equal(optimization.status, 200);
+    assert.equal((await optimization.json()).consciousness_claim, false);
+    const autonomy = await fetch(`${base}/autonomy/cycles`, { headers });
+    assert.equal(autonomy.status, 200);
+    assert.deepEqual((await autonomy.json()).cycles, []);
+    const unknown = await fetch(`${base}/legacy-unknown`, { headers });
+    assert.equal(unknown.status, 404);
     assert.equal(calls, 0);
-    const response = await fetch(`${base}/autonomy/cycles`, { headers: { "x-agenelf-token": "proxy-token" } });
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).cycles[0].title, "legacy-compatible");
-    assert.equal(forwardedToken, "proxy-token");
-    assert.equal(calls, 1);
+    assert.equal(optimization.headers.get("x-agenelf-compatibility"), null);
   } finally {
     server.close(); legacy.close();
     if (previousToken === undefined) delete process.env.AGENELF_API_TOKEN; else process.env.AGENELF_API_TOKEN = previousToken;

@@ -14,7 +14,6 @@ const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"
 };
-const LEGACY_COMPATIBILITY_PATHS = [/^\/self\/optimization(?:\/|$)/, /^\/autonomy\/cycles(?:\/|$)/];
 
 function rootDir(): string { return resolve(process.env.AGENELF_ROOT || process.cwd()); }
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -51,56 +50,6 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonObject> {
   return value as JsonObject;
 }
 function parsePath(request: IncomingMessage): URL { return new URL(request.url || "/", "http://localhost"); }
-
-async function readRawBody(request: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.length;
-    if (size > MAX_BODY_BYTES) throw new Error("request body 超过 1 MiB");
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
-async function proxyLegacy(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
-  if (!LEGACY_COMPATIBILITY_PATHS.some((pattern) => pattern.test(url.pathname))) return false;
-  const base = String(process.env.AGENELF_LEGACY_API_URL || "").trim();
-  if (!base) {
-    sendJson(response, 501, { error: "该端点尚在 Node 迁移中，legacy compatibility API 未启用", migration_pending: true });
-    return true;
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60_000);
-  try {
-    const headers: Record<string, string> = { accept: String(request.headers.accept || "application/json") };
-    const token = String(request.headers["x-agenelf-token"] || "");
-    if (token) headers["x-agenelf-token"] = token;
-    const contentType = String(request.headers["content-type"] || "");
-    if (contentType) headers["content-type"] = contentType;
-    const method = request.method || "GET";
-    const body = method === "GET" || method === "HEAD" ? undefined : await readRawBody(request);
-    const upstream = await fetch(`${base.replace(/\/$/, "")}${url.pathname}${url.search}`, {
-      method, headers, body: body?.length ? body : undefined, signal: controller.signal, redirect: "manual"
-    });
-    const payload = Buffer.from(await upstream.arrayBuffer());
-    if (payload.length > 8 * 1024 * 1024) throw new Error("legacy response 超过 8 MiB");
-    const outputHeaders: Record<string, string | number> = { "content-length": payload.length, "x-agenelf-compatibility": "legacy-allowlist" };
-    const upstreamType = upstream.headers.get("content-type");
-    if (upstreamType) outputHeaders["content-type"] = upstreamType;
-    const cacheControl = upstream.headers.get("cache-control");
-    if (cacheControl) outputHeaders["cache-control"] = cacheControl;
-    response.writeHead(upstream.status, outputHeaders);
-    response.end(payload);
-    return true;
-  } catch (error) {
-    sendJson(response, 502, { error: `legacy compatibility API 不可用：${error instanceof Error ? error.message : String(error)}` });
-    return true;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 async function serveUi(response: ServerResponse, pathname: string, root: string): Promise<boolean> {
   const webRoot = resolve(root, "web");
@@ -199,7 +148,7 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
         return;
       }
       if (request.method === "GET" && url.pathname === "/health") {
-        sendJson(response, 200, { status: "ok", version: "0.11.0", runtime: "node-typescript" }); return;
+        sendJson(response, 200, { status: "ok", version: "0.12.0", runtime: "node-typescript" }); return;
       }
       if (!authorized(request)) {
         const configured = Boolean(process.env.AGENELF_API_TOKEN);
@@ -283,7 +232,6 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
       }
 
       if (await compatibility.handle(request, response, url, sendJson, readJsonBody)) return;
-      if (await proxyLegacy(request, response, url)) return;
       sendJson(response, 404, { error: "Not found", runtime: "node-typescript" });
     } catch (error) {
       if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
