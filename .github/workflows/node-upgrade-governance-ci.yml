@@ -6,6 +6,7 @@ on:
     paths:
       - "app/core/node_upgrade_policy.py"
       - "app/core/__init__.py"
+      - "app/core/upgrade_redlines.py"
       - "app/tests/test_node_upgrade_policy.py"
       - "app/tests/test_node_candidate_contract.py"
       - "app/tests/test_node_upgrade_wiring.py"
@@ -16,6 +17,7 @@ on:
     paths:
       - "app/core/node_upgrade_policy.py"
       - "app/core/__init__.py"
+      - "app/core/upgrade_redlines.py"
       - "app/tests/test_node_upgrade_policy.py"
       - "app/tests/test_node_candidate_contract.py"
       - "app/tests/test_node_upgrade_wiring.py"
@@ -50,11 +52,13 @@ jobs:
           PYTHONPATH=app python -m unittest \
             app.tests.test_node_upgrade_policy \
             app.tests.test_node_upgrade_wiring -v
-      - name: Validate owner-authorized candidate with complete Python and Node suites
+      - name: Prepare owner-authorized candidate fixture
         shell: bash
         run: |
           set -euo pipefail
-          candidate=$(mktemp -d)
+          candidate="$RUNNER_TEMP/agenelf-node-upgrade-candidate"
+          rm -rf "$candidate"
+          mkdir -p "$candidate"
           tar \
             --exclude=.git \
             --exclude=node_modules \
@@ -81,10 +85,30 @@ jobs:
               encoding="utf-8",
           )
           PY
+          echo "CANDIDATE_REPO=$candidate" >> "$GITHUB_ENV"
+      - name: Validate owner-authorized candidate with complete Python and Node suites
+        id: candidate_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
           python scripts/run_authorized_upgrade_tests.py \
-            --candidate-repo "$candidate" \
-            --baseline-manifest "$candidate/baseline-tests.json" \
-            --timeout 900 | tee node-upgrade-candidate-report.json
+            --candidate-repo "$CANDIDATE_REPO" \
+            --baseline-manifest "$CANDIDATE_REPO/baseline-tests.json" \
+            --timeout 900 2>&1 | tee node-upgrade-candidate-report.json
+      - name: Upload candidate validation diagnostics
+        if: steps.candidate_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-upgrade-candidate-diagnostics
+          path: node-upgrade-candidate-report.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop after candidate validation failure
+        if: steps.candidate_tests.outcome == 'failure'
+        run: exit 1
+      - name: Confirm candidate validation report
+        run: |
           node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync("node-upgrade-candidate-report.json","utf8")); if(value.status!=="passed") process.exit(1)'
       - name: Validate control-plane Compose trust boundary
         run: |
