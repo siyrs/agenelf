@@ -12,7 +12,7 @@ init: ## Create/migrate private config, prompts, Node state, controlled queues a
 	@mkdir -p logs workspace/scratch app-space/skills app-tmp app-fork code-workspaces repair-space local/prompts \
 		app-tmp/promote-requests \
 		data/auth-requests data/auth-decisions data/auth-consumed \
-		data/ops-requests data/ops-results data/ops-locks \
+		data/ops-requests data/ops-results data/ops-locks data/ops-events \
 		data/approval-commands data/approval-results data/approval-locks \
 		data/validation-requests data/validation-results data/validation-locks \
 		data/repair-requests data/repair-results data/repair-locks \
@@ -20,7 +20,7 @@ init: ## Create/migrate private config, prompts, Node state, controlled queues a
 		data/self-upgrade-backups data/authorized-upgrades data/runner-health data/app-backups \
 		data/tasks data/node-tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles \
 		data/node-runner-requests data/node-runner-results data/node-runner-locks
-	@echo "初始化完成。默认 Agent/API/CLI 与 Validation Runner 为 Node；Python legacy API 与高风险 Runner 保留为内部兼容控制面。"
+	@echo "初始化完成。默认 Agent/API/CLI、Approval、Validation 与只读 Ops 为 Node；Python legacy API 与变更/高权限 Runner 保留为内部兼容控制面。"
 
 local: ## Validate local personalization without printing secrets
 	@python3 scripts/init_local.py --status
@@ -36,7 +36,7 @@ workflow: ## Show governed Python and Node workflow task files
 	@echo "== Node workflow tasks =="; ls -lt data/node-tasks 2>/dev/null | head -20 || true
 	@echo "== channel requests =="; ls -lt data/channel-requests 2>/dev/null | head -20 || true
 
-start: ## Start Node Agent/API/Validation plus internal compatibility API and isolated runners
+start: ## Start Node Agent/API/Validation/read-only Ops plus isolated compatibility runners
 	@test -f .env || (echo "缺少 .env，请先 make init"; exit 1)
 	@test -f .ops-runner.env || (echo "缺少 .ops-runner.env，请先 make init"; exit 1)
 	@test -f local/profile.yaml || (echo "缺少 local/profile.yaml，请先 make init"; exit 1)
@@ -51,7 +51,7 @@ start: ## Start Node Agent/API/Validation plus internal compatibility API and is
 	@test -d local/secrets || (echo "缺少 local/secrets，请先 make init"; exit 1)
 	@mkdir -p local/prompts app-tmp/promote-requests \
 		data/approval-commands data/approval-results data/approval-locks data/auth-decisions data/auth-consumed \
-		data/ops-requests data/ops-results data/ops-locks \
+		data/ops-requests data/ops-results data/ops-locks data/ops-events \
 		data/validation-requests data/validation-results data/validation-locks \
 		data/repair-requests data/repair-results data/repair-locks \
 		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks \
@@ -123,10 +123,11 @@ approvals: ## Show signed owner approval commands, decisions and broker results
 	@echo "== decisions =="; ls -lt data/auth-decisions 2>/dev/null | head -20 || true
 	@echo "== broker results =="; ls -lt data/approval-results 2>/dev/null | head -20 || true
 
-ops: ## Show recent operation requests and results
+ops: ## Show operation requests, trusted results and replay events
 	@echo "== requests =="; ls -lt data/ops-requests 2>/dev/null | head -20 || true
 	@echo "== decisions =="; ls -lt data/auth-decisions 2>/dev/null | head -20 || true
 	@echo "== results =="; ls -lt data/ops-results 2>/dev/null | head -20 || true
+	@echo "== replay events =="; ls -lt data/ops-events 2>/dev/null | head -20 || true
 
 validation: ## Show Node validation configuration and trusted queues
 	@echo "== validation config =="; python3 scripts/init_local.py --status | grep -E 'validation|local_dir' || true
@@ -139,8 +140,8 @@ repair: ## Show code repair aliases, queues and evidence
 	@echo "== repair results =="; ls -lt data/repair-results 2>/dev/null | head -20 || true
 	@echo "== repair artifacts =="; ls -lt repair-space 2>/dev/null | head -20 || true
 
-logs: ## Follow Node Agent, internal legacy API and deterministic runners
-	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner ops-runner validation-runner repair-runner self-upgrade-runner
+logs: ## Follow Node Agent, read-only Ops and isolated compatibility runners
+	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner read-ops-runner ops-runner validation-runner repair-runner self-upgrade-runner
 
 status: ## Show containers, local state and all controlled queues
 	-docker compose ps
@@ -161,4 +162,4 @@ clean: ## Clear transient queues; preserve owner data and trusted result evidenc
 		data/validation-requests/* data/validation-locks/* \
 		data/repair-requests/* data/repair-locks/* \
 		data/node-runner-requests/* data/node-runner-locks/*
-	@echo "已清空；local/、Node/Python 结果证据、repair-space、自主循环、裁决与晋升证据均保留。"
+	@echo "已清空；local/、Node/Python 结果证据、Ops 事件、repair-space、自主循环、裁决与晋升证据均保留。"
