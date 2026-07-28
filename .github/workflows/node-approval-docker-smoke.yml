@@ -54,29 +54,10 @@ jobs:
           done
           test -s data/runner-health/approval-runner.json
           grep -q 'node-typescript' data/runner-health/approval-runner.json
-          test -s approval/key
-          test "$(stat -c '%a' approval/key)" = "440"
+          "${compose[@]}" exec -T approval-runner node --input-type=module -e \
+            "import {stat} from 'node:fs/promises'; const s=await stat('/agenelf/approval/key'); if(s.size<32 || (s.mode & 0o777)!==0o440) process.exit(1);"
 
-          node --input-type=module <<'NODE'
-          import { writeFile } from 'node:fs/promises';
-          import { OwnerApprovalStore, bindingFingerprint, bindingFromRequest } from './node/packages/core/src/owner-approval.ts';
-          const store = new OwnerApprovalStore(process.cwd());
-          await store.initialize();
-          const request = {
-            schema_version: 1,
-            id: 'op-9999999999999999',
-            capability: 'server.operations',
-            operation: 'restart_service',
-            target: 'demo-api',
-            parameters: { service: 'demo-api' },
-            risk: 'change',
-            summary: 'Docker smoke approval',
-            created_at: new Date().toISOString(),
-            fingerprint: ''
-          };
-          request.fingerprint = bindingFingerprint(bindingFromRequest(request));
-          await writeFile(`data/ops-requests/${request.id}.json`, `${JSON.stringify(request, null, 2)}\n`);
-          NODE
+          node --input-type=module -e "import {writeFile} from 'node:fs/promises'; import {OwnerApprovalStore,bindingFingerprint,bindingFromRequest} from './node/packages/core/src/owner-approval.ts'; const store=new OwnerApprovalStore(process.cwd()); await store.initialize(); const request={schema_version:1,id:'op-9999999999999999',capability:'server.operations',operation:'restart_service',target:'demo-api',parameters:{service:'demo-api'},risk:'change',summary:'Docker smoke approval',created_at:new Date().toISOString(),fingerprint:''}; request.fingerprint=bindingFingerprint(bindingFromRequest(request)); await writeFile('data/ops-requests/'+request.id+'.json',JSON.stringify(request,null,2)+'\n');"
 
           "${compose[@]}" --profile cli run --rm --no-deps --build cli \
             node --input-type=module -e "import {OwnerApprovalStore,loadApprovalKey} from './node/packages/core/src/owner-approval.ts'; const s=new OwnerApprovalStore('/agenelf'); await s.initialize(); const c=await s.submitCommand('op-9999999999999999',await loadApprovalKey(),{action:'approve',reason:'docker smoke',decidedBy:'owner-ci'}); console.log(c.id);"
