@@ -1,0 +1,17 @@
+FROM node:24.18.0-bookworm-slim
+
+ENV NODE_ENV=production \
+    npm_config_ignore_scripts=true \
+    npm_config_audit=false \
+    npm_config_fund=false
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-client ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /agenelf
+COPY package.json package-lock.json .node-version ./
+COPY node ./node
+
+USER node
+CMD ["node", "node/apps/change-ops-runner/src/main.ts"]
