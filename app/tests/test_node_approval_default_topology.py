@@ -45,7 +45,7 @@ class NodeApprovalDefaultTopologyTest(unittest.TestCase):
             str(item)
             for item in yaml.safe_load(
                 (ROOT / "compose.override.yaml").read_text(encoding="utf-8")
-            )["services"]["self-upgrade-runner"]["volumes"]
+            )["services"]["node-self-upgrade-runner"]["volumes"]
         ]
         self.assertIn(
             "./compose.override.yaml:/agenelf/upgrade-target/compose.override.yaml:rw",
