@@ -1,0 +1,172 @@
+name: Node Approval E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  approval-protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Run focused Node approval tests
+        run: node --test --test-reporter=spec node/tests/owner-approval.test.ts
+      - name: Verify Node command with Python canonical HMAC
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=$(mktemp -d)
+          export APPROVAL_E2E_ROOT="$root"
+          mkdir -p "$root/data/ops-requests"
+          python <<'PY'
+          import hashlib, json, os
+          root = os.environ["APPROVAL_E2E_ROOT"]
+          request = {
+              "schema_version": 1,
+              "id": "op-1111111111111111",
+              "capability": "server.operations",
+              "operation": "restart_service",
+              "target": "demo-api",
+              "parameters": {"service": "demo-api", "label": "星"},
+              "risk": "change",
+              "summary": "restart",
+              "created_at": "2026-07-28T00:00:00+00:00",
+          }
+          binding = {key: request[key] for key in ("capability", "operation", "target", "parameters")}
+          request["fingerprint"] = hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+          with open(os.path.join(root, "data", "ops-requests", f'{request["id"]}.json'), "w", encoding="utf-8") as handle:
+              json.dump(request, handle, ensure_ascii=False, indent=2)
+          PY
+          node --input-type=module <<'NODE'
+          import { writeFile } from 'node:fs/promises';
+          import { OwnerApprovalStore } from './node/packages/core/src/owner-approval.ts';
+          const root = process.env.APPROVAL_E2E_ROOT;
+          const store = new OwnerApprovalStore(root);
+          await store.initialize();
+          const command = await store.submitCommand('op-1111111111111111', Buffer.from('k'.repeat(64)), {
+            action: 'approve', reason: '主人确认', decidedBy: 'owner-cli'
+          });
+          await writeFile(`${root}/command-id`, String(command.id));
+          NODE
+          python <<'PY'
+          import hashlib, hmac, json, os
+          root = os.environ["APPROVAL_E2E_ROOT"]
+          command_id = open(os.path.join(root, "command-id"), encoding="utf-8").read().strip()
+          with open(os.path.join(root, "data", "approval-commands", f"{command_id}.json"), encoding="utf-8") as handle:
+              document = json.load(handle)
+          payload = {key: document[key] for key in (
+              "schema_version", "id", "action", "request_id", "request_fingerprint", "reason",
+              "decided_by", "created_at", "expires_at", "duplicates"
+          )}
+          expected = hmac.new(b"k" * 64, json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
+          assert hmac.compare_digest(document["signature"], expected)
+          PY
+      - name: Consume Python-signed command with Node runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=$(mktemp -d)
+          export APPROVAL_E2E_ROOT="$root"
+          mkdir -p "$root/data/ops-requests" "$root/data/approval-commands"
+          python <<'PY'
+          import datetime as dt, hashlib, hmac, json, os
+          root = os.environ["APPROVAL_E2E_ROOT"]
+          request = {
+              "schema_version": 1,
+              "id": "op-2222222222222222",
+              "capability": "server.operations",
+              "operation": "restart_service",
+              "target": "demo-api",
+              "parameters": {"service": "demo-api"},
+              "risk": "change",
+              "summary": "restart",
+              "created_at": "2026-07-28T00:00:00+00:00",
+          }
+          binding = {key: request[key] for key in ("capability", "operation", "target", "parameters")}
+          request["fingerprint"] = hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+          now = dt.datetime.now(dt.timezone.utc)
+          command = {
+              "schema_version": 1,
+              "id": "apc-aaaaaaaaaaaaaaaa",
+              "action": "deny",
+              "request_id": request["id"],
+              "request_fingerprint": request["fingerprint"],
+              "reason": "python signed",
+              "decided_by": "owner-python",
+              "created_at": now.isoformat(timespec="seconds"),
+              "expires_at": (now + dt.timedelta(minutes=2)).isoformat(timespec="seconds"),
+              "duplicates": [],
+          }
+          command["signature"] = hmac.new(
+              b"k" * 64,
+              json.dumps(command, sort_keys=True, separators=(",", ":")).encode(),
+              hashlib.sha256,
+          ).hexdigest()
+          for directory, value in (("ops-requests", request), ("approval-commands", command)):
+              with open(os.path.join(root, "data", directory, f'{value["id"]}.json'), "w", encoding="utf-8") as handle:
+                  json.dump(value, handle, ensure_ascii=False, indent=2)
+          PY
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { ApprovalRunner } from './node/packages/core/src/owner-approval.ts';
+          const root = process.env.APPROVAL_E2E_ROOT;
+          const runner = new ApprovalRunner(root, Buffer.from('k'.repeat(64)));
+          await runner.initialize();
+          const counts = await runner.processOnce();
+          if (counts.succeeded !== 1) throw new Error(`unexpected counts ${JSON.stringify(counts)}`);
+          const decision = JSON.parse(await readFile(`${root}/data/auth-decisions/op-2222222222222222.json`, 'utf8'));
+          if (decision.decision !== 'deny') throw new Error('Node runner did not apply Python-signed decision');
+          NODE
+
+  approval-topology:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare compose fixtures
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=approval-ci-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p local/prompts data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate Node approval canary topology
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.node-approval.yml --profile cli config --format json > /tmp/approval-compose.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const services = JSON.parse(fs.readFileSync('/tmp/approval-compose.json', 'utf8')).services || {};
+          const dockerfile = (service) => typeof service?.build === 'object' ? String(service.build.dockerfile || '') : '';
+          const command = (service) => Array.isArray(service?.command) ? service.command.join(' ') : String(service?.command || '');
+          if (!dockerfile(services['approval-key-init']).endsWith('Dockerfile.node')) throw new Error('approval-key-init is not Node');
+          if (!command(services['approval-key-init']).includes('node/apps/approval-key-init/src/main.ts')) throw new Error('unexpected key init command');
+          if (!dockerfile(services['approval-runner']).endsWith('Dockerfile.node')) throw new Error('approval-runner is not Node');
+          if (!command(services['approval-runner']).includes('node/apps/approval-runner/src/main.ts')) throw new Error('unexpected approval runner command');
+          if (services['approval-runner'].network_mode !== 'none') throw new Error('approval runner must remain networkless');
+          const volumes = (service) => Array.isArray(service?.volumes) ? service.volumes : [];
+          const hasTarget = (service, target, readOnly) => volumes(service).some((item) => {
+            if (typeof item === 'string') {
+              const parts = item.split(':');
+              return parts[1] === target && (readOnly === undefined || (parts[2] === 'ro') === readOnly);
+            }
+            return item.target === target && (readOnly === undefined || Boolean(item.read_only) === readOnly);
+          });
+          if (!hasTarget(services['approval-runner'], '/agenelf/approval', true)) throw new Error('runner key must be read-only');
+          if (!hasTarget(services.cli, '/agenelf/approval', true)) throw new Error('owner CLI key must be read-only');
+          if (hasTarget(services.agenelf, '/agenelf/approval')) throw new Error('Agent/API must not receive approval key');
+          NODE
