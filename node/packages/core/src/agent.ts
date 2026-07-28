@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { AgentEventHub, type RunEventStream } from "./agent-events.ts";
 import { sha256 } from "./canonical.ts";
 import { MemoryStore } from "./memory-store.ts";
@@ -7,6 +6,7 @@ import { sanitizeJson } from "./privacy.ts";
 import { ResourceLoader } from "./resource-loader.ts";
 import { SessionLedgerStore } from "./session-ledger.ts";
 import { SkillRegistry } from "./skill-registry.ts";
+import { ValidationQueue } from "./validation.ts";
 import type { ChatMessage, JsonObject, JsonValue, ToolCall } from "./types.ts";
 import { builtinSkills } from "../../skills/src/builtin.ts";
 
@@ -23,8 +23,11 @@ export class AgenelfAgent {
   readonly ledger: SessionLedgerStore;
   readonly memory: MemoryStore;
   readonly resources: ResourceLoader;
+  readonly validation: ValidationQueue;
   private readonly sessionChains = new Map<string, Promise<void>>();
   private initialized = false;
+  private validationReady = false;
+  private validationError = "";
 
   constructor(root = process.env.AGENELF_ROOT || process.cwd()) {
     this.root = root;
@@ -34,14 +37,31 @@ export class AgenelfAgent {
     this.ledger = new SessionLedgerStore(root);
     this.memory = new MemoryStore(root);
     this.resources = new ResourceLoader(root);
+    this.validation = new ValidationQueue(root);
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    for (const skill of builtinSkills(this.root, () => this.status())) this.registry.register(skill);
+    try {
+      await this.validation.initialize();
+      this.validationReady = true;
+      this.validationError = "";
+    } catch (error) {
+      this.validationReady = false;
+      this.validationError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    }
+    for (const skill of builtinSkills(
+      this.root,
+      () => this.status(),
+      this.validationReady ? this.validation : undefined
+    )) this.registry.register(skill);
     await this.resources.discover();
     this.initialized = true;
   }
+
+  isValidationReady(): boolean { return this.validationReady; }
+
+  validationFailure(): string { return this.validationError; }
 
   async status(): Promise<JsonObject> {
     return {
@@ -55,6 +75,10 @@ export class AgenelfAgent {
       tools: this.registry.allTools().length,
       resources: this.resources.catalog().length,
       runs: this.events.list().length,
+      validation: {
+        ready: this.validationReady,
+        error: this.validationReady ? "" : this.validationError.slice(0, 1_000)
+      },
       compatibility: { legacy_api: Boolean(process.env.AGENELF_LEGACY_API_URL) },
       security: {
         policy_default: "fail-closed",
@@ -83,7 +107,7 @@ export class AgenelfAgent {
     return entries.flatMap((entry) => {
       const role = String(entry.payload.role ?? "");
       const content = entry.payload.content;
-      if (!(["user", "assistant"] as string[]).includes(role) || typeof content !== "string") return [];
+      if (!("user" === role || "assistant" === role) || typeof content !== "string") return [];
       return [{ role: role as "user" | "assistant", content }];
     });
   }
@@ -143,9 +167,7 @@ export class AgenelfAgent {
         }
 
         messages.push({ role: "assistant", content: finalContent || null, reasoningContent: response.reasoningContent, toolCalls: response.toolCalls });
-        for (const call of response.toolCalls) {
-          await this.executeTool(stream, call, messages, subject, round);
-        }
+        for (const call of response.toolCalls) await this.executeTool(stream, call, messages, subject, round);
       }
 
       const checkpoint = `达到 Node Runtime 最大工具轮次，已保存 run ${stream.runId} 的事件账本。`;

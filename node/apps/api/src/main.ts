@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -165,6 +165,15 @@ async function streamEvents(
   if (!closed) response.end();
 }
 
+function requireValidation(agent: AgenelfAgent, response: ServerResponse): boolean {
+  if (agent.isValidationReady()) return true;
+  sendJson(response, 503, {
+    error: "Node Validation 当前不可用，已 fail-closed",
+    detail: agent.validationFailure()
+  });
+  return false;
+}
+
 export async function createAgenelfServer(options: { root?: string } = {}) {
   const root = resolve(options.root || rootDir());
   const agent = new AgenelfAgent(root);
@@ -191,6 +200,33 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
       if (request.method === "GET" && url.pathname === "/status") { sendJson(response, 200, await agent.status()); return; }
       if (request.method === "GET" && url.pathname === "/capabilities") { sendJson(response, 200, { capabilities: agent.registry.catalog() }); return; }
       if (request.method === "GET" && url.pathname === "/resources") { sendJson(response, 200, { resources: agent.resources.catalog() }); return; }
+
+      if (url.pathname.startsWith("/validation/")) {
+        if (!requireValidation(agent, response)) return;
+        if (request.method === "GET" && url.pathname === "/validation/catalog") {
+          sendJson(response, 200, agent.validation.catalog()); return;
+        }
+        const checkMatch = url.pathname.match(/^\/validation\/checks\/([^/]+)$/);
+        if (request.method === "POST" && checkMatch) {
+          const body = await readJsonBody(request);
+          const target = decodeURIComponent(checkMatch[1]);
+          sendJson(response, 202, await agent.validation.submit("run_check", target, String(body.summary ?? `Run validation check ${target}`), "agenelf-node-api"));
+          return;
+        }
+        const suiteMatch = url.pathname.match(/^\/validation\/suites\/([^/]+)$/);
+        if (request.method === "POST" && suiteMatch) {
+          const body = await readJsonBody(request);
+          const target = decodeURIComponent(suiteMatch[1]);
+          sendJson(response, 202, await agent.validation.submit("run_suite", target, String(body.summary ?? `Run validation suite ${target}`), "agenelf-node-api"));
+          return;
+        }
+        const resultMatch = url.pathname.match(/^\/validation\/results\/(val-[0-9a-f]{16})$/);
+        if (request.method === "GET" && resultMatch) {
+          sendJson(response, 200, await agent.validation.get(resultMatch[1])); return;
+        }
+        sendJson(response, 404, { error: "Validation endpoint not found" }); return;
+      }
+
       if (request.method === "GET" && url.pathname === "/chat/history") {
         const sessionId = String(url.searchParams.get("session_id") || "default");
         const limit = Math.max(0, Math.min(Number(url.searchParams.get("limit") || 50), 200));

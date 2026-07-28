@@ -19,12 +19,11 @@ class RuntimeDoctorWiringTest(unittest.TestCase):
             (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         )
 
-    def test_all_long_running_runners_use_the_supervisor_and_writable_heartbeat_mount(self) -> None:
+    def test_long_running_python_runners_use_supervisor_and_writable_heartbeat_mount(self) -> None:
         expected_children = {
             "ops-runner": "/agenelf/scripts/ops_runner_entry.py",
             "approval-runner": "/agenelf/scripts/approval_runner.py",
             "self-upgrade-runner": "/agenelf/scripts/self_upgrade_runner_entry.py",
-            "validation-runner": "/agenelf/scripts/validation_runner.py",
             "repair-runner": "/agenelf/scripts/repair_runner.py",
         }
         services = self.compose["services"]
@@ -41,6 +40,22 @@ class RuntimeDoctorWiringTest(unittest.TestCase):
                     "./data/runner-health:/agenelf/data/runner-health:rw",
                     [str(item) for item in service["volumes"]],
                 )
+
+    def test_node_validation_runner_has_explicit_entrypoint_and_heartbeat_mount(self) -> None:
+        service = self.compose["services"]["validation-runner"]
+        self.assertEqual(
+            service["command"],
+            ["node", "node/apps/validation-runner/src/main.ts"],
+        )
+        self.assertEqual(service["build"]["dockerfile"], "Dockerfile.node")
+        volumes = [str(item) for item in service["volumes"]]
+        self.assertIn("./node:/agenelf/node:ro", volumes)
+        self.assertIn(
+            "./data/runner-health:/agenelf/data/runner-health:rw",
+            volumes,
+        )
+        self.assertNotIn("./app:/agenelf/app-fork:ro", volumes)
+        self.assertFalse(any("local/secrets" in item for item in volumes))
 
     def test_agent_observes_heartbeats_read_only(self) -> None:
         volumes = [str(item) for item in self.compose["services"]["agenelf"]["volumes"]]

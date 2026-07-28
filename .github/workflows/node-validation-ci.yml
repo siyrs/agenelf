@@ -1,0 +1,160 @@
+name: Node Validation Migration CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "node/packages/core/src/simple-yaml.ts"
+      - "node/packages/core/src/validation.ts"
+      - "node/apps/validation-runner/**"
+      - "node/packages/core/src/agent.ts"
+      - "node/packages/skills/src/builtin.ts"
+      - "node/apps/api/src/main.ts"
+      - "node/tests/**"
+      - "docker-compose.yml"
+      - "docker-compose.python.yml"
+      - ".github/workflows/node-validation-ci.yml"
+  pull_request:
+    paths:
+      - "node/packages/core/src/simple-yaml.ts"
+      - "node/packages/core/src/validation.ts"
+      - "node/apps/validation-runner/**"
+      - "node/packages/core/src/agent.ts"
+      - "node/packages/skills/src/builtin.ts"
+      - "node/apps/api/src/main.ts"
+      - "node/tests/**"
+      - "docker-compose.yml"
+      - "docker-compose.python.yml"
+      - ".github/workflows/node-validation-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validation-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked Node workspace
+        run: npm ci --ignore-scripts
+      - name: Run Node syntax and complete tests
+        run: npm run test:node
+      - name: Prepare private fixtures and bind-mount ownership
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=node-validation-ci-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate Node default and Python rollback topology
+        run: |
+          set -euo pipefail
+          docker compose config --format json >/tmp/node-default.json
+          docker compose -f docker-compose.python.yml config --format json >/tmp/python-rollback.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const current = JSON.parse(fs.readFileSync('/tmp/node-default.json', 'utf8'));
+          const rollback = JSON.parse(fs.readFileSync('/tmp/python-rollback.json', 'utf8'));
+          const runner = current.services?.['validation-runner'];
+          if (!runner) throw new Error('missing validation-runner');
+          if (!String(runner.build?.dockerfile || '').endsWith('Dockerfile.node')) throw new Error('default validation runner is not Node');
+          if (JSON.stringify(runner.command) !== JSON.stringify(['node', 'node/apps/validation-runner/src/main.ts'])) throw new Error(`unexpected Node validation command: ${JSON.stringify(runner.command)}`);
+          const volumes = runner.volumes || [];
+          const target = (item) => typeof item === 'string' ? item.split(':')[1] : item.target;
+          const readOnly = (item) => typeof item === 'string' ? item.split(':')[2] === 'ro' : Boolean(item.read_only);
+          const has = (path, ro) => volumes.some((item) => target(item) === path && readOnly(item) === ro);
+          if (!has('/agenelf/local/validation.yaml', true)) throw new Error('validation config must be read-only');
+          if (!has('/agenelf/data/validation-requests', true)) throw new Error('requests must be read-only in runner');
+          if (!has('/agenelf/data/validation-results', false)) throw new Error('results must be writable in runner');
+          if (!has('/agenelf/data/validation-locks', false)) throw new Error('locks must be writable in runner');
+          if (!has('/agenelf/data/runner-health', false)) throw new Error('heartbeat must be writable in runner');
+          const sources = volumes.map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
+          for (const forbidden of ['local/secrets', 'local/memory', 'local/self', '/agenelf/approval']) {
+            if (sources.includes(forbidden)) throw new Error(`forbidden validation mount: ${forbidden}`);
+          }
+          const oldRunner = rollback.services?.['validation-runner'];
+          if (!oldRunner || !JSON.stringify(oldRunner.command).includes('/agenelf/scripts/validation_runner.py')) {
+            throw new Error('Python rollback validation runner missing');
+          }
+          NODE
+      - name: End-to-end Node validation runner smoke
+        id: validation_e2e
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              mkdir -p validation-e2e-data
+              docker compose ps --all >validation-compose-ps.log 2>&1 || true
+              docker compose logs --no-color --tail=300 agenelf legacy-agent validation-runner >validation-container.log 2>&1 || true
+              cp -a data/validation-requests data/validation-results data/runner-health validation-e2e-data/ 2>/dev/null || true
+              cp -a logs/validation.log validation-e2e-data/ 2>/dev/null || true
+              cp -a local/validation.yaml validation-e2e-data/ 2>/dev/null || true
+              cp -a validation-status.json validation-catalog.json validation-request-response.json validation-e2e-data/ 2>/dev/null || true
+            fi
+            docker compose down -v >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          docker compose up -d --build approval-key-init legacy-agent agenelf validation-runner
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+          curl -sS -H 'X-Agenelf-Token: node-validation-ci-token' http://127.0.0.1:8000/status >validation-status.json
+          curl -sS -H 'X-Agenelf-Token: node-validation-ci-token' http://127.0.0.1:8000/validation/catalog >validation-catalog.json
+          request_code=$(curl -sS -o validation-request-response.json -w '%{http_code}' -X POST \
+            -H 'X-Agenelf-Token: node-validation-ci-token' \
+            -H 'Content-Type: application/json' \
+            -d '{}' \
+            http://127.0.0.1:8000/validation/checks/agenelf-health)
+          test "$request_code" = 202
+          request_json=$(cat validation-request-response.json)
+          validation_id=$(node -e 'const value=JSON.parse(process.argv[1]); if(!/^val-[0-9a-f]{16}$/.test(value.id||"")) process.exit(2); process.stdout.write(value.id)' "$request_json")
+          result_json=''
+          for i in $(seq 1 60); do
+            result_json=$(curl -fsS \
+              -H 'X-Agenelf-Token: node-validation-ci-token' \
+              "http://127.0.0.1:8000/validation/results/${validation_id}")
+            status=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).status||""))' "$result_json")
+            if [ "$status" = succeeded ]; then break; fi
+            if [ "$status" = failed ]; then echo "$result_json"; exit 1; fi
+            sleep 1
+          done
+          node -e 'const value=JSON.parse(process.argv[1]); if(value.status!=="succeeded"||value.result?.passed<1) process.exit(1)' "$result_json"
+          for i in $(seq 1 30); do
+            if [ -s data/runner-health/validation-runner.json ]; then break; fi
+            sleep 1
+          done
+          node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync("data/runner-health/validation-runner.json","utf8")); if(value.runtime!=="node-typescript"||value.name!=="validation-runner") process.exit(1)'
+      - name: Upload validation E2E diagnostics
+        if: steps.validation_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-validation-e2e-diagnostics
+          path: |
+            validation-compose-ps.log
+            validation-container.log
+            validation-e2e-data/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop after validation E2E failure
+        if: steps.validation_e2e.outcome == 'failure'
+        run: exit 1

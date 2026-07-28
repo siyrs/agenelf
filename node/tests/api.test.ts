@@ -6,10 +6,14 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { createAgenelfServer } from "../apps/api/src/main.ts";
 
-async function setup() {
+async function setup(validationText = "") {
   const root = await mkdtemp(join(tmpdir(), "agenelf-api-test-"));
   await mkdir(join(root, "web"), { recursive: true });
   await writeFile(join(root, "web", "index.html"), "<html>node-ui</html>");
+  if (validationText) {
+    await mkdir(join(root, "local"), { recursive: true });
+    await writeFile(join(root, "local", "validation.yaml"), validationText, "utf8");
+  }
   const server = await createAgenelfServer({ root });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -17,6 +21,18 @@ async function setup() {
   if (!address || typeof address === "string") throw new Error("missing address");
   return { root, server, base: `http://127.0.0.1:${address.port}` };
 }
+
+const validationConfig = `
+checks:
+  local-health:
+    type: http
+    url: http://127.0.0.1:1/health
+    expected_status: [200]
+suites:
+  smoke:
+    checks:
+      - local-health
+`;
 
 test("API fails closed without token", async () => {
   const previousToken = process.env.AGENELF_API_TOKEN;
@@ -102,6 +118,63 @@ test("API exposes and clears Node-native session history", async () => {
   } finally {
     server.close();
     if (previousToken === undefined) delete process.env.AGENELF_API_TOKEN; else process.env.AGENELF_API_TOKEN = previousToken;
+  }
+});
+
+test("Node-native Validation API exposes aliases and immutable queue requests", async () => {
+  const previousToken = process.env.AGENELF_API_TOKEN;
+  process.env.AGENELF_API_TOKEN = "validation-token";
+  const { server, base } = await setup(validationConfig);
+  const headers = { "x-agenelf-token": "validation-token", "content-type": "application/json" };
+  try {
+    const catalogResponse = await fetch(`${base}/validation/catalog`, { headers });
+    assert.equal(catalogResponse.status, 200);
+    const catalog = await catalogResponse.json();
+    assert.equal(catalog.checks[0].name, "local-health");
+    assert.equal(catalog.suites[0].name, "smoke");
+
+    const submit = await fetch(`${base}/validation/checks/local-health`, { method: "POST", headers, body: "{}" });
+    assert.equal(submit.status, 202);
+    const request = await submit.json();
+    assert.match(request.id, /^val-[0-9a-f]{16}$/);
+    assert.equal(request.capability, "software.validation");
+    assert.equal(request.parameters && Object.keys(request.parameters).length, 0);
+
+    const state = await fetch(`${base}/validation/results/${request.id}`, { headers });
+    assert.equal(state.status, 200);
+    assert.equal((await state.json()).status, "queued");
+  } finally {
+    server.close();
+    if (previousToken === undefined) delete process.env.AGENELF_API_TOKEN; else process.env.AGENELF_API_TOKEN = previousToken;
+  }
+});
+
+test("Validation API fails closed instead of falling back to legacy", async () => {
+  const previousToken = process.env.AGENELF_API_TOKEN;
+  const previousLegacy = process.env.AGENELF_LEGACY_API_URL;
+  process.env.AGENELF_API_TOKEN = "validation-closed-token";
+  let legacyCalls = 0;
+  const legacy = (await import("node:http")).createServer((_request, response) => {
+    legacyCalls += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ checks: ["unsafe-fallback"] }));
+  });
+  legacy.listen(0, "127.0.0.1");
+  await once(legacy, "listening");
+  const address = legacy.address();
+  if (!address || typeof address === "string") throw new Error("missing legacy address");
+  process.env.AGENELF_LEGACY_API_URL = `http://127.0.0.1:${address.port}`;
+  const { server, base } = await setup();
+  try {
+    const response = await fetch(`${base}/validation/catalog`, { headers: { "x-agenelf-token": "validation-closed-token" } });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /fail-closed/);
+    assert.equal(legacyCalls, 0);
+  } finally {
+    server.close();
+    legacy.close();
+    if (previousToken === undefined) delete process.env.AGENELF_API_TOKEN; else process.env.AGENELF_API_TOKEN = previousToken;
+    if (previousLegacy === undefined) delete process.env.AGENELF_LEGACY_API_URL; else process.env.AGENELF_LEGACY_API_URL = previousLegacy;
   }
 });
 

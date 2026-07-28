@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RuntimeSourceAndCliPaletteTest(unittest.TestCase):
-    def test_all_python_runtimes_mount_current_app_source(self):
+    def test_all_retained_python_runtimes_mount_current_app_source(self):
         compose = yaml.safe_load(
             (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         )
@@ -19,14 +19,13 @@ class RuntimeSourceAndCliPaletteTest(unittest.TestCase):
             "cli",
             "ops-runner",
             "approval-runner",
-            "validation-runner",
             "repair-runner",
         ):
             volumes = [str(item) for item in services[name]["volumes"]]
             self.assertIn(
                 "./app:/agenelf/app-fork:ro",
                 volumes,
-                msg=f"{name} must run current app source",
+                msg=f"{name} must observe current app source during migration",
             )
             self.assertNotIn(
                 "./app-fork:/agenelf/app-fork:ro",
@@ -37,6 +36,16 @@ class RuntimeSourceAndCliPaletteTest(unittest.TestCase):
                 services[name]["environment"]["AGENELF_RUNTIME_SOURCE"],
                 "app-bind",
             )
+
+    def test_node_validation_runner_uses_node_source_without_python_runtime_mount(self):
+        compose = yaml.safe_load(
+            (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+        service = compose["services"]["validation-runner"]
+        volumes = [str(item) for item in service["volumes"]]
+        self.assertIn("./node:/agenelf/node:ro", volumes)
+        self.assertNotIn("./app:/agenelf/app-fork:ro", volumes)
+        self.assertNotIn("AGENELF_RUNTIME_SOURCE", service.get("environment", {}))
 
     def test_cli_uses_palette_for_input_hint_and_dispatch_aliases(self):
         source = (ROOT / "app" / "cli.py").read_text(encoding="utf-8")

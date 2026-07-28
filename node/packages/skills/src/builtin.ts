@@ -2,15 +2,20 @@ import { MemoryStore } from "../../core/src/memory-store.ts";
 import { OperationQueue } from "../../core/src/operation-queue.ts";
 import { SessionLedgerStore } from "../../core/src/session-ledger.ts";
 import { TaskStore, type TaskStatus } from "../../core/src/task-store.ts";
+import { ValidationQueue } from "../../core/src/validation.ts";
 import type { JsonObject, SkillDescriptor } from "../../core/src/types.ts";
 
-export function builtinSkills(root: string, statusProvider: () => Promise<JsonObject>): SkillDescriptor[] {
+export function builtinSkills(
+  root: string,
+  statusProvider: () => Promise<JsonObject>,
+  validation?: ValidationQueue
+): SkillDescriptor[] {
   const memory = new MemoryStore(root);
   const tasks = new TaskStore(root);
   const ledger = new SessionLedgerStore(root);
   const operations = new OperationQueue(root);
 
-  return [
+  const skills: SkillDescriptor[] = [
     {
       id: "agent.runtime",
       name: "Node Runtime",
@@ -92,28 +97,68 @@ export function builtinSkills(root: string, statusProvider: () => Promise<JsonOb
           handler: async (args) => ledger.verify(String(args.session_id ?? "")) as unknown as JsonObject
         }
       ]
-    },
-    {
-      id: "server.operations",
-      name: "Runner Queue Bridge",
-      description: "按既有 Python Runner 协议提交不可变操作请求，迁移期间保持安全控制面兼容。",
+    }
+  ];
+
+  if (validation) {
+    skills.push({
+      id: "software.validation",
+      name: "Node Software Validation",
+      description: "只允许主人配置的验证别名，通过独立 Node Runner 生成可信 HTTP/TCP 证据。",
       version: "0.9.0",
-      domain: "operations",
+      domain: "validation",
       trust: "builtin",
       tools: [
         {
-          name: "submit_managed_operation", description: "向独立 Runner 提交精确绑定、限时的操作请求。",
-          inputSchema: { type: "object", properties: { capability: { type: "string" }, operation: { type: "string" }, target: { type: "string" }, parameters: { type: "object" }, risk: { type: "string" }, summary: { type: "string" } }, required: ["capability", "operation", "target", "risk", "summary"], additionalProperties: false },
-          contract: { capability: "server.operations", operation: "submit", risk: "change", executionMode: "queued_runner" },
-          handler: async (args) => operations.submit({ capability: String(args.capability ?? ""), operation: String(args.operation ?? ""), target: String(args.target ?? ""), parameters: (args.parameters && typeof args.parameters === "object" && !Array.isArray(args.parameters) ? args.parameters : {}) as JsonObject, risk: String(args.risk ?? "change") as "read" | "change" | "privileged", summary: String(args.summary ?? "") }) as unknown as JsonObject
+          name: "node_validation_catalog", description: "列出主人配置的验证检查与套件。",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+          contract: { capability: "software.validation", operation: "catalog", risk: "read", executionMode: "pure" },
+          handler: async () => validation.catalog()
         },
         {
-          name: "get_managed_operation", description: "查询 Runner 请求、审批和可信结果。",
+          name: "node_validation_run_check", description: "提交一个主人配置的验证检查别名。",
+          inputSchema: { type: "object", properties: { check: { type: "string" }, summary: { type: "string" } }, required: ["check"], additionalProperties: false },
+          contract: { capability: "software.validation", operation: "run_check", risk: "read", executionMode: "queued_runner" },
+          handler: async (args) => validation.submit("run_check", String(args.check ?? ""), String(args.summary ?? "Node validation check"))
+        },
+        {
+          name: "node_validation_run_suite", description: "提交一个主人配置的验证套件别名。",
+          inputSchema: { type: "object", properties: { suite: { type: "string" }, summary: { type: "string" } }, required: ["suite"], additionalProperties: false },
+          contract: { capability: "software.validation", operation: "run_suite", risk: "read", executionMode: "queued_runner" },
+          handler: async (args) => validation.submit("run_suite", String(args.suite ?? ""), String(args.summary ?? "Node validation suite"))
+        },
+        {
+          name: "node_validation_get", description: "查询验证请求与独立 Runner 的可信结果。",
           inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
-          contract: { capability: "server.operations", operation: "get_result", risk: "read", executionMode: "pure" },
-          handler: async (args) => operations.get(String(args.id ?? ""))
+          contract: { capability: "software.validation", operation: "get_result", risk: "read", executionMode: "pure" },
+          handler: async (args) => validation.get(String(args.id ?? ""))
         }
       ]
-    }
-  ];
+    });
+  }
+
+  skills.push({
+    id: "server.operations",
+    name: "Runner Queue Bridge",
+    description: "按既有 Python Runner 协议提交不可变操作请求，迁移期间保持安全控制面兼容。",
+    version: "0.9.0",
+    domain: "operations",
+    trust: "builtin",
+    tools: [
+      {
+        name: "submit_managed_operation", description: "向独立 Runner 提交精确绑定、限时的操作请求。",
+        inputSchema: { type: "object", properties: { capability: { type: "string" }, operation: { type: "string" }, target: { type: "string" }, parameters: { type: "object" }, risk: { type: "string" }, summary: { type: "string" } }, required: ["capability", "operation", "target", "risk", "summary"], additionalProperties: false },
+        contract: { capability: "server.operations", operation: "submit", risk: "change", executionMode: "queued_runner" },
+        handler: async (args) => operations.submit({ capability: String(args.capability ?? ""), operation: String(args.operation ?? ""), target: String(args.target ?? ""), parameters: (args.parameters && typeof args.parameters === "object" && !Array.isArray(args.parameters) ? args.parameters : {}) as JsonObject, risk: String(args.risk ?? "change") as "read" | "change" | "privileged", summary: String(args.summary ?? "") }) as unknown as JsonObject
+      },
+      {
+        name: "get_managed_operation", description: "查询 Runner 请求、审批和可信结果。",
+        inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+        contract: { capability: "server.operations", operation: "get_result", risk: "read", executionMode: "pure" },
+        handler: async (args) => operations.get(String(args.id ?? ""))
+      }
+    ]
+  });
+
+  return skills;
 }
