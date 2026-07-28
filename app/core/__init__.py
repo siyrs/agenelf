@@ -26,6 +26,7 @@ def load_authorized_upgrade() -> ModuleType:
     from .read_ops_upgrade_policy import install as install_read_ops_policy
     from .change_ops_upgrade_policy import install as install_change_ops_policy
     from .repair_upgrade_policy import install as install_repair_policy
+    from .self_upgrade_runtime_policy import install as install_self_upgrade_runtime_policy
     from .upgrade_redlines import install as install_diff_redlines
 
     # Import and install extensions only inside the real upgrade entrypoint. Ordinary
@@ -35,6 +36,7 @@ def load_authorized_upgrade() -> ModuleType:
     install_read_ops_policy(module)
     install_change_ops_policy(module)
     install_repair_policy(module)
+    install_self_upgrade_runtime_policy(module)
     install_diff_redlines(module)
 
     natural_pattern = re.compile(
