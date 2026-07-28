@@ -85,59 +85,77 @@ jobs:
         if: steps.topology.outcome == 'failure'
         run: exit 1
       - name: Run default Node approval Docker E2E
+        id: docker_e2e
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
           cleanup() {
             status=$?
-            if [ "$status" -ne 0 ]; then
-              docker compose ps || true
-              docker compose logs --no-color --tail=200 approval-key-init approval-runner || true
-            fi
+            docker compose ps > approval-default-ps.log 2>&1 || true
+            docker compose logs --no-color --tail=300 approval-key-init approval-runner > approval-default-containers.log 2>&1 || true
+            find data/approval-commands data/auth-decisions data/approval-results data/runner-health -maxdepth 1 -type f -print > approval-default-files.log 2>&1 || true
             docker compose down -v >/dev/null 2>&1 || true
-            exit "$status"
+            return "$status"
           }
           trap cleanup EXIT
 
-          docker compose up -d --build approval-runner
-          for i in $(seq 1 40); do
-            test -s data/runner-health/approval-runner.json && break
-            sleep 0.5
-          done
-          test -s data/runner-health/approval-runner.json
-          grep -q 'node-typescript' data/runner-health/approval-runner.json
-          test -s approval/key
-          test "$(stat -c '%a' approval/key)" = "440"
+          {
+            docker compose up -d --build approval-runner
+            for i in $(seq 1 40); do
+              test -s data/runner-health/approval-runner.json && break
+              sleep 0.5
+            done
+            test -s data/runner-health/approval-runner.json
+            grep -q 'node-typescript' data/runner-health/approval-runner.json
+            docker compose exec -T approval-runner node --input-type=module -e \
+              "import {stat} from 'node:fs/promises'; const s=await stat('/agenelf/approval/key'); if(s.size<32 || (s.mode & 0o777)!==0o440) process.exit(1);"
 
-          node --input-type=module <<'NODE'
-          import { writeFile } from 'node:fs/promises';
-          import { OwnerApprovalStore, bindingFingerprint, bindingFromRequest } from './node/packages/core/src/owner-approval.ts';
-          const store = new OwnerApprovalStore(process.cwd());
-          await store.initialize();
-          const request = {
-            schema_version: 1,
-            id: 'op-abababababababab',
-            capability: 'server.operations',
-            operation: 'restart_service',
-            target: 'promotion-api',
-            parameters: { service: 'promotion-api' },
-            risk: 'change',
-            summary: 'Default topology promotion smoke',
-            created_at: new Date().toISOString(),
-            fingerprint: ''
-          };
-          request.fingerprint = bindingFingerprint(bindingFromRequest(request));
-          await writeFile(`data/ops-requests/${request.id}.json`, `${JSON.stringify(request, null, 2)}\n`);
-          NODE
+            node --input-type=module <<'NODE'
+            import { writeFile } from 'node:fs/promises';
+            import { OwnerApprovalStore, bindingFingerprint, bindingFromRequest } from './node/packages/core/src/owner-approval.ts';
+            const store = new OwnerApprovalStore(process.cwd());
+            await store.initialize();
+            const request = {
+              schema_version: 1,
+              id: 'op-abababababababab',
+              capability: 'server.operations',
+              operation: 'restart_service',
+              target: 'promotion-api',
+              parameters: { service: 'promotion-api' },
+              risk: 'change',
+              summary: 'Default topology promotion smoke',
+              created_at: new Date().toISOString(),
+              fingerprint: ''
+            };
+            request.fingerprint = bindingFingerprint(bindingFromRequest(request));
+            await writeFile(`data/ops-requests/${request.id}.json`, `${JSON.stringify(request, null, 2)}\n`);
+            NODE
 
-          docker compose --profile cli run --rm --no-deps --build cli \
-            node --input-type=module -e "import {OwnerApprovalStore,loadApprovalKey} from './node/packages/core/src/owner-approval.ts'; const s=new OwnerApprovalStore('/agenelf'); await s.initialize(); const c=await s.submitCommand('op-abababababababab',await loadApprovalKey(),{action:'approve',reason:'default promotion',decidedBy:'owner-ci'}); console.log(c.id);"
+            docker compose --profile cli run --rm --no-deps --build cli \
+              node --input-type=module -e "import {OwnerApprovalStore,loadApprovalKey} from './node/packages/core/src/owner-approval.ts'; const s=new OwnerApprovalStore('/agenelf'); await s.initialize(); const c=await s.submitCommand('op-abababababababab',await loadApprovalKey(),{action:'approve',reason:'default promotion',decidedBy:'owner-ci'}); console.log(c.id);"
 
-          for i in $(seq 1 80); do
-            test -s data/auth-decisions/op-abababababababab.json && break
-            sleep 0.25
-          done
-          test -s data/auth-decisions/op-abababababababab.json
-          grep -q '"decision": "approve"' data/auth-decisions/op-abababababababab.json
-          test "$(find data/approval-results -maxdepth 1 -name 'apc-*.json' | wc -l)" -eq 1
-          grep -q '"status": "succeeded"' data/approval-results/apc-*.json
+            for i in $(seq 1 80); do
+              test -s data/auth-decisions/op-abababababababab.json && break
+              sleep 0.25
+            done
+            test -s data/auth-decisions/op-abababababababab.json
+            grep -q '"decision": "approve"' data/auth-decisions/op-abababababababab.json
+            test "$(find data/approval-results -maxdepth 1 -name 'apc-*.json' | wc -l)" -eq 1
+            grep -q '"status": "succeeded"' data/approval-results/apc-*.json
+          } 2>&1 | tee approval-default-e2e.log
+      - name: Upload Docker E2E diagnostics
+        if: steps.docker_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-approval-default-docker
+          path: |
+            approval-default-e2e.log
+            approval-default-ps.log
+            approval-default-containers.log
+            approval-default-files.log
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Stop after Docker E2E failure
+        if: steps.docker_e2e.outcome == 'failure'
+        run: exit 1
