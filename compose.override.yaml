@@ -1,4 +1,4 @@
-# Default Node personalization, owner-approval, operations and repair overlay.
+# Default Node personalization, owner-approval, operations, repair and self-upgrade overlay.
 # Explicit `docker compose -f docker-compose.python.yml ...` rollback does not load it.
 services:
   agenelf:
@@ -6,6 +6,8 @@ services:
       - ./local/prompts:/agenelf/local/prompts:ro
       - ./data/ops-events:/agenelf/data/ops-events:ro
       - ./data/repair-events:/agenelf/data/repair-events:ro
+      - ./data/self-upgrade-results:/agenelf/data/self-upgrade-results:ro
+      - ./data/self-upgrade-events:/agenelf/data/self-upgrade-events:ro
 
   cli:
     group_add: ["0"]
@@ -20,6 +22,8 @@ services:
       - ./data/approval-locks:/agenelf/data/approval-locks:rw
       - ./data/ops-events:/agenelf/data/ops-events:ro
       - ./data/repair-events:/agenelf/data/repair-events:ro
+      - ./data/self-upgrade-results:/agenelf/data/self-upgrade-results:ro
+      - ./data/self-upgrade-events:/agenelf/data/self-upgrade-events:ro
 
   approval-key-init:
     image: agenelf-node:local
@@ -46,8 +50,6 @@ services:
     volumes:
       - ./data/ops-results:/agenelf/data/ops-results:ro
 
-  # The unified Python Ops implementation is preserved for explicit diagnostics. The
-  # complete docker-compose.python.yml rollback remains profile-free and handles all Ops.
   ops-runner:
     profiles: [python-ops]
 
@@ -112,8 +114,6 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
-  # Keep the original Python service available only through an explicit profile. The
-  # full docker-compose.python.yml rollback remains unchanged and profile-free.
   repair-runner:
     profiles: [python-repair]
 
@@ -150,23 +150,70 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
+  # Preserve the original Python application implementation only for explicit diagnosis.
+  # The complete docker-compose.python.yml rollback remains profile-free.
   self-upgrade-runner:
+    profiles: [python-self-upgrade]
+
+  node-self-upgrade-runner:
+    image: agenelf-control-plane:local
+    build:
+      context: .
+      dockerfile: Dockerfile.control-plane
+    command: [node, node/apps/self-upgrade-runner/src/main.ts]
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_UPGRADE_TARGET: /agenelf/upgrade-target
+      AGENELF_REDLINE_BASE_ROOT: /agenelf/upgrade-target
+      AGENELF_SELF_UPGRADE_INTERVAL_MS: "500"
     volumes:
-      - ./compose.yaml:/agenelf/upgrade-target/compose.yaml:rw
-      - ./compose.override.yaml:/agenelf/upgrade-target/compose.override.yaml:rw
-      - ./docker-compose.override.yml:/agenelf/upgrade-target/docker-compose.override.yml:rw
-      - ./docker-compose.node-approval.yml:/agenelf/upgrade-target/docker-compose.node-approval.yml:rw
+      - ./node:/agenelf/node:ro
+      - ./scripts:/agenelf/scripts:ro
+      - ./app-tmp:/agenelf/app-tmp:ro
+      - ./data/authorized-upgrades:/agenelf/data/authorized-upgrades:ro
+      - ./data/self-upgrade-requests:/agenelf/data/self-upgrade-requests:ro
+      - ./data/self-upgrade-results:/agenelf/data/self-upgrade-results:rw
+      - ./data/self-upgrade-locks:/agenelf/data/self-upgrade-locks:rw
+      - ./data/self-upgrade-backups:/agenelf/data/self-upgrade-backups:rw
+      - ./data/self-upgrade-events:/agenelf/data/self-upgrade-events:rw
+      - ./data/auth-requests:/agenelf/data/auth-requests:ro
+      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+      - ./data/auth-consumed:/agenelf/data/auth-consumed:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
+      - ./logs:/agenelf/logs:rw
+      - ./app:/agenelf/upgrade-target/app:rw
+      - ./scripts:/agenelf/upgrade-target/scripts:rw
+      - ./policy:/agenelf/upgrade-target/policy:rw
+      - ./node:/agenelf/upgrade-target/node:rw
+      - ./contracts:/agenelf/upgrade-target/contracts:rw
+      - ./.github:/agenelf/upgrade-target/.github:rw
+      - ./docs:/agenelf/upgrade-target/docs:rw
+      - ./README.md:/agenelf/upgrade-target/README.md:rw
+      - ./Makefile:/agenelf/upgrade-target/Makefile:rw
+      - ./Dockerfile:/agenelf/upgrade-target/Dockerfile:rw
+      - ./Dockerfile.node:/agenelf/upgrade-target/Dockerfile.node:rw
+      - ./Dockerfile.control-plane:/agenelf/upgrade-target/Dockerfile.control-plane:rw
       - ./Dockerfile.ops-read:/agenelf/upgrade-target/Dockerfile.ops-read:rw
       - ./Dockerfile.ops-change:/agenelf/upgrade-target/Dockerfile.ops-change:rw
       - ./Dockerfile.repair:/agenelf/upgrade-target/Dockerfile.repair:rw
-      - ./node/apps/approval-key-init:/agenelf/upgrade-target/node/apps/approval-key-init:rw
-      - ./node/apps/approval-runner:/agenelf/upgrade-target/node/apps/approval-runner:rw
-      - ./node/apps/read-ops-runner:/agenelf/upgrade-target/node/apps/read-ops-runner:rw
-      - ./node/apps/change-ops-runner:/agenelf/upgrade-target/node/apps/change-ops-runner:rw
-      - ./node/apps/repair-runner:/agenelf/upgrade-target/node/apps/repair-runner:rw
-      - ./node/packages/core/src/owner-approval.ts:/agenelf/upgrade-target/node/packages/core/src/owner-approval.ts:rw
-      - ./node/packages/core/src/open-ssh.ts:/agenelf/upgrade-target/node/packages/core/src/open-ssh.ts:rw
-      - ./node/packages/core/src/read-ops.ts:/agenelf/upgrade-target/node/packages/core/src/read-ops.ts:rw
-      - ./node/packages/core/src/change-ops.ts:/agenelf/upgrade-target/node/packages/core/src/change-ops.ts:rw
-      - ./node/packages/core/src/server-catalog.ts:/agenelf/upgrade-target/node/packages/core/src/server-catalog.ts:rw
-      - ./node/packages/core/src/repair.ts:/agenelf/upgrade-target/node/packages/core/src/repair.ts:rw
+      - ./compose.yaml:/agenelf/upgrade-target/compose.yaml:rw
+      - ./compose.override.yaml:/agenelf/upgrade-target/compose.override.yaml:rw
+      - ./docker-compose.yml:/agenelf/upgrade-target/docker-compose.yml:rw
+      - ./docker-compose.python.yml:/agenelf/upgrade-target/docker-compose.python.yml:rw
+      - ./docker-compose.node-approval.yml:/agenelf/upgrade-target/docker-compose.node-approval.yml:rw
+      - ./package.json:/agenelf/upgrade-target/package.json:rw
+      - ./package-lock.json:/agenelf/upgrade-target/package-lock.json:rw
+      - ./.node-version:/agenelf/upgrade-target/.node-version:rw
+      - ./.env.example:/agenelf/upgrade-target/.env.example:rw
+      - ./.ops-runner.env.example:/agenelf/upgrade-target/.ops-runner.env.example:rw
+      - ./.gitignore:/agenelf/upgrade-target/.gitignore:rw
+      - ./.gitleaks.toml:/agenelf/upgrade-target/.gitleaks.toml:rw
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    pids_limit: 256
+    mem_limit: 2g
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
