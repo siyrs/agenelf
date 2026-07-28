@@ -1,6 +1,6 @@
 # Agenelf Node.js / TypeScript 迁移基线
 
-> 状态：Node Agent/API/CLI、Approval、Validation、read-only Ops 与 Repair 已迁移；Node 生产代码已纳入主人授权自升级治理；其余高风险控制面分批迁移  
+> 状态：Node Agent/API/CLI、Approval、Validation、read/change Ops 与 Repair 已迁移；Node 生产代码已纳入主人授权自升级治理；剩余生产 Python 面为 Self-upgrade Runner 与 internal legacy API  
 > 目标运行时：Node.js 24 LTS 原生 TypeScript type stripping  
 > 迁移原则：统一语言栈，但不合并信任域。
 
@@ -18,6 +18,7 @@
 - Node Validation Queue/Runner：严格 YAML、alias-only、HTTP/TCP、suite、可信结果与 heartbeat；
 - Node Approval Key Init/Broker：主人 CLI 签名、networkless 验签与裁决、Python rollback；
 - Node Read-only Ops Runner：固定 SSH 命令目录、语义风险分流、可信结果与事件回放；
+- Node Change/Privileged Ops Runner：锁前/锁后精确审批、固定模板、Compose 双重验证、备份与回滚；
 - Node Repair Runner：隔离 Git 副本、指纹绑定补丁、主人配置测试 argv、可信 artifact/result/event；
 - Node owner-authorized upgrade scopes、TypeScript 语法、测试哈希保护、永久红线和双运行时控制面；
 - 完整 Node、Python、Compose、安全和供应链门禁。
@@ -33,20 +34,21 @@ Node 24.12 起原生 TypeScript type stripping 已稳定。当前核心只使用
 ```text
 node/
 ├── apps/
-│   ├── api/                 # HTTP + SSE
-│   ├── cli/                 # 主人终端
-│   ├── runner/              # 通用 Node deterministic runner
-│   ├── approval-key-init/   # 审批 HMAC key 初始化
-│   ├── approval-runner/     # networkless 审批 Broker
-│   ├── validation-runner/   # 独立软件验证 Runner
-│   ├── read-ops-runner/     # 独立只读 SSH Runner
-│   └── repair-runner/       # 独立无网络代码修复 Runner
+│   ├── api/                  # HTTP + SSE
+│   ├── cli/                  # 主人终端
+│   ├── runner/               # 通用 Node deterministic runner
+│   ├── approval-key-init/    # 审批 HMAC key 初始化
+│   ├── approval-runner/      # networkless 审批 Broker
+│   ├── validation-runner/    # 独立软件验证 Runner
+│   ├── read-ops-runner/      # 独立只读 SSH Runner
+│   ├── change-ops-runner/    # 独立 change/privileged SSH Runner
+│   └── repair-runner/        # 独立无网络代码修复 Runner
 ├── packages/
-│   ├── core/                # Agent/Event/Ledger/Policy/Model/Validation/Ops/Repair
-│   └── skills/              # 内置技能
-├── resources/               # progressive disclosure manifests
-├── scripts/                 # 无依赖检查
-└── tests/                   # Node built-in test runner
+│   ├── core/                 # Agent/Event/Ledger/Policy/Model/Validation/Ops/Repair
+│   └── skills/               # 内置技能
+├── resources/                # progressive disclosure manifests
+├── scripts/                  # 无依赖检查
+└── tests/                    # Node built-in test runner
 ```
 
 ## 4. Node 原生 API
@@ -73,8 +75,11 @@ OperationQueue 继续复用 `op-*`、canonical payload、SHA-256 fingerprint、T
 裁决、结果和共享锁目录：
 
 - 语义 read 请求由 Node read runner 处理；
-- change/privileged 与未知/损坏请求由 Python runner 处理；
-- 请求自报 risk 不改变 Runner 路由；
+- 已知 change/privileged 请求由 Node change runner 处理；
+- 两个 Runner 在共享锁之前按 capability/operation 确定性分流；
+- 请求自报 risk 不改变 Runner 选择，且声明风险仍必须与语义一致；
+- change runner 在锁前预检查审批，锁后重新读取请求和裁决；
+- Python Ops 仅在 `python-ops` profile 中用于诊断；
 - 显式 Python rollback 不加载 Node overlay，原 Runner 处理全部操作。
 
 Node Validation 继续复用 `val-*` 和 `data/validation-*` 协议。Node Approval 继续复用
@@ -127,7 +132,6 @@ Node scopes、语法、测试保护、红线和双运行时验证，不创建第
 ### Batch N3.4：Read-only Ops Runner（已完成）
 
 - Node 处理 inspect、docker ps/logs/inspect/check 与 service status；
-- Python `change-only` 处理 APT、Compose、服务/容器重启、Docker 安装；
 - OpenSSH 使用精确 argv、`shell:false` 与固定远程命令模板；
 - 主人配置的服务器、服务、容器和检查 alias 重新校验；
 - append-only `ops-events` 供 Web/CLI/审计回放，`ops-results` 仍是可信事实源；
@@ -143,16 +147,25 @@ Node scopes、语法、测试保护、红线和双运行时验证，不创建第
 - append-only `repair-events` 供 Web/CLI/审计回放，result 与 artifact 仍是可信事实源；
 - 真实 Docker 隔离 Git Repair E2E 与完整 Python rollback 已验收。
 
+### Batch N3.6：Change/Privileged Ops Runner（已完成）
+
+- Node 处理 APT 更新、Docker 安装、Compose 部署/停止、服务和容器重启；
+- read/change Runner 保持独立容器、不同决策权限与共同不可变协议；
+- 主人裁决在共享锁前和锁后各读取一次，撤销/替换/过期在 SSH 前获胜；
+- `OpenSshTransport` 统一 known_hosts、密钥/密码、精确 argv、超时和脱敏；
+- Compose 内容经 stdin 写入远端临时文件，不进入命令证据；
+- 本地红线和远端 `docker compose config` 双重校验；
+- pull/up 失败自动恢复备份并重新部署；
+- `compose_down` 不删除 volumes 或 images；
+- 真实本机 sshd + Docker 容器重启 E2E、Compose 回滚模拟和完整 Python rollback 已验收。
+
 ### 后续批次
 
-按风险从低到高继续：
+1. Self-upgrade Runner 本体；
+2. 移除 internal legacy API；
+3. Python runtime 归档。
 
-1. change/privileged Ops；
-2. Self-upgrade Runner 本体；
-3. 移除 internal legacy API；
-4. Python runtime 归档。
-
-每个高风险控制面单独 PR，不允许一次性重写后降低可审计性。
+Self-upgrade 与 legacy API 继续分成独立 PR，不允许一次性删除 Python 后失去可信回滚。
 
 ## 7. Python 退役条件
 
@@ -171,6 +184,7 @@ node node/apps/api/src/main.ts
 node node/apps/cli/src/main.ts
 node node/apps/validation-runner/src/main.ts
 node node/apps/read-ops-runner/src/main.ts --once
+node node/apps/change-ops-runner/src/main.ts --once
 node node/apps/repair-runner/src/main.ts --once
 ```
 

@@ -56,10 +56,7 @@ class NodeReadOpsPartitionTest(unittest.TestCase):
             (ROOT / "compose.override.yaml").read_text(encoding="utf-8")
         )
         services = compose["services"]
-        self.assertEqual(
-            services["ops-runner"]["environment"]["AGENELF_OPS_RUNNER_MODE"],
-            "change-only",
-        )
+        self.assertEqual(services["ops-runner"]["profiles"], ["python-ops"])
         runner = services["read-ops-runner"]
         self.assertEqual(runner["build"]["dockerfile"], "Dockerfile.ops-read")
         self.assertTrue(runner["read_only"])
@@ -82,6 +79,7 @@ class NodeReadOpsPartitionTest(unittest.TestCase):
         )
         environment = rollback["services"]["ops-runner"].get("environment", {})
         self.assertNotIn("AGENELF_OPS_RUNNER_MODE", environment)
+        self.assertNotIn("profiles", rollback["services"]["ops-runner"])
 
     def test_owner_authorized_upgrade_scope_includes_read_ops_runtime(self) -> None:
         plan = authorized_upgrade.make_plan(
@@ -91,6 +89,7 @@ class NodeReadOpsPartitionTest(unittest.TestCase):
         for expected in (
             "node/apps/read-ops-runner/",
             "node/packages/core/src/read-ops.ts",
+            "node/packages/core/src/open-ssh.ts",
             "node/packages/core/src/server-catalog.ts",
             "Dockerfile.ops-read",
             "node/tests/",

@@ -29,6 +29,8 @@ export interface ManagedServer {
   knownHosts: string;
   allowUnknownHostKey: boolean;
   dockerCommand: "docker" | "sudo -n docker";
+  managedRoot: string;
+  allowedBindRoots: string[];
   allowedOperations: Set<string> | null;
   allowedDockerOperations: Set<string> | null;
   allowedContainers: Set<string> | null;
@@ -69,6 +71,20 @@ function optionalEnv(value: unknown, label: string): string | undefined {
   if (!text) return undefined;
   if (!ENV_RE.test(text)) throw new Error(`${label} 环境变量名非法`);
   return text;
+}
+
+function safeAbsoluteRoot(value: unknown, label: string, fallback?: string, allowRoot = false): string {
+  const text = String(value ?? fallback ?? "").trim();
+  if (!text.startsWith("/") || /[\0\r\n]/.test(text)) throw new Error(`${label} 必须是绝对 Linux 路径`);
+  const normalized = resolve(text);
+  if (!allowRoot && normalized === "/") throw new Error(`${label} 禁止使用宿主机根目录`);
+  return normalized;
+}
+
+function absoluteRootList(value: JsonValue | undefined, label: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 64) throw new Error(`${label} 必须是最多 64 项的 list`);
+  return value.map((item, index) => safeAbsoluteRoot(item, `${label}[${index}]`));
 }
 
 export class ServerCatalog {
@@ -143,6 +159,8 @@ export class ServerCatalog {
         knownHosts: safeFile(value.known_hosts, `服务器 ${alias} known_hosts`, "known_hosts"),
         allowUnknownHostKey: value.allow_unknown_host_key === true,
         dockerCommand,
+        managedRoot: safeAbsoluteRoot(value.managed_root, `服务器 ${alias} managed_root`, "/srv/agenelf"),
+        allowedBindRoots: absoluteRootList(value.allowed_bind_roots, `服务器 ${alias} allowed_bind_roots`),
         allowedOperations: value.allowed_operations === undefined ? null : new Set(stringList(value.allowed_operations, `服务器 ${alias} allowed_operations`, ALIAS_RE)),
         allowedDockerOperations: value.allowed_docker_operations === undefined ? null : new Set(stringList(value.allowed_docker_operations, `服务器 ${alias} allowed_docker_operations`, ALIAS_RE)),
         allowedContainers: value.allowed_containers === undefined ? null : new Set(stringList(value.allowed_containers, `服务器 ${alias} allowed_containers`, NAME_RE)),
@@ -162,6 +180,7 @@ export class ServerCatalog {
       username: server.username,
       auth: server.auth.type,
       allow_unknown_host_key: server.allowUnknownHostKey,
+      managed_root: server.managedRoot,
       allowed_operations: server.allowedOperations ? [...server.allowedOperations].sort() : [],
       allowed_docker_operations: server.allowedDockerOperations ? [...server.allowedDockerOperations].sort() : []
     }));

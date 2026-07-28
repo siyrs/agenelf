@@ -1,0 +1,17 @@
+{
+  "id": "operations.change.catalog",
+  "name": "Governed change and privileged operations",
+  "description": "Owner-approved server, Docker and Compose changes executed by a separate SSH runner with exact fingerprints, TTL, backup and rollback evidence.",
+  "version": "1.0.0",
+  "kind": "policy",
+  "trust": "builtin",
+  "path": "docs/CHANGE_OPS_RUNNER.md",
+  "capabilities": [
+    "server.operations:apt_update",
+    "server.operations:compose_deploy",
+    "server.operations:compose_down",
+    "server.operations:service_restart",
+    "server.operations:docker_install",
+    "docker.operations:restart_docker_container"
+  ]
+}
