@@ -1,0 +1,140 @@
+name: Node Approval Default
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  default-topology:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Prepare private-path fixtures
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=approval-default-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p local/prompts data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate default and rollback topologies
+        id: topology
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            docker compose --profile cli config --format json > default-compose.json
+            docker compose -f docker-compose.python.yml config --format json > python-compose.json
+            node <<'NODE'
+          const fs = require('node:fs');
+          const current = JSON.parse(fs.readFileSync('default-compose.json', 'utf8')).services || {};
+          const rollback = JSON.parse(fs.readFileSync('python-compose.json', 'utf8')).services || {};
+          const dockerfile = (service) => typeof service?.build === 'object' ? String(service.build.dockerfile || '') : '';
+          const command = (service) => Array.isArray(service?.command) ? service.command.join(' ') : String(service?.command || '');
+          if (current['approval-key-init'].image !== 'agenelf-node:local') throw new Error('default key init image is not Node');
+          if (current['approval-runner'].image !== 'agenelf-node:local') throw new Error('default approval runner image is not Node');
+          if (!dockerfile(current['approval-key-init']).endsWith('Dockerfile.node')) throw new Error('default key init Dockerfile is not Node');
+          if (!dockerfile(current['approval-runner']).endsWith('Dockerfile.node')) throw new Error('default approval runner Dockerfile is not Node');
+          if (!command(current['approval-key-init']).includes('node/apps/approval-key-init/src/main.ts')) throw new Error('default key init command is not Node');
+          if (!command(current['approval-runner']).includes('node/apps/approval-runner/src/main.ts')) throw new Error('default approval runner command is not Node');
+          if (current['approval-runner'].network_mode !== 'none') throw new Error('default approval runner must be networkless');
+          const volumes = (service) => Array.isArray(service?.volumes) ? service.volumes : [];
+          const hasTarget = (service, target, readOnly) => volumes(service).some((item) => {
+            if (typeof item === 'string') {
+              const parts = item.split(':');
+              return parts[1] === target && (readOnly === undefined || (parts[2] === 'ro') === readOnly);
+            }
+            return item.target === target && (readOnly === undefined || Boolean(item.read_only) === readOnly);
+          });
+          if (!hasTarget(current['approval-runner'], '/agenelf/approval', true)) throw new Error('default runner key must be read-only');
+          if (!hasTarget(current.cli, '/agenelf/approval', true)) throw new Error('default owner CLI key must be read-only');
+          if (hasTarget(current.agenelf, '/agenelf/approval')) throw new Error('default Agent/API received approval key');
+          if (!hasTarget(current.agenelf, '/agenelf/local/prompts', true)) throw new Error('default Agent prompt mount missing');
+          if (!hasTarget(current.cli, '/agenelf/local/prompts', true)) throw new Error('default CLI prompt mount missing');
+          if (!command(rollback['approval-runner']).includes('scripts/approval_runner.py')) throw new Error('Python approval rollback command changed');
+          if (!dockerfile(rollback['approval-runner']).endsWith('Dockerfile')) throw new Error('Python approval rollback Dockerfile changed');
+          NODE
+          } 2>&1 | tee topology-validation.log
+      - name: Upload topology diagnostics
+        if: steps.topology.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-approval-default-topology
+          path: |
+            topology-validation.log
+            default-compose.json
+            python-compose.json
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Stop after topology failure
+        if: steps.topology.outcome == 'failure'
+        run: exit 1
+      - name: Run default Node approval Docker E2E
+        id: docker_e2e
+        continue-on-error: true
+        shell: bash
+        run: |
+          status=0
+          (
+            set -euxo pipefail
+            docker compose up -d --build approval-runner
+            for i in $(seq 1 40); do
+              test -s data/runner-health/approval-runner.json && break
+              sleep 0.5
+            done
+            test -s data/runner-health/approval-runner.json
+            grep -q 'node-typescript' data/runner-health/approval-runner.json
+            docker compose exec -T approval-runner node --input-type=module -e \
+              "import {stat} from 'node:fs/promises'; const s=await stat('/agenelf/approval/key'); if(s.size<32 || (s.mode & 0o777)!==0o440) process.exit(1);"
+
+            node --input-type=module -e "import {writeFile} from 'node:fs/promises'; import {OwnerApprovalStore,bindingFingerprint,bindingFromRequest} from './node/packages/core/src/owner-approval.ts'; const store=new OwnerApprovalStore(process.cwd()); await store.initialize(); const request={schema_version:1,id:'op-abababababababab',capability:'server.operations',operation:'restart_service',target:'promotion-api',parameters:{service:'promotion-api'},risk:'change',summary:'Default topology promotion smoke',created_at:new Date().toISOString(),fingerprint:''}; request.fingerprint=bindingFingerprint(bindingFromRequest(request)); await writeFile('data/ops-requests/'+request.id+'.json',JSON.stringify(request,null,2)+'\n');"
+
+            docker compose --profile cli run --rm --no-deps --build cli \
+              node --input-type=module -e "import {OwnerApprovalStore,loadApprovalKey} from './node/packages/core/src/owner-approval.ts'; const s=new OwnerApprovalStore('/agenelf'); await s.initialize(); const c=await s.submitCommand('op-abababababababab',await loadApprovalKey(),{action:'approve',reason:'default promotion',decidedBy:'owner-ci'}); console.log(c.id);"
+
+            for i in $(seq 1 80); do
+              test -s data/auth-decisions/op-abababababababab.json && break
+              sleep 0.25
+            done
+            test -s data/auth-decisions/op-abababababababab.json
+            grep -q '"decision": "approve"' data/auth-decisions/op-abababababababab.json
+            test "$(find data/approval-results -maxdepth 1 -name 'apc-*.json' | wc -l)" -eq 1
+            grep -q '"status": "succeeded"' data/approval-results/apc-*.json
+          ) > approval-default-e2e.log 2>&1 || status=$?
+
+          docker compose ps > approval-default-ps.log 2>&1 || true
+          docker compose logs --no-color --tail=300 approval-key-init approval-runner > approval-default-containers.log 2>&1 || true
+          find data/approval-commands data/auth-decisions data/approval-results data/runner-health -maxdepth 1 -type f -print > approval-default-files.log 2>&1 || true
+          docker compose down -v >/dev/null 2>&1 || true
+          cat approval-default-e2e.log
+          exit "$status"
+      - name: Upload Docker E2E diagnostics
+        if: steps.docker_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-approval-default-docker
+          path: |
+            approval-default-e2e.log
+            approval-default-ps.log
+            approval-default-containers.log
+            approval-default-files.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop after Docker E2E failure
+        if: steps.docker_e2e.outcome == 'failure'
+        run: exit 1

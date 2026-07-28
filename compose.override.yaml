@@ -1,8 +1,14 @@
-# Node Approval migration overlay. Compose after docker-compose.yml and docker-compose.override.yml.
+# Default Node personalization and owner-approval overlay.
+# Explicit `docker compose -f docker-compose.python.yml ...` rollback does not load it.
 services:
+  agenelf:
+    volumes:
+      - ./local/prompts:/agenelf/local/prompts:ro
+
   cli:
     group_add: ["0"]
     volumes:
+      - ./local/prompts:/agenelf/local/prompts:ro
       - ./data/auth-requests:/agenelf/data/auth-requests:ro
       - ./data/ops-requests:/agenelf/data/ops-requests:ro
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
@@ -12,6 +18,7 @@ services:
       - ./data/approval-locks:/agenelf/data/approval-locks:rw
 
   approval-key-init:
+    image: agenelf-node:local
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -22,6 +29,7 @@ services:
     user: "0:0"
 
   approval-runner:
+    image: agenelf-node:local
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -36,6 +44,9 @@ services:
 
   self-upgrade-runner:
     volumes:
+      - ./compose.yaml:/agenelf/upgrade-target/compose.yaml:rw
+      - ./compose.override.yaml:/agenelf/upgrade-target/compose.override.yaml:rw
+      - ./docker-compose.override.yml:/agenelf/upgrade-target/docker-compose.override.yml:rw
       - ./docker-compose.node-approval.yml:/agenelf/upgrade-target/docker-compose.node-approval.yml:rw
       - ./node/apps/approval-key-init:/agenelf/upgrade-target/node/apps/approval-key-init:rw
       - ./node/apps/approval-runner:/agenelf/upgrade-target/node/apps/approval-runner:rw

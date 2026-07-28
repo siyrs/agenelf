@@ -1,24 +1,16 @@
 import { randomBytes } from "node:crypto";
-import { chmod, chown, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-function numericEnv(name: string, fallback: number): number {
-  const parsed = Number(process.env[name] ?? fallback);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
 export async function initializeApprovalKey(path = process.env.AGENELF_APPROVAL_KEY_FILE || "/agenelf/approval/key"): Promise<{ created: boolean; path: string; bytes: number }> {
   const target = resolve(path);
-  const uid = numericEnv("AGENELF_UID", 1000);
-  const gid = numericEnv("AGENELF_GID", 1000);
   await mkdir(dirname(target), { recursive: true });
   try {
     const info = await lstat(target);
     if (info.isFile() && !info.isSymbolicLink()) {
       const content = Buffer.from((await readFile(target)).toString("utf8").trim(), "utf8");
       if (content.length >= 32) {
-        await chown(target, uid, gid);
         await chmod(target, 0o440);
         return { created: false, path: target, bytes: info.size };
       }
@@ -32,7 +24,8 @@ export async function initializeApprovalKey(path = process.env.AGENELF_APPROVAL_
       await handle.writeFile(`${randomBytes(48).toString("base64url")}\n`, "ascii");
       await handle.sync();
     } finally { await handle.close(); }
-    await chown(temp, uid, gid);
+    // Docker named volumes can reject chown under user-namespace remapping. Keep the
+    // file root:root 0440 and grant only the CLI/Broker supplemental group 0.
     await chmod(temp, 0o440);
     await rename(temp, target);
   } catch (error) {

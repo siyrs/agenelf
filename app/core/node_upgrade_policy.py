@@ -27,7 +27,7 @@ _NODE_REDLINE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "Node 任意 Shell",
         re.compile(
             r"(?is)(?:from\s+['\"]node:child_process['\"]|require\(['\"](?:node:)?child_process['\"]\))"
-            r".{0,1200}(?:\bexecSync?\s*\(|\bspawnSync?\s*\([^\n]{0,300}\bshell\s*:\s*true)",
+            r".{0,1200}(?:\bexec(?:Sync)?\s*\(|\bspawn(?:Sync)?\s*\([^\n]{0,300}\bshell\s*:\s*true)",
         ),
     ),
     ("Node 动态代码执行", re.compile(r"(?i)\b(?:eval|Function)\s*\(|vm\.(?:runIn|compileFunction)")),
@@ -202,6 +202,10 @@ def install() -> None:
             "Dockerfile.node",
             "Dockerfile.control-plane",
             "docker-compose.python.yml",
+            "docker-compose.override.yml",
+            "docker-compose.node-approval.yml",
+            "compose.yaml",
+            "compose.override.yaml",
             "package.json",
             "package-lock.json",
             ".node-version",
@@ -211,7 +215,7 @@ def install() -> None:
         {
             "node_runtime": ("node/packages/core/", "node/apps/api/", "node/apps/cli/"),
             "node_skills": ("node/packages/skills/",),
-            "node_runners": ("node/apps/runner/", "node/apps/validation-runner/"),
+            "node_runners": ("node/apps/runner/", "node/apps/validation-runner/", "node/apps/approval-runner/", "node/apps/approval-key-init/"),
             "node_tests": ("node/tests/",),
             "node_build": (
                 "package.json",
@@ -223,7 +227,11 @@ def install() -> None:
             ),
             "contracts": ("contracts/",),
             "compose": (
+                "compose.yaml",
+                "compose.override.yaml",
                 "docker-compose.yml",
+                "docker-compose.override.yml",
+                "docker-compose.node-approval.yml",
                 "docker-compose.python.yml",
                 "Dockerfile",
                 "Dockerfile.node",
@@ -272,9 +280,7 @@ def install() -> None:
     base.classify_scopes = classify_scopes
     base._validate_syntax = validate_syntax
     base.scan_redlines = scan_redlines
-    base._prepare_changes = lambda session, repo, manifest, changes: _prepare_changes(
-        base, session, repo, manifest, changes
-    )
+    base._prepare_changes = lambda session, repo, baseline, changes: _prepare_changes(base, session, repo, baseline, changes)
     base._build_prompt = lambda session, context: _build_prompt(base, session, context)
-    base.NODE_UPGRADE_POLICY_VERSION = "owner-authorized-node-upgrade-v1"
+    base.NODE_UPGRADE_POLICY_VERSION = 1
     _INSTALLED = True

@@ -28,6 +28,9 @@ def load_authorized_upgrade() -> ModuleType:
     # importlib registers the concrete submodule on this package before returning, so
     # node_upgrade_policy's existing compatibility import resolves to the real module.
     install_node_policy()
+    # Preserve the public governance contract even when an extension implementation
+    # accidentally uses an internal numeric schema marker.
+    module.NODE_UPGRADE_POLICY_VERSION = "owner-authorized-node-upgrade-v1"
     install_diff_redlines(module)
 
     natural_pattern = re.compile(

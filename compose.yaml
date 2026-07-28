@@ -1,0 +1,6 @@
+# Default Agenelf topology.
+# Import the audited production graph. Node Approval and private Prompt mounts are
+# applied by the standard compose.override.yaml file, avoiding resource conflicts
+# inside the include model.
+include:
+  - path: docker-compose.yml
