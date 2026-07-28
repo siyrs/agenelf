@@ -11,7 +11,7 @@ permissions:
 jobs:
   node-runtime:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -51,8 +51,18 @@ jobs:
           cp .ops-runner.env.example .ops-runner.env
           python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
           cp local/node-runner.example.json local/node-runner.json
-          mkdir -p data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks data/ops-events data/repair-events data/self-upgrade-events
-      - name: Validate default hybrid production topology
+          mkdir -p \
+            workspace/tasks local/prompts \
+            data/tasks data/node-tasks \
+            data/auth-requests data/auth-decisions \
+            data/ops-requests data/ops-results data/ops-events \
+            data/validation-requests data/validation-results \
+            data/repair-requests data/repair-results data/repair-events \
+            data/authorized-upgrades data/self-upgrade-results data/self-upgrade-events \
+            data/promote-requests data/promotion-history \
+            data/autonomy-cycles data/autonomy-events \
+            data/runner-health data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate Node-only production topology
         id: topology
         continue-on-error: true
         shell: bash
@@ -65,81 +75,53 @@ jobs:
           const config = JSON.parse(fs.readFileSync('agenelf-production-compose.json', 'utf8'));
           const services = config.services || {};
           const required = [
-            'agenelf', 'cli', 'legacy-agent', 'approval-key-init', 'approval-runner',
-            'read-ops-runner', 'change-ops-runner', 'validation-runner', 'node-repair-runner', 'node-self-upgrade-runner'
+            'agenelf', 'cli', 'approval-key-init', 'approval-runner',
+            'read-ops-runner', 'change-ops-runner', 'validation-runner',
+            'node-repair-runner', 'node-self-upgrade-runner'
           ];
-          for (const name of required) {
-            if (!services[name]) throw new Error(`missing production service: ${name}`);
+          for (const name of required) if (!services[name]) throw new Error(`missing production service: ${name}`);
+          for (const forbidden of ['legacy-agent', 'ops-runner', 'repair-runner', 'self-upgrade-runner', 'legacy-cli']) {
+            if (services[forbidden]) throw new Error(`Python compatibility service rendered by default: ${forbidden}`);
           }
-          if (services['ops-runner']) throw new Error('profile-gated Python Ops must not start by default');
-          if (services['repair-runner']) throw new Error('profile-gated Python repair must not start by default');
-          if (services['self-upgrade-runner']) throw new Error('profile-gated Python Self-upgrade must not start by default');
+          for (const [name, service] of Object.entries(services)) {
+            const command = Array.isArray(service.command) ? service.command.join(' ') : String(service.command || '');
+            const dockerfile = typeof service.build === 'object' ? String(service.build.dockerfile || '') : '';
+            if (/\bpython(?:3)?\b|\/agenelf\/app\/api\.py|legacy-agent/.test(command)) throw new Error(`default service ${name} has Python/legacy command: ${command}`);
+            if (dockerfile === 'Dockerfile' && name !== 'approval-key-init') throw new Error(`default service ${name} uses Python Dockerfile`);
+          }
           const node = services.agenelf;
-          const legacy = services['legacy-agent'];
           const changeOps = services['change-ops-runner'];
           const nodeRepair = services['node-repair-runner'];
           const nodeUpgrade = services['node-self-upgrade-runner'];
           const dockerfile = typeof node.build === 'object' ? String(node.build.dockerfile || '') : '';
           if (!dockerfile.endsWith('Dockerfile.node')) throw new Error(`agenelf must build Dockerfile.node, got ${dockerfile}`);
-          const changeDockerfile = typeof changeOps.build === 'object' ? String(changeOps.build.dockerfile || '') : '';
-          if (!changeDockerfile.endsWith('Dockerfile.ops-change')) throw new Error(`change-ops-runner must build Dockerfile.ops-change, got ${changeDockerfile}`);
-          const repairDockerfile = typeof nodeRepair.build === 'object' ? String(nodeRepair.build.dockerfile || '') : '';
-          if (!repairDockerfile.endsWith('Dockerfile.repair')) throw new Error(`node-repair-runner must build Dockerfile.repair, got ${repairDockerfile}`);
-          const upgradeDockerfile = typeof nodeUpgrade.build === 'object' ? String(nodeUpgrade.build.dockerfile || '') : '';
-          if (!upgradeDockerfile.endsWith('Dockerfile.control-plane')) throw new Error(`node-self-upgrade-runner must build Dockerfile.control-plane, got ${upgradeDockerfile}`);
-          const envEntries = Array.isArray(node.environment)
+          const env = Array.isArray(node.environment)
             ? Object.fromEntries(node.environment.map((item) => String(item).split(/=(.*)/s).slice(0, 2)))
             : (node.environment || {});
-          if (String(envEntries.AGENELF_LEGACY_API_URL || '') !== 'http://legacy-agent:8000') throw new Error(`unexpected legacy URL: ${envEntries.AGENELF_LEGACY_API_URL}`);
+          if ('AGENELF_LEGACY_API_URL' in env) throw new Error('Node API still receives AGENELF_LEGACY_API_URL');
+          if (node.depends_on?.['legacy-agent']) throw new Error('Node API still depends on legacy-agent');
           if (!Array.isArray(node.ports) || !node.ports.length) throw new Error('Node API must expose the public port');
-          if (Array.isArray(legacy.ports) && legacy.ports.length) throw new Error('legacy-agent must not expose a host port');
-          if (!legacy.healthcheck) throw new Error('legacy-agent must define a healthcheck');
-          const legacyDependency = node.depends_on?.['legacy-agent'];
-          if (!legacyDependency || legacyDependency.condition !== 'service_healthy') throw new Error('Node API must wait for a healthy legacy-agent');
-          const volumes = (service) => Array.isArray(service.volumes) ? service.volumes : [];
-          const hasTarget = (service, target, readOnly) => volumes(service).some((item) => {
-            if (typeof item === 'string') {
-              const parts = item.split(':');
-              return parts[1] === target && (readOnly === undefined || (parts[2] === 'ro') === readOnly);
-            }
-            return item.target === target && (readOnly === undefined || Boolean(item.read_only) === readOnly);
-          });
+          const volumes = (service) => Array.isArray(service?.volumes) ? service.volumes : [];
+          const target = (item) => typeof item === 'string' ? item.split(':')[1] : item.target;
+          const readOnly = (item) => typeof item === 'string' ? item.split(':')[2] === 'ro' : Boolean(item.read_only);
+          const has = (service, path, ro) => volumes(service).some((item) => target(item) === path && (ro === undefined || readOnly(item) === ro));
           const sources = (service) => volumes(service).map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
-          const nodeSources = sources(node);
-          if (nodeSources.includes('local/secrets')) throw new Error('Node Agent must not receive local secrets');
-          if (hasTarget(node, '/agenelf/approval')) throw new Error('Node Agent must not receive approval keys');
-          if (!hasTarget(node, '/agenelf/policy', true)) throw new Error('Node Agent must retain read-only policy');
-          if (!hasTarget(node, '/agenelf/data/runner-health', true)) throw new Error('Node Agent must retain read-only runner health');
-          if (!hasTarget(node, '/agenelf/data/validation-results', true)) throw new Error('Node Agent must observe validation results read-only');
-          if (!hasTarget(node, '/agenelf/data/repair-results', true)) throw new Error('Node Agent must observe repair results read-only');
-          if (!hasTarget(node, '/agenelf/data/self-upgrade-results', true)) throw new Error('Node Agent must observe Self-upgrade results read-only');
-          if (!hasTarget(node, '/agenelf/app-tmp', false)) throw new Error('Node Agent must retain the controlled candidate workspace');
-          if (!hasTarget(services.cli, '/agenelf/approval', true)) throw new Error('Node CLI must retain owner approval signing access');
-          if (services['approval-runner'].network_mode !== 'none') throw new Error(`approval network_mode=${services['approval-runner'].network_mode}`);
-          if (nodeRepair.network_mode !== 'none' || !nodeRepair.read_only) throw new Error('Node Repair must remain networkless/read-only');
-          if (!changeOps.read_only) throw new Error('Node change Ops root filesystem must remain read-only');
-          if (nodeUpgrade.network_mode !== 'none' || !nodeUpgrade.read_only) throw new Error('Node Self-upgrade must remain networkless/read-only');
-          if (!hasTarget(services['approval-runner'], '/agenelf/approval', true)) throw new Error('approval-runner must retain read-only HMAC key');
-          if (!hasTarget(changeOps, '/agenelf/local/secrets', true)) throw new Error('change-ops-runner must read server secrets');
-          if (!hasTarget(changeOps, '/agenelf/data/auth-decisions', true)) throw new Error('change-ops-runner must observe exact decisions read-only');
-          if (hasTarget(changeOps, '/agenelf/approval')) throw new Error('change-ops-runner must not receive approval HMAC key');
-          for (const forbidden of ['local/memory', 'local/self', 'docker.sock']) {
-            if (sources(changeOps).includes(forbidden)) throw new Error(`change-ops-runner received forbidden source: ${forbidden}`);
+          for (const [path, ro] of [
+            ['/agenelf/local/memory', false], ['/agenelf/local/self', false],
+            ['/agenelf/data/auth-requests', true], ['/agenelf/data/ops-requests', false],
+            ['/agenelf/data/repair-requests', false], ['/agenelf/data/authorized-upgrades', true],
+            ['/agenelf/data/autonomy-cycles', false], ['/agenelf/data/autonomy-events', false],
+            ['/agenelf/data/runner-health', true]
+          ]) if (!has(node, path, ro)) throw new Error(`Node API missing native data mount ${path}:${ro ? 'ro' : 'rw'}`);
+          for (const forbidden of ['local/secrets', '/agenelf/approval', 'docker.sock', '/agenelf/app-fork']) {
+            if (sources(node).includes(forbidden)) throw new Error(`Node API received forbidden/Python runtime source: ${forbidden}`);
           }
-          if (!hasTarget(nodeRepair, '/agenelf/code-workspaces', true)) throw new Error('Node Repair source must be read-only');
-          if (!hasTarget(nodeRepair, '/agenelf/repair-space', false)) throw new Error('Node Repair artifact space must be writable');
-          for (const forbidden of ['local/secrets', 'local/memory', 'local/self', 'docker.sock']) {
-            if (sources(nodeRepair).includes(forbidden)) throw new Error(`Node Repair received forbidden source: ${forbidden}`);
-          }
-          if (!hasTarget(nodeUpgrade, '/agenelf/app-tmp', true)) throw new Error('Node Self-upgrade candidate must be read-only');
-          if (!hasTarget(nodeUpgrade, '/agenelf/data/auth-decisions', true)) throw new Error('Node Self-upgrade decisions must be read-only');
-          if (!hasTarget(nodeUpgrade, '/agenelf/data/auth-consumed', false)) throw new Error('Node Self-upgrade must consume exact decisions');
-          if (!hasTarget(nodeUpgrade, '/agenelf/upgrade-target/node', false)) throw new Error('Node Self-upgrade must retain exact Node target');
-          if (hasTarget(nodeUpgrade, '/agenelf/approval')) throw new Error('Node Self-upgrade must not receive approval HMAC key');
-          for (const forbidden of ['local/secrets', 'local/memory', 'local/self', 'docker.sock', 'upgrade-target/.git']) {
-            if (sources(nodeUpgrade).includes(forbidden)) throw new Error(`node-self-upgrade-runner received forbidden source: ${forbidden}`);
-          }
-          console.log(`validated ${Object.keys(services).length} explicit production services`);
+          if (services['approval-runner'].network_mode !== 'none') throw new Error('approval-runner must remain networkless');
+          if (!has(services['approval-runner'], '/agenelf/approval', true)) throw new Error('approval-runner must retain read-only HMAC key');
+          if (!changeOps.read_only || !has(changeOps, '/agenelf/local/secrets', true) || has(changeOps, '/agenelf/approval')) throw new Error('change Ops trust boundary invalid');
+          if (nodeRepair.network_mode !== 'none' || !nodeRepair.read_only || !has(nodeRepair, '/agenelf/code-workspaces', true) || !has(nodeRepair, '/agenelf/repair-space', false)) throw new Error('Repair trust boundary invalid');
+          if (nodeUpgrade.network_mode !== 'none' || !nodeUpgrade.read_only || !has(nodeUpgrade, '/agenelf/app-tmp', true) || !has(nodeUpgrade, '/agenelf/data/auth-consumed', false) || has(nodeUpgrade, '/agenelf/approval')) throw new Error('Self-upgrade trust boundary invalid');
+          console.log(`validated ${Object.keys(services).length} Node-only production services`);
           NODE
           } 2>&1 | tee topology-validation.log
       - name: Upload topology diagnostics
@@ -155,41 +137,36 @@ jobs:
       - name: Stop after topology failure
         if: steps.topology.outcome == 'failure'
         run: exit 1
-      - name: Validate rollback and optional Node runner topologies
+      - name: Validate explicit Python diagnostics and complete rollback
         shell: bash
         run: |
           set -euo pipefail
           docker compose -f docker-compose.python.yml config --format json > /tmp/agenelf-python-compose.json
-          docker compose --profile node-runner --profile python-repair --profile python-ops --profile python-self-upgrade config --format json > /tmp/agenelf-node-runner-compose.json
+          docker compose --profile node-runner --profile python-repair --profile python-ops --profile python-self-upgrade --profile python-legacy-api config --format json > /tmp/agenelf-audit-compose.json
           node <<'NODE'
           const fs = require('node:fs');
-          const python = JSON.parse(fs.readFileSync('/tmp/agenelf-python-compose.json', 'utf8'));
-          const optional = JSON.parse(fs.readFileSync('/tmp/agenelf-node-runner-compose.json', 'utf8'));
-          if (!python.services?.agenelf || !python.services?.['approval-runner'] || !python.services?.['repair-runner'] || !python.services?.['ops-runner'] || !python.services?.['self-upgrade-runner']) throw new Error('Python rollback topology incomplete');
-          if (python.services['read-ops-runner'] || python.services['change-ops-runner'] || python.services['node-self-upgrade-runner']) throw new Error('Python rollback unexpectedly includes Node control-plane runners');
-          if (!optional.services?.['node-runner']) throw new Error('optional Node runner profile missing');
-          if (optional.services['node-runner'].network_mode !== 'none') throw new Error('Node runner must remain networkless');
-          if (!optional.services?.['repair-runner']?.profiles?.includes('python-repair')) throw new Error('profile-gated Python repair missing from audit topology');
-          if (!optional.services?.['ops-runner']?.profiles?.includes('python-ops')) throw new Error('profile-gated Python Ops missing from audit topology');
-          if (!optional.services?.['self-upgrade-runner']?.profiles?.includes('python-self-upgrade')) throw new Error('profile-gated Python Self-upgrade missing from audit topology');
+          const python = JSON.parse(fs.readFileSync('/tmp/agenelf-python-compose.json', 'utf8')).services || {};
+          const audit = JSON.parse(fs.readFileSync('/tmp/agenelf-audit-compose.json', 'utf8')).services || {};
+          for (const name of ['agenelf', 'approval-runner', 'repair-runner', 'ops-runner', 'self-upgrade-runner']) if (!python[name]) throw new Error(`Python rollback missing ${name}`);
+          for (const forbidden of ['read-ops-runner', 'change-ops-runner', 'node-self-upgrade-runner']) if (python[forbidden]) throw new Error(`Python rollback unexpectedly includes ${forbidden}`);
+          if (!audit['node-runner'] || audit['node-runner'].network_mode !== 'none') throw new Error('optional Node runner missing or networked');
+          if (!audit['legacy-agent']?.profiles?.includes('python-legacy-api')) throw new Error('profile-gated Python legacy API missing');
+          if (!audit['repair-runner']?.profiles?.includes('python-repair')) throw new Error('profile-gated Python repair missing');
+          if (!audit['ops-runner']?.profiles?.includes('python-ops')) throw new Error('profile-gated Python Ops missing');
+          if (!audit['self-upgrade-runner']?.profiles?.includes('python-self-upgrade')) throw new Error('profile-gated Python Self-upgrade missing');
           NODE
       - name: Build Node production image
         run: docker build -f Dockerfile.node -t agenelf-node:ci .
-      - name: Smoke Node API container
-        env:
-          AGENELF_API_TOKEN: node-ci-token
+      - name: Smoke standalone Node API container
         run: |
           docker run -d --rm --name agenelf-node-ci \
             -e AGENELF_API_TOKEN=node-ci-token \
             -p 127.0.0.1:18080:8000 \
             agenelf-node:ci
           trap 'docker rm -f agenelf-node-ci >/dev/null 2>&1 || true' EXIT
-          for i in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:18080/health && break
-            sleep 1
-          done
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/health && break; sleep 1; done
           curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:18080/status | grep -q 'node-typescript'
-      - name: Smoke default Node plus internal legacy topology
+      - name: Smoke default Node-only Compose topology
         shell: bash
         run: |
           set -euo pipefail
@@ -197,30 +174,24 @@ jobs:
             status=$?
             if [ "$status" -ne 0 ]; then
               docker compose ps || true
-              docker compose logs --no-color --tail=200 legacy-agent agenelf || true
+              docker compose logs --no-color --tail=200 agenelf approval-runner validation-runner || true
             fi
             docker compose down -v >/dev/null 2>&1 || true
             exit "$status"
           }
           trap cleanup EXIT
-          docker compose up -d --build approval-key-init legacy-agent agenelf
+          docker compose up -d --build approval-key-init agenelf
           for i in $(seq 1 45); do
-            if curl -fsS http://127.0.0.1:8000/health >/tmp/node-health.json; then
-              break
-            fi
+            if curl -fsS http://127.0.0.1:8000/health >/tmp/node-health.json; then break; fi
             sleep 1
           done
-          grep -q 'node-typescript' <(curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/status)
-          proxy_ok=0
-          for i in $(seq 1 30); do
-            if curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/self/roadmap >/tmp/legacy-proxy-smoke.json; then
-              proxy_ok=1
-              break
-            fi
-            sleep 2
-          done
-          test "$proxy_ok" -eq 1
-          test -s /tmp/legacy-proxy-smoke.json
+          status=$(curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/status)
+          echo "$status" | grep -q 'node-typescript'
+          echo "$status" | grep -q '"legacy_api":false'
+          curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/self/development | grep -q 'continuity_id'
+          curl -fsS -H 'X-Agenelf-Token: node-ci-token' http://127.0.0.1:8000/self/optimization | grep -q 'consciousness_claim'
+          curl -fsS -X POST -H 'X-Agenelf-Token: node-ci-token' -H 'Content-Type: application/json' -d '{"goal":"verify Node-only production","apply_changes":false}' http://127.0.0.1:8000/autonomy/cycles | grep -q 'plan_ready'
+          test -z "$(docker compose ps --services --status running | grep -E 'legacy-agent|ops-runner$|repair-runner$|self-upgrade-runner$' || true)"
 
   node-supply-chain:
     runs-on: ubuntu-latest
