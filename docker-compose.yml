@@ -5,6 +5,8 @@ x-secure: &secure
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
 
+# Python definitions below are compatibility/rollback services only. The default overlay
+# profile-gates them; docker-compose.python.yml remains the complete rollback topology.
 x-python-runtime: &python-runtime
   build: .
   user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
@@ -30,6 +32,7 @@ services:
 
   legacy-agent:
     <<: *python-runtime
+    profiles: [python-legacy-api]
     env_file: .env
     depends_on:
       approval-key-init:
@@ -117,15 +120,11 @@ services:
       dockerfile: Dockerfile.node
     env_file: .env
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
-    depends_on:
-      legacy-agent:
-        condition: service_healthy
     environment: &node-env
       AGENELF_ROOT: /agenelf
       AGENELF_HOST: 0.0.0.0
       AGENELF_PORT: 8000
-      AGENELF_LEGACY_API_URL: http://legacy-agent:8000
-      AGENELF_RUNTIME_SOURCE: app-bind
+      AGENELF_RUNTIME_SOURCE: node-runtime
       AGENELF_LOCAL_DIR: /agenelf/local
       AGENELF_SELF_DIR: /agenelf/local/self
       AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
@@ -138,7 +137,6 @@ services:
       - ./node:/agenelf/node:ro
       - ./web:/agenelf/web:ro
       - ./docs:/agenelf/docs:ro
-      - ./app:/agenelf/app-fork:ro
       - ./app-tmp:/agenelf/app-tmp:rw
       - ./.github:/agenelf/repo-source/.github:ro
       - ./policy:/agenelf/policy:ro
@@ -151,15 +149,25 @@ services:
       - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
       - ./local/memory:/agenelf/local/memory:rw
       - ./local/self:/agenelf/local/self:rw
+      - ./workspace:/agenelf/workspace:ro
+      - ./data/tasks:/agenelf/data/tasks:ro
       - ./data/node-tasks:/agenelf/data/node-tasks:rw
-      - ./data/ops-requests:/agenelf/data/ops-requests:rw
-      - ./data/ops-results:/agenelf/data/ops-results:ro
+      - ./data/auth-requests:/agenelf/data/auth-requests:ro
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/approval-commands:/agenelf/data/approval-commands:ro
       - ./data/approval-results:/agenelf/data/approval-results:ro
+      - ./data/ops-requests:/agenelf/data/ops-requests:rw
+      - ./data/ops-results:/agenelf/data/ops-results:ro
       - ./data/validation-requests:/agenelf/data/validation-requests:rw
       - ./data/validation-results:/agenelf/data/validation-results:ro
+      - ./data/repair-requests:/agenelf/data/repair-requests:rw
       - ./data/repair-results:/agenelf/data/repair-results:ro
+      - ./data/authorized-upgrades:/agenelf/data/authorized-upgrades:ro
+      - ./data/self-upgrade-results:/agenelf/data/self-upgrade-results:ro
+      - ./data/promote-requests:/agenelf/data/promote-requests:ro
+      - ./data/promotion-history:/agenelf/data/promotion-history:ro
+      - ./data/autonomy-cycles:/agenelf/data/autonomy-cycles:rw
+      - ./data/autonomy-events:/agenelf/data/autonomy-events:rw
       - ./data/runner-health:/agenelf/data/runner-health:ro
       - ./data/node-runner-requests:/agenelf/data/node-runner-requests:rw
       - ./data/node-runner-results:/agenelf/data/node-runner-results:ro
@@ -180,7 +188,6 @@ services:
     volumes:
       - ./node:/agenelf/node:ro
       - ./docs:/agenelf/docs:ro
-      - ./app:/agenelf/app-fork:ro
       - ./policy:/agenelf/policy:ro
       - ./local/profile.yaml:/agenelf/local/profile.yaml:ro
       - ./local/preferences.yaml:/agenelf/local/preferences.yaml:ro
@@ -194,6 +201,7 @@ services:
       - ./data/node-tasks:/agenelf/data/node-tasks:rw
       - ./data/ops-requests:/agenelf/data/ops-requests:rw
       - ./data/ops-results:/agenelf/data/ops-results:ro
+      - ./data/auth-requests:/agenelf/data/auth-requests:ro
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/approval-commands:/agenelf/data/approval-commands:ro
       - ./data/validation-requests:/agenelf/data/validation-requests:rw
