@@ -52,7 +52,9 @@ jobs:
           }
           NODE
       - name: Build and smoke Node API without legacy upstream
+        shell: bash
         run: |
+          set -euo pipefail
           docker build -f Dockerfile.node -t agenelf-node-native-api:ci .
           root=$(mktemp -d)
           mkdir -p "$root/local/self" "$root/local/memory" "$root/data/node-tasks" "$root/data/repair-requests" "$root/data/repair-results" "$root/data/repair-locks" "$root/data/runner-health" "$root/web"
@@ -70,7 +72,16 @@ jobs:
                 - [node, --test]
               timeout_seconds: 120
           YAML
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then docker logs agenelf-node-native-api-ci || true; fi
+            docker rm -f agenelf-node-native-api-ci >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
           docker run -d --rm --name agenelf-node-native-api-ci \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
             -e AGENELF_API_TOKEN=native-ci-token \
             -e AGENELF_ROOT=/agenelf \
             -p 127.0.0.1:18081:8000 \
@@ -78,8 +89,11 @@ jobs:
             -v "$root/data:/agenelf/data:rw" \
             -v "$root/web:/agenelf/web:ro" \
             agenelf-node-native-api:ci
-          trap 'docker rm -f agenelf-node-native-api-ci >/dev/null 2>&1 || true' EXIT
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18081/health && break; sleep 1; done
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18081/health >/tmp/native-health.json; then break; fi
+            sleep 1
+          done
+          grep -q 'node-typescript' /tmp/native-health.json
           curl -fsS -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/self/development | grep -q 'continuity_id'
           curl -fsS -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/tasks | grep -q '"tasks"'
           test "$(curl -sS -o /tmp/unknown.json -w '%{http_code}' -H 'X-Agenelf-Token: native-ci-token' http://127.0.0.1:18081/not-migrated)" = 404
