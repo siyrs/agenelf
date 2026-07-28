@@ -7,12 +7,14 @@ import { pathToFileURL } from "node:url";
 import { AgenelfAgent } from "../../../packages/core/src/agent.ts";
 import { EventCursorExpired } from "../../../packages/core/src/agent-events.ts";
 import type { JsonObject } from "../../../packages/core/src/types.ts";
+import { NativeCompatibilityRoutes } from "./native-compat-routes.ts";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"
 };
+const LEGACY_COMPATIBILITY_PATHS = [/^\/self\/optimization(?:\/|$)/, /^\/autonomy\/cycles(?:\/|$)/];
 
 function rootDir(): string { return resolve(process.env.AGENELF_ROOT || process.cwd()); }
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -63,8 +65,12 @@ async function readRawBody(request: IncomingMessage): Promise<Buffer> {
 }
 
 async function proxyLegacy(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
+  if (!LEGACY_COMPATIBILITY_PATHS.some((pattern) => pattern.test(url.pathname))) return false;
   const base = String(process.env.AGENELF_LEGACY_API_URL || "").trim();
-  if (!base) return false;
+  if (!base) {
+    sendJson(response, 501, { error: "该端点尚在 Node 迁移中，legacy compatibility API 未启用", migration_pending: true });
+    return true;
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60_000);
   try {
@@ -80,7 +86,7 @@ async function proxyLegacy(request: IncomingMessage, response: ServerResponse, u
     });
     const payload = Buffer.from(await upstream.arrayBuffer());
     if (payload.length > 8 * 1024 * 1024) throw new Error("legacy response 超过 8 MiB");
-    const outputHeaders: Record<string, string | number> = { "content-length": payload.length };
+    const outputHeaders: Record<string, string | number> = { "content-length": payload.length, "x-agenelf-compatibility": "legacy-allowlist" };
     const upstreamType = upstream.headers.get("content-type");
     if (upstreamType) outputHeaders["content-type"] = upstreamType;
     const cacheControl = upstream.headers.get("cache-control");
@@ -178,6 +184,8 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
   const root = resolve(options.root || rootDir());
   const agent = new AgenelfAgent(root);
   await agent.initialize();
+  const compatibility = new NativeCompatibilityRoutes(root, agent);
+  await compatibility.initialize();
 
   return createServer(async (request, response) => {
     securityHeaders(response);
@@ -191,7 +199,7 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
         return;
       }
       if (request.method === "GET" && url.pathname === "/health") {
-        sendJson(response, 200, { status: "ok", version: "0.10.0", runtime: "node-typescript" }); return;
+        sendJson(response, 200, { status: "ok", version: "0.11.0", runtime: "node-typescript" }); return;
       }
       if (!authorized(request)) {
         const configured = Boolean(process.env.AGENELF_API_TOKEN);
@@ -273,8 +281,10 @@ export async function createAgenelfServer(options: { root?: string } = {}) {
         run.completion.catch(() => undefined);
         await streamEvents(response, run.stream, 0, request, true); return;
       }
+
+      if (await compatibility.handle(request, response, url, sendJson, readJsonBody)) return;
       if (await proxyLegacy(request, response, url)) return;
-      sendJson(response, 404, { error: "Not found" });
+      sendJson(response, 404, { error: "Not found", runtime: "node-typescript" });
     } catch (error) {
       if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
       else response.end();
