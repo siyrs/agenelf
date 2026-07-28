@@ -20,6 +20,21 @@ async function heartbeat(root: string, counts: Record<string, number>, status = 
   });
 }
 
+export async function runOnce(root = process.env.AGENELF_ROOT || process.cwd()): Promise<Record<string, number>> {
+  const resolved = resolve(root);
+  const runner = new ReadOnlyOpsRunner(resolved);
+  await runner.initialize();
+  try {
+    const counts = await runner.processOnce();
+    await heartbeat(resolved, counts);
+    return counts;
+  } catch (error) {
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    await heartbeat(resolved, { failed: 1 }, message.slice(0, 1_000));
+    throw error;
+  }
+}
+
 export async function runLoop(root = process.env.AGENELF_ROOT || process.cwd()): Promise<void> {
   const resolved = resolve(root);
   const runner = new ReadOnlyOpsRunner(resolved);
@@ -38,7 +53,9 @@ export async function runLoop(root = process.env.AGENELF_ROOT || process.cwd()):
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  runLoop().catch((error) => {
+  const once = process.argv.includes("--once");
+  const execution = once ? runOnce().then((counts) => console.log(JSON.stringify(counts))) : runLoop();
+  execution.catch((error) => {
     console.error(error);
     process.exitCode = 1;
   });
