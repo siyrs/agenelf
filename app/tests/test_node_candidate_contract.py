@@ -35,7 +35,6 @@ class NodeAuthorizedUpgradeCandidateContractTest(unittest.TestCase):
                     "data",
                     "logs",
                     "workspace",
-                    "local",
                     "__pycache__",
                     ".pytest_cache",
                 }
@@ -47,6 +46,20 @@ class NodeAuthorizedUpgradeCandidateContractTest(unittest.TestCase):
             candidate = Path(temporary) / "repo"
             shutil.copytree(repo, candidate, ignore=ignored)
             environment = dict(os.environ)
+            for key in list(environment):
+                if key.startswith("AGENELF_") or key in {
+                    "OPENAI_API_KEY",
+                    "OPENAI_BASE_URL",
+                    "HTTP_PROXY",
+                    "HTTPS_PROXY",
+                    "ALL_PROXY",
+                    "NO_PROXY",
+                    "http_proxy",
+                    "https_proxy",
+                    "all_proxy",
+                    "no_proxy",
+                }:
+                    environment.pop(key, None)
             environment["npm_config_ignore_scripts"] = "true"
             environment["npm_config_audit"] = "false"
             environment["npm_config_fund"] = "false"
