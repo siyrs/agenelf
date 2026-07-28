@@ -1,8 +1,8 @@
-# Agenelf operator commands — Node.js/TypeScript is the default Agent/API/CLI.
-.PHONY: help init local mind models workflow validation repair start stop restart build chat legacy-chat python-ops node-test python-test test backup promote watch logs status ops approvals evolution autonomy approve deny clean
+# Agenelf operator commands — Node.js/TypeScript is the default control plane.
+.PHONY: help init local mind models workflow validation repair self-upgrade start stop restart build chat legacy-chat python-ops python-self-upgrade node-test python-test test backup promote watch logs status ops approvals evolution autonomy approve deny clean
 
 help: ## Show commands
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 init: ## Create/migrate private config, prompts, Node state, controlled queues and workspaces
 	@test -f .env || cp .env.example .env
@@ -16,11 +16,11 @@ init: ## Create/migrate private config, prompts, Node state, controlled queues a
 		data/approval-commands data/approval-results data/approval-locks \
 		data/validation-requests data/validation-results data/validation-locks \
 		data/repair-requests data/repair-results data/repair-locks data/repair-events \
-		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks \
+		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks data/self-upgrade-events \
 		data/self-upgrade-backups data/authorized-upgrades data/runner-health data/app-backups \
 		data/tasks data/node-tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles \
 		data/node-runner-requests data/node-runner-results data/node-runner-locks
-	@echo "初始化完成。默认 Agent/API/CLI、Approval、Validation、read/change Ops 与 Repair 均为 Node；Python 仅保留 legacy API、Self-upgrade 和显式回滚。"
+	@echo "初始化完成。默认 Agent/API/CLI、Approval、Validation、read/change Ops、Repair 与 Self-upgrade 均为 Node；Python 仅保留 internal legacy API、诊断 profile 和显式 rollback。"
 
 local: ## Validate local personalization without printing secrets
 	@python3 scripts/init_local.py --status
@@ -36,7 +36,7 @@ workflow: ## Show governed Python and Node workflow task files
 	@echo "== Node workflow tasks =="; ls -lt data/node-tasks 2>/dev/null | head -20 || true
 	@echo "== channel requests =="; ls -lt data/channel-requests 2>/dev/null | head -20 || true
 
-start: ## Start the default Node control plane plus internal legacy API and Self-upgrade
+start: ## Start the default Node control plane plus the internal legacy API compatibility service
 	@test -f .env || (echo "缺少 .env，请先 make init"; exit 1)
 	@test -f .ops-runner.env || (echo "缺少 .ops-runner.env，请先 make init"; exit 1)
 	@test -f local/profile.yaml || (echo "缺少 local/profile.yaml，请先 make init"; exit 1)
@@ -54,7 +54,7 @@ start: ## Start the default Node control plane plus internal legacy API and Self
 		data/ops-requests data/ops-results data/ops-locks data/ops-events \
 		data/validation-requests data/validation-results data/validation-locks \
 		data/repair-requests data/repair-results data/repair-locks data/repair-events \
-		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks \
+		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks data/self-upgrade-events data/self-upgrade-backups \
 		data/promote-requests data/promotion-history data/runner-health data/node-tasks \
 		data/node-runner-requests data/node-runner-results data/node-runner-locks
 	bash scripts/sync_fork.sh
@@ -66,7 +66,7 @@ stop: ## Stop all services
 restart: ## Restart all services
 	docker compose restart
 
-build: ## Rebuild Node, legacy Python and runner images
+build: ## Rebuild Node, compatibility Python and isolated runner images
 	docker compose build
 
 chat: ## Open the default Node CLI chat with slash autocomplete
@@ -78,11 +78,14 @@ legacy-chat: ## Open the legacy Python CLI for migration diagnostics
 python-ops: ## Start the profile-gated Python Ops fallback for diagnostics only
 	docker compose --profile python-ops up -d --build ops-runner
 
+python-self-upgrade: ## Start the profile-gated Python Self-upgrade fallback for diagnostics only
+	docker compose --profile python-self-upgrade up -d --build self-upgrade-runner
+
 node-test: ## Run native TypeScript checks and Node tests
 	npm ci --ignore-scripts
 	npm run test:node
 
-python-test: ## Run the retained Python governance and regression suite
+python-test: ## Run the retained Python governance and rollback regression suite
 	python3 scripts/validate_governance.py
 	python3 -m compileall -q app scripts
 	cd app && python -m unittest discover -s tests -v
@@ -144,8 +147,15 @@ repair: ## Show Node repair aliases, queues, artifacts and replay events
 	@echo "== repair events =="; ls -lt data/repair-events 2>/dev/null | head -20 || true
 	@echo "== repair artifacts =="; ls -lt repair-space 2>/dev/null | head -20 || true
 
+self-upgrade: ## Show Node Self-upgrade sessions, queues, results, backups and replay events
+	@echo "== sessions =="; ls -lt data/authorized-upgrades 2>/dev/null | head -20 || true
+	@echo "== requests =="; ls -lt data/self-upgrade-requests 2>/dev/null | head -20 || true
+	@echo "== results =="; ls -lt data/self-upgrade-results 2>/dev/null | head -20 || true
+	@echo "== backups =="; ls -lt data/self-upgrade-backups 2>/dev/null | head -20 || true
+	@echo "== replay events =="; ls -lt data/self-upgrade-events 2>/dev/null | head -20 || true
+
 logs: ## Follow Node Agent and isolated runners
-	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner read-ops-runner change-ops-runner validation-runner node-repair-runner self-upgrade-runner
+	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner read-ops-runner change-ops-runner validation-runner node-repair-runner node-self-upgrade-runner
 
 status: ## Show containers, local state and all controlled queues
 	-docker compose ps
@@ -157,6 +167,7 @@ status: ## Show containers, local state and all controlled queues
 	@$(MAKE) --no-print-directory approvals
 	@$(MAKE) --no-print-directory validation
 	@$(MAKE) --no-print-directory repair
+	@$(MAKE) --no-print-directory self-upgrade
 	@$(MAKE) --no-print-directory autonomy
 
 clean: ## Clear transient queues; preserve owner data and trusted result evidence
@@ -165,5 +176,6 @@ clean: ## Clear transient queues; preserve owner data and trusted result evidenc
 		data/approval-commands/* data/approval-locks/* \
 		data/validation-requests/* data/validation-locks/* \
 		data/repair-requests/* data/repair-locks/* \
+		data/self-upgrade-requests/* data/self-upgrade-locks/* \
 		data/node-runner-requests/* data/node-runner-locks/*
-	@echo "已清空；local/、Node/Python 结果证据、Ops/Repair 事件、repair-space、自主循环、裁决与晋升证据均保留。"
+	@echo "已清空；local/、Node/Python 结果证据、Ops/Repair/Self-upgrade 事件、Self-upgrade 备份、repair-space、自主循环、裁决与晋升证据均保留。"
