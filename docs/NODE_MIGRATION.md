@@ -1,18 +1,19 @@
 # Agenelf Node.js / TypeScript 迁移基线
 
-> 状态：Node Agent/API/CLI、Approval、Validation、read/change Ops 与 Repair 已迁移；Node 生产代码已纳入主人授权自升级治理；剩余生产 Python 面为 Self-upgrade Runner 与 internal legacy API  
+> 状态：Node Agent/API/CLI、Approval、Validation、read/change Ops、Repair 与 Self-upgrade Runner 已迁移；唯一仍在线的 Python 生产面为 internal legacy API 兼容服务  
 > 目标运行时：Node.js 24 LTS 原生 TypeScript type stripping  
-> 迁移原则：统一语言栈，但不合并信任域。
+> 迁移原则：统一语言栈，但不合并信任域；先证明等价和可回滚，再删除兼容实现。
 
 ## 1. 已迁移能力
 
-- Node.js 24 原生 TypeScript 项目骨架，运行时零第三方 npm 依赖；
+- Node.js 24 原生 TypeScript 项目骨架，核心运行时零第三方 npm 依赖；
 - Agent Core：会话串行、工具循环、Mock/真实 OpenAI 兼容模型网关；
 - Event Core：run/turn/reasoning/message/tool/approval/runner 生命周期事件；
 - Session Ledger：append-only、branch、hash chain、跨进程目录锁；
 - Policy Engine：risk 与 execution mode 分离、缺失 contract fail-closed；
 - Skill Registry：内置 Skill、统一合同、统一审计；
 - Pi 风格 ResourceLoader：progressive disclosure、trust/source/hash、默认不执行第三方代码；
+- Pi 风格 Prompt Templates：内置 Markdown 模板与主人私有覆盖；
 - Owner Memory、Node Task Store；
 - Node HTTP API、CLI、真实 lifecycle SSE 与断点游标；
 - Node Validation Queue/Runner：严格 YAML、alias-only、HTTP/TCP、suite、可信结果与 heartbeat；
@@ -20,16 +21,17 @@
 - Node Read-only Ops Runner：固定 SSH 命令目录、语义风险分流、可信结果与事件回放；
 - Node Change/Privileged Ops Runner：锁前/锁后精确审批、固定模板、Compose 双重验证、备份与回滚；
 - Node Repair Runner：隔离 Git 副本、指纹绑定补丁、主人配置测试 argv、可信 artifact/result/event；
+- Node Self-upgrade Runner：双阶段主人授权、候选/目标哈希、完整双运行时测试、一次性核销、原子应用与逆序回滚；
 - Node owner-authorized upgrade scopes、TypeScript 语法、测试哈希保护、永久红线和双运行时控制面；
-- 完整 Node、Python、Compose、安全和供应链门禁。
+- 完整 Node、Python rollback、Compose、安全和供应链门禁。
 
-## 2. 为什么不依赖 Fastify/Express/tsx
+## 2. 为什么迁移阶段不依赖 Fastify/Express/tsx
 
 Node 24.12 起原生 TypeScript type stripping 已稳定。当前核心只使用可擦除 TypeScript
-语法，因此可以直接运行 `.ts`，避免在迁移第一阶段引入 npm 安装脚本、框架插件和
-额外供应链。后续如需要完整编译、装饰器或前端构建，可在单独依赖审计 PR 中引入。
+语法，因此可以直接运行 `.ts`，避免在迁移阶段引入 npm 安装脚本、框架插件和额外供应链。
+未来若引入框架、完整编译或前端构建，必须通过单独依赖审计、锁文件和供应链 PR。
 
-## 3. 目录
+## 3. Node 目录
 
 ```text
 node/
@@ -42,10 +44,12 @@ node/
 │   ├── validation-runner/    # 独立软件验证 Runner
 │   ├── read-ops-runner/      # 独立只读 SSH Runner
 │   ├── change-ops-runner/    # 独立 change/privileged SSH Runner
-│   └── repair-runner/        # 独立无网络代码修复 Runner
+│   ├── repair-runner/        # 独立无网络代码修复 Runner
+│   └── self-upgrade-runner/  # 独立主人授权升级 Runner
 ├── packages/
-│   ├── core/                 # Agent/Event/Ledger/Policy/Model/Validation/Ops/Repair
+│   ├── core/                 # Agent/Event/Ledger/Policy/Model/Validation/Ops/Repair/Upgrade
 │   └── skills/               # 内置技能
+├── prompts/                  # Pi 风格内置 Prompt Templates
 ├── resources/                # progressive disclosure manifests
 ├── scripts/                  # 无依赖检查
 └── tests/                    # Node built-in test runner
@@ -69,7 +73,11 @@ node/
 除 `/health`、根跳转和 `/ui/*` 外，全部 API 默认要求 `X-Agenelf-Token`；未配置 token
 时 fail-closed。SSE 支持 `Last-Event-ID`/`after_seq`，客户端断开不自动终止已授权 Runner。
 
-## 5. 与 Python 控制面的兼容
+当前仍由 internal `legacy-agent` 代理的路由必须逐项迁移到 Node，不允许通过扩大代理范围掩盖迁移缺口。
+
+## 5. 跨运行时兼容与回滚
+
+### Operations
 
 OperationQueue 继续复用 `op-*`、canonical payload、SHA-256 fingerprint、TTL、请求、
 裁决、结果和共享锁目录：
@@ -82,8 +90,12 @@ OperationQueue 继续复用 `op-*`、canonical payload、SHA-256 fingerprint、T
 - Python Ops 仅在 `python-ops` profile 中用于诊断；
 - 显式 Python rollback 不加载 Node overlay，原 Runner 处理全部操作。
 
+### Approval 与 Validation
+
 Node Validation 继续复用 `val-*` 和 `data/validation-*` 协议。Node Approval 继续复用
 `auth-* / op-* / apc-*`、Python canonical HMAC、裁决与结果协议。
+
+### Repair
 
 Node Repair 继续复用：
 
@@ -95,9 +107,21 @@ Node Repair 继续复用：
 - Python-compatible result/evidence 字段；
 - 显式 Python Repair rollback。
 
-主人授权升级仍复用 Python `authorized_upgrade` 工作流和审批/证据协议。Node 扩展只增加
-Node scopes、语法、测试保护、红线和双运行时验证，不创建第二套授权事实源。详细说明见
-[`NODE_SELF_UPGRADE_GOVERNANCE.md`](NODE_SELF_UPGRADE_GOVERNANCE.md)。
+### Self-upgrade
+
+Node Self-upgrade 继续复用既有授权事实源，不创建第二套审批：
+
+- `upgrade-*` session、`self-upgrade-*` request 与双阶段主人授权；
+- exact candidate binding、candidate tree digest、changed-file manifest；
+- baseline manifest、test report、目标 before SHA 与 candidate after SHA；
+- diff-aware 永久红线和 root-of-trust token；
+- 锁前、锁后、测试后授权复核与一次性 `auth-consumed`；
+- networkless 双运行时镜像中执行完整 Python + Node 候选测试；
+- 原子备份、写入后哈希和失败逆序回滚；
+- `self-upgrade-events` 回放、result 和 backup 可信证据；
+- Python Self-upgrade 仅在 `python-self-upgrade` profile 与完整 rollback 中保留。
+
+Python 在 control-plane 镜像中暂时作为**候选测试工具**存在，不再作为默认 Self-upgrade 执行进程。
 
 ## 6. Runner 与治理迁移进度
 
@@ -159,23 +183,38 @@ Node scopes、语法、测试保护、红线和双运行时验证，不创建第
 - `compose_down` 不删除 volumes 或 images；
 - 真实本机 sshd + Docker 容器重启 E2E、Compose 回滚模拟和完整 Python rollback 已验收。
 
-### 后续批次
+### Batch N3.7：Self-upgrade Runner（已完成）
 
-1. Self-upgrade Runner 本体；
-2. 移除 internal legacy API；
-3. Python runtime 归档。
+- Node 为默认可信应用执行进程，Python 实现仅 profile-gated；
+- 请求、会话、双签、候选摘要、证据文件和目标基线全部重新校验；
+- 无效时间、候选/目标 symlink 逃逸和测试期间候选变化 fail-closed；
+- 完整候选测试后再次核对批准文件，再核销一次性授权；
+- 原子 backup/apply/post-write hash 与逆序 rollback；
+- append-only `self-upgrade-events`、heartbeat、result 与 backup 证据；
+- 真实 networkless owner-authorized candidate E2E 与完整 Python rollback 已验收。
 
-Self-upgrade 与 legacy API 继续分成独立 PR，不允许一次性删除 Python 后失去可信回滚。
+## 7. 后续批次
 
-## 7. Python 退役条件
+1. 逐路由移除 internal `legacy-agent` API 代理；
+2. 将主人审批 CLI、初始化和剩余宿主辅助脚本迁移或明确归类为 rollback tooling；
+3. 生产镜像移除 Python；
+4. 将保留的 Python rollback 归档到 `legacy/python/`，并固定 rollback tag；
+5. 删除默认拓扑中的 `legacy-agent` 与 Python 依赖。
 
-- 所有生产 Runner 已有 Node 等价实现和独立 E2E；
-- 关键队列 shadow verification 完成；
-- 删除 Python 入口前保留回滚 tag 和 `docker-compose.python.yml`；
+legacy API 移除必须按 API 合同和数据兼容分批进行，不允许一次删除后以 mock 或缺失页面代替功能。
+
+## 8. Python 退役门槛
+
+- 所有生产 Runner 已有 Node 等价实现和独立 E2E（已满足）；
+- internal legacy API 的每条路由均有 Node 等价实现、合同测试和真实 smoke；
+- Node API 不再依赖 `AGENELF_LEGACY_API_URL`；
+- Web/CLI 不再调用 legacy-only endpoint；
+- 默认 Compose 不再启动 `legacy-agent`；
 - 最终生产镜像不再安装 Python；
-- `app/` 归档到 `legacy/python/` 或删除。
+- 保留回滚 tag 与 `docker-compose.python.yml`；
+- `app/` 与 Python scripts 归档到 `legacy/python/` 或删除，私有数据不迁移、不丢失。
 
-## 8. 验收
+## 9. 验收
 
 ```bash
 npm ci --ignore-scripts
@@ -186,6 +225,7 @@ node node/apps/validation-runner/src/main.ts
 node node/apps/read-ops-runner/src/main.ts --once
 node node/apps/change-ops-runner/src/main.ts --once
 node node/apps/repair-runner/src/main.ts --once
+node node/apps/self-upgrade-runner/src/main.ts --once
 ```
 
-要求：Node test、Python regression、专项 Runner/Upgrade E2E、Security、CodeQL、Compose smoke 全绿后才能切换默认运行时或扩大自升级范围。
+要求：Node test、Python rollback regression、专项 Runner/Upgrade E2E、Security、CodeQL、Compose smoke 全绿后才能切换默认运行时或删除兼容实现。
