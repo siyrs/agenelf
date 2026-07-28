@@ -1,4 +1,4 @@
-# Default Node personalization, owner-approval, read-only operations and repair overlay.
+# Default Node personalization, owner-approval, operations and repair overlay.
 # Explicit `docker compose -f docker-compose.python.yml ...` rollback does not load it.
 services:
   agenelf:
@@ -46,9 +46,10 @@ services:
     volumes:
       - ./data/ops-results:/agenelf/data/ops-results:ro
 
+  # The unified Python Ops implementation is preserved for explicit diagnostics. The
+  # complete docker-compose.python.yml rollback remains profile-free and handles all Ops.
   ops-runner:
-    environment:
-      AGENELF_OPS_RUNNER_MODE: change-only
+    profiles: [python-ops]
 
   read-ops-runner:
     image: agenelf-read-ops:local
@@ -75,6 +76,38 @@ services:
       - ./logs:/agenelf/logs:rw
     read_only: true
     tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  change-ops-runner:
+    image: agenelf-change-ops:local
+    build:
+      context: .
+      dockerfile: Dockerfile.ops-change
+    command: [node, node/apps/change-ops-runner/src/main.ts]
+    env_file: .ops-runner.env
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
+      AGENELF_SECRETS_DIR: /agenelf/local/secrets
+      AGENELF_CHANGE_OPS_INTERVAL_MS: "500"
+    volumes:
+      - ./node:/agenelf/node:ro
+      - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+      - ./local/secrets:/agenelf/local/secrets:ro
+      - ./data/ops-requests:/agenelf/data/ops-requests:ro
+      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+      - ./data/ops-results:/agenelf/data/ops-results:rw
+      - ./data/ops-locks:/agenelf/data/ops-locks:rw
+      - ./data/ops-events:/agenelf/data/ops-events:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
+      - ./logs:/agenelf/logs:rw
+    read_only: true
+    tmpfs: [/tmp]
+    pids_limit: 128
+    mem_limit: 512m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
@@ -124,12 +157,16 @@ services:
       - ./docker-compose.override.yml:/agenelf/upgrade-target/docker-compose.override.yml:rw
       - ./docker-compose.node-approval.yml:/agenelf/upgrade-target/docker-compose.node-approval.yml:rw
       - ./Dockerfile.ops-read:/agenelf/upgrade-target/Dockerfile.ops-read:rw
+      - ./Dockerfile.ops-change:/agenelf/upgrade-target/Dockerfile.ops-change:rw
       - ./Dockerfile.repair:/agenelf/upgrade-target/Dockerfile.repair:rw
       - ./node/apps/approval-key-init:/agenelf/upgrade-target/node/apps/approval-key-init:rw
       - ./node/apps/approval-runner:/agenelf/upgrade-target/node/apps/approval-runner:rw
       - ./node/apps/read-ops-runner:/agenelf/upgrade-target/node/apps/read-ops-runner:rw
+      - ./node/apps/change-ops-runner:/agenelf/upgrade-target/node/apps/change-ops-runner:rw
       - ./node/apps/repair-runner:/agenelf/upgrade-target/node/apps/repair-runner:rw
       - ./node/packages/core/src/owner-approval.ts:/agenelf/upgrade-target/node/packages/core/src/owner-approval.ts:rw
+      - ./node/packages/core/src/open-ssh.ts:/agenelf/upgrade-target/node/packages/core/src/open-ssh.ts:rw
       - ./node/packages/core/src/read-ops.ts:/agenelf/upgrade-target/node/packages/core/src/read-ops.ts:rw
+      - ./node/packages/core/src/change-ops.ts:/agenelf/upgrade-target/node/packages/core/src/change-ops.ts:rw
       - ./node/packages/core/src/server-catalog.ts:/agenelf/upgrade-target/node/packages/core/src/server-catalog.ts:rw
       - ./node/packages/core/src/repair.ts:/agenelf/upgrade-target/node/packages/core/src/repair.ts:rw
