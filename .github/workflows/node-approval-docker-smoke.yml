@@ -1,0 +1,88 @@
+name: Node Approval Docker Smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Prepare private-path fixtures
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=approval-smoke-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p local/prompts data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Start Node approval key init and networkless Broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.node-approval.yml ps || true
+              docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.node-approval.yml logs --no-color --tail=200 approval-key-init approval-runner || true
+            fi
+            docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.node-approval.yml down -v >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.node-approval.yml up -d --build approval-runner
+          for i in $(seq 1 30); do
+            test -s data/runner-health/approval-runner.json && break
+            sleep 1
+          done
+          test -s data/runner-health/approval-runner.json
+          grep -q 'node-typescript' data/runner-health/approval-runner.json
+      - name: Submit exact owner-signed command and verify decision evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { writeFile } from 'node:fs/promises';
+          import { OwnerApprovalStore, bindingFingerprint, bindingFromRequest } from './node/packages/core/src/owner-approval.ts';
+          const store = new OwnerApprovalStore(process.cwd());
+          await store.initialize();
+          const request = {
+            schema_version: 1,
+            id: 'op-9999999999999999',
+            capability: 'server.operations',
+            operation: 'restart_service',
+            target: 'demo-api',
+            parameters: { service: 'demo-api' },
+            risk: 'change',
+            summary: 'Docker smoke approval',
+            created_at: new Date().toISOString(),
+            fingerprint: ''
+          };
+          request.fingerprint = bindingFingerprint(bindingFromRequest(request));
+          await writeFile(`data/ops-requests/${request.id}.json`, `${JSON.stringify(request, null, 2)}\n`);
+          NODE
+          docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.node-approval.yml --profile cli run --rm --no-deps cli \
+            node --input-type=module -e "import {OwnerApprovalStore,loadApprovalKey} from './node/packages/core/src/owner-approval.ts'; const s=new OwnerApprovalStore('/agenelf'); await s.initialize(); const c=await s.submitCommand('op-9999999999999999',await loadApprovalKey(),{action:'approve',reason:'docker smoke',decidedBy:'owner-ci'}); console.log(c.id);"
+          for i in $(seq 1 40); do
+            test -s data/auth-decisions/op-9999999999999999.json && break
+            sleep 0.25
+          done
+          test -s data/auth-decisions/op-9999999999999999.json
+          grep -q '"decision": "approve"' data/auth-decisions/op-9999999999999999.json
+          test "$(find data/approval-results -maxdepth 1 -name 'apc-*.json' | wc -l)" -eq 1
+          grep -q '"status": "succeeded"' data/approval-results/apc-*.json
