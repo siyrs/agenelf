@@ -1,10 +1,11 @@
-# Default Node personalization, owner-approval and read-only operations overlay.
+# Default Node personalization, owner-approval, read-only operations and repair overlay.
 # Explicit `docker compose -f docker-compose.python.yml ...` rollback does not load it.
 services:
   agenelf:
     volumes:
       - ./local/prompts:/agenelf/local/prompts:ro
       - ./data/ops-events:/agenelf/data/ops-events:ro
+      - ./data/repair-events:/agenelf/data/repair-events:ro
 
   cli:
     group_add: ["0"]
@@ -18,6 +19,7 @@ services:
       - ./data/approval-results:/agenelf/data/approval-results:ro
       - ./data/approval-locks:/agenelf/data/approval-locks:rw
       - ./data/ops-events:/agenelf/data/ops-events:ro
+      - ./data/repair-events:/agenelf/data/repair-events:ro
 
   approval-key-init:
     image: agenelf-node:local
@@ -77,6 +79,44 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
+  # Keep the original Python service available only through an explicit profile. The
+  # full docker-compose.python.yml rollback remains unchanged and profile-free.
+  repair-runner:
+    profiles: [python-repair]
+
+  node-repair-runner:
+    image: agenelf-repair:local
+    build:
+      context: .
+      dockerfile: Dockerfile.repair
+    command: [node, node/apps/repair-runner/src/main.ts]
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_REPOSITORIES_FILE: /agenelf/local/repositories.yaml
+      AGENELF_CODE_WORKSPACES: /agenelf/code-workspaces
+      AGENELF_REPAIR_SPACE: /agenelf/repair-space
+      AGENELF_REPAIR_INTERVAL_MS: "500"
+    volumes:
+      - ./node:/agenelf/node:ro
+      - ./local/repositories.yaml:/agenelf/local/repositories.yaml:ro
+      - ./code-workspaces:/agenelf/code-workspaces:ro
+      - ./repair-space:/agenelf/repair-space:rw
+      - ./data/repair-requests:/agenelf/data/repair-requests:ro
+      - ./data/repair-results:/agenelf/data/repair-results:rw
+      - ./data/repair-locks:/agenelf/data/repair-locks:rw
+      - ./data/repair-events:/agenelf/data/repair-events:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
+      - ./logs:/agenelf/logs:rw
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    pids_limit: 128
+    mem_limit: 1g
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
   self-upgrade-runner:
     volumes:
       - ./compose.yaml:/agenelf/upgrade-target/compose.yaml:rw
@@ -84,9 +124,12 @@ services:
       - ./docker-compose.override.yml:/agenelf/upgrade-target/docker-compose.override.yml:rw
       - ./docker-compose.node-approval.yml:/agenelf/upgrade-target/docker-compose.node-approval.yml:rw
       - ./Dockerfile.ops-read:/agenelf/upgrade-target/Dockerfile.ops-read:rw
+      - ./Dockerfile.repair:/agenelf/upgrade-target/Dockerfile.repair:rw
       - ./node/apps/approval-key-init:/agenelf/upgrade-target/node/apps/approval-key-init:rw
       - ./node/apps/approval-runner:/agenelf/upgrade-target/node/apps/approval-runner:rw
       - ./node/apps/read-ops-runner:/agenelf/upgrade-target/node/apps/read-ops-runner:rw
+      - ./node/apps/repair-runner:/agenelf/upgrade-target/node/apps/repair-runner:rw
       - ./node/packages/core/src/owner-approval.ts:/agenelf/upgrade-target/node/packages/core/src/owner-approval.ts:rw
       - ./node/packages/core/src/read-ops.ts:/agenelf/upgrade-target/node/packages/core/src/read-ops.ts:rw
       - ./node/packages/core/src/server-catalog.ts:/agenelf/upgrade-target/node/packages/core/src/server-catalog.ts:rw
+      - ./node/packages/core/src/repair.ts:/agenelf/upgrade-target/node/packages/core/src/repair.ts:rw
