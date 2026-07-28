@@ -15,6 +15,7 @@ services:
       context: .
       dockerfile: Dockerfile.node
     command: [node, node/apps/approval-runner/src/main.ts]
+    group_add: ["0"]
     environment:
       AGENELF_ROOT: /agenelf
       AGENELF_APPROVAL_KEY_FILE: /agenelf/approval/key
