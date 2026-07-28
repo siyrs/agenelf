@@ -1,0 +1,58 @@
+name: Pi Prompt Templates CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  prompt-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Run focused prompt tests
+        run: node --test --test-reporter=spec node/tests/prompts.test.ts node/tests/prompt-api.test.ts
+      - name: Prepare private-path fixtures
+        run: |
+          cp .env.example .env
+          {
+            printf '\nAGENELF_API_TOKEN=prompt-ci-token\n'
+            printf 'AGENELF_UID=%s\n' "$(id -u)"
+            printf 'AGENELF_GID=%s\n' "$(id -g)"
+          } >> .env
+          cp .ops-runner.env.example .ops-runner.env
+          python scripts/init_local.py --no-migrate >/tmp/agenelf-init.json
+          cp local/node-runner.example.json local/node-runner.json
+          mkdir -p local/prompts data/node-tasks data/node-runner-requests data/node-runner-results data/node-runner-locks
+      - name: Validate private prompt mounts
+        run: |
+          docker compose --profile cli config --format json > /tmp/prompt-compose.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const services = JSON.parse(fs.readFileSync('/tmp/prompt-compose.json', 'utf8')).services || {};
+          const volumes = (service) => Array.isArray(service?.volumes) ? service.volumes : [];
+          const hasTarget = (service, target, readOnly) => volumes(service).some((item) => {
+            if (typeof item === 'string') {
+              const parts = item.split(':');
+              return parts[1] === target && (readOnly === undefined || (parts[2] === 'ro') === readOnly);
+            }
+            return item.target === target && (readOnly === undefined || Boolean(item.read_only) === readOnly);
+          });
+          for (const name of ['agenelf', 'cli']) {
+            if (!hasTarget(services[name], '/agenelf/local/prompts', true)) throw new Error(`${name} must mount owner prompts read-only`);
+            const sources = volumes(services[name]).map((item) => typeof item === 'string' ? item : String(item.source || '')).join('\n');
+            if (sources.includes('local/secrets')) throw new Error(`${name} must not receive local secrets`);
+          }
+          if (!hasTarget(services['self-upgrade-runner'], '/agenelf/upgrade-target/docker-compose.override.yml', false)) {
+            throw new Error('self-upgrade runner must retain governed prompt overlay target');
+          }
+          NODE
