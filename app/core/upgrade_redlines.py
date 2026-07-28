@@ -67,8 +67,8 @@ _REDLINE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             r"(?:from\s+['\"]node:child_process['\"]|"
             r"require\(['\"](?:node:)?child_process['\"]\))"
-            r"[\s\S]{0,1600}(?:\bexecSync?\s*\(|"
-            r"\bspawnSync?\s*\([^\n]{0,360}\bshell\s*:\s*true)",
+            r"[\s\S]{0,1600}(?:\bexec(?:Sync)?\s*\(|"
+            r"\bspawn(?:Sync)?\s*\([^\n]{0,360}\bshell\s*:\s*true)",
             re.I,
         ),
     ),
