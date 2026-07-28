@@ -56,16 +56,19 @@ services:
       - ./scripts:/agenelf/scripts:ro
       - ./policy:/agenelf/policy:ro
       - ./.github:/agenelf/repo-source/.github:ro
+      - ./contracts:/agenelf/repo-source/contracts:ro
       - ./docs:/agenelf/repo-source/docs:ro
       - ./node:/agenelf/repo-source/node:ro
       - ./Dockerfile:/agenelf/repo-source/Dockerfile:ro
       - ./Dockerfile.node:/agenelf/repo-source/Dockerfile.node:ro
+      - ./Dockerfile.control-plane:/agenelf/repo-source/Dockerfile.control-plane:ro
       - ./Makefile:/agenelf/repo-source/Makefile:ro
       - ./README.md:/agenelf/repo-source/README.md:ro
       - ./docker-compose.yml:/agenelf/repo-source/docker-compose.yml:ro
       - ./docker-compose.python.yml:/agenelf/repo-source/docker-compose.python.yml:ro
       - ./package.json:/agenelf/repo-source/package.json:ro
       - ./package-lock.json:/agenelf/repo-source/package-lock.json:ro
+      - ./.node-version:/agenelf/repo-source/.node-version:ro
       - ./.env.example:/agenelf/repo-source/.env.example:ro
       - ./.ops-runner.env.example:/agenelf/repo-source/.ops-runner.env.example:ro
       - ./.gitignore:/agenelf/repo-source/.gitignore:ro
@@ -321,8 +324,11 @@ services:
     mem_limit: 1g
 
   self-upgrade-runner:
-    <<: *python-runtime
+    build:
+      context: .
+      dockerfile: Dockerfile.control-plane
     command: [python, /agenelf/scripts/runner_supervisor.py, --name, self-upgrade-runner, --heartbeat-interval, "1", --, python, /agenelf/scripts/self_upgrade_runner_entry.py, --interval, "1"]
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
       <<: *python-env
       AGENELF_UPGRADE_TARGET: /agenelf/upgrade-target
@@ -344,19 +350,32 @@ services:
       - ./app:/agenelf/upgrade-target/app:rw
       - ./scripts:/agenelf/upgrade-target/scripts:rw
       - ./policy:/agenelf/upgrade-target/policy:rw
+      - ./node:/agenelf/upgrade-target/node:rw
+      - ./contracts:/agenelf/upgrade-target/contracts:rw
       - ./.github:/agenelf/upgrade-target/.github:rw
       - ./docs:/agenelf/upgrade-target/docs:rw
       - ./README.md:/agenelf/upgrade-target/README.md:rw
       - ./Makefile:/agenelf/upgrade-target/Makefile:rw
       - ./Dockerfile:/agenelf/upgrade-target/Dockerfile:rw
+      - ./Dockerfile.node:/agenelf/upgrade-target/Dockerfile.node:rw
+      - ./Dockerfile.control-plane:/agenelf/upgrade-target/Dockerfile.control-plane:rw
       - ./docker-compose.yml:/agenelf/upgrade-target/docker-compose.yml:rw
+      - ./docker-compose.python.yml:/agenelf/upgrade-target/docker-compose.python.yml:rw
+      - ./package.json:/agenelf/upgrade-target/package.json:rw
+      - ./package-lock.json:/agenelf/upgrade-target/package-lock.json:rw
+      - ./.node-version:/agenelf/upgrade-target/.node-version:rw
       - ./.env.example:/agenelf/upgrade-target/.env.example:rw
       - ./.ops-runner.env.example:/agenelf/upgrade-target/.ops-runner.env.example:rw
       - ./.gitignore:/agenelf/upgrade-target/.gitignore:rw
       - ./.gitleaks.toml:/agenelf/upgrade-target/.gitleaks.toml:rw
     network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
     pids_limit: 256
     mem_limit: 2g
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
 
 volumes:
   approval-key:
