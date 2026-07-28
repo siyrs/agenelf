@@ -102,26 +102,7 @@ jobs:
             docker compose exec -T approval-runner node --input-type=module -e \
               "import {stat} from 'node:fs/promises'; const s=await stat('/agenelf/approval/key'); if(s.size<32 || (s.mode & 0o777)!==0o440) process.exit(1);"
 
-            node --input-type=module <<'NODE'
-            import { writeFile } from 'node:fs/promises';
-            import { OwnerApprovalStore, bindingFingerprint, bindingFromRequest } from './node/packages/core/src/owner-approval.ts';
-            const store = new OwnerApprovalStore(process.cwd());
-            await store.initialize();
-            const request = {
-              schema_version: 1,
-              id: 'op-abababababababab',
-              capability: 'server.operations',
-              operation: 'restart_service',
-              target: 'promotion-api',
-              parameters: { service: 'promotion-api' },
-              risk: 'change',
-              summary: 'Default topology promotion smoke',
-              created_at: new Date().toISOString(),
-              fingerprint: ''
-            };
-            request.fingerprint = bindingFingerprint(bindingFromRequest(request));
-            await writeFile(`data/ops-requests/${request.id}.json`, `${JSON.stringify(request, null, 2)}\n`);
-            NODE
+            node --input-type=module -e "import {writeFile} from 'node:fs/promises'; import {OwnerApprovalStore,bindingFingerprint,bindingFromRequest} from './node/packages/core/src/owner-approval.ts'; const store=new OwnerApprovalStore(process.cwd()); await store.initialize(); const request={schema_version:1,id:'op-abababababababab',capability:'server.operations',operation:'restart_service',target:'promotion-api',parameters:{service:'promotion-api'},risk:'change',summary:'Default topology promotion smoke',created_at:new Date().toISOString(),fingerprint:''}; request.fingerprint=bindingFingerprint(bindingFromRequest(request)); await writeFile('data/ops-requests/'+request.id+'.json',JSON.stringify(request,null,2)+'\n');"
 
             docker compose --profile cli run --rm --no-deps --build cli \
               node --input-type=module -e "import {OwnerApprovalStore,loadApprovalKey} from './node/packages/core/src/owner-approval.ts'; const s=new OwnerApprovalStore('/agenelf'); await s.initialize(); const c=await s.submitCommand('op-abababababababab',await loadApprovalKey(),{action:'approve',reason:'default promotion',decidedBy:'owner-ci'}); console.log(c.id);"
