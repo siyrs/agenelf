@@ -9,7 +9,23 @@ import { createAgenelfServer } from "../apps/api/src/main.ts";
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "agenelf-api-test-"));
   await mkdir(join(root, "web"), { recursive: true });
+  await mkdir(join(root, "local"), { recursive: true });
+  await mkdir(join(root, "node", "prompts"), { recursive: true });
   await writeFile(join(root, "web", "index.html"), "<html>node-ui</html>");
+  await writeFile(join(root, "node", "prompts", "plan.md"), "---\nname: plan\ndescription: plan test\n---\nPlan this: {{input}}\n");
+  await writeFile(join(root, "local", "validation.yaml"), [
+    "checks:",
+    "  api-health:",
+    "    type: http",
+    "    description: API health",
+    "    url: http://127.0.0.1:1/health",
+    "    expected_status: [200]",
+    "suites:",
+    "  smoke:",
+    "    checks:",
+    "      - api-health",
+    ""
+  ].join("\n"));
   const server = await createAgenelfServer({ root });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -53,6 +69,33 @@ test("API supports sync chat and real lifecycle SSE", async () => {
     assert.match(text, /event: tool.started/);
     assert.match(text, /event: message.completed/);
     assert.match(text, /event: run.settled/);
+  } finally {
+    server.close();
+    if (previousToken === undefined) delete process.env.AGENELF_API_TOKEN; else process.env.AGENELF_API_TOKEN = previousToken;
+  }
+});
+
+test("API exposes native prompt templates and validation control plane", async () => {
+  const previousToken = process.env.AGENELF_API_TOKEN;
+  process.env.AGENELF_API_TOKEN = "native-token";
+  const { server, base } = await setup();
+  const headers = { "x-agenelf-token": "native-token", "content-type": "application/json" };
+  try {
+    const prompts = await (await fetch(`${base}/prompts`, { headers })).json();
+    assert.equal(prompts.prompts[0].command, "/plan");
+    const expandedResponse = await fetch(`${base}/prompts/plan/expand`, { method: "POST", headers, body: JSON.stringify({ input: "Node migration" }) });
+    assert.equal(expandedResponse.status, 200);
+    assert.match((await expandedResponse.json()).prompt, /Plan this: Node migration/);
+
+    const catalog = await (await fetch(`${base}/validation/catalog`, { headers })).json();
+    assert.equal(catalog.checks[0].name, "api-health");
+    assert.equal(Object.hasOwn(catalog.checks[0], "url"), false);
+    const submitted = await fetch(`${base}/validation/checks/api-health`, { method: "POST", headers, body: JSON.stringify({ summary: "native API" }) });
+    assert.equal(submitted.status, 202);
+    const request = await submitted.json();
+    assert.match(request.id, /^val-[0-9a-f]{16}$/);
+    const state = await (await fetch(`${base}/validation/results/${request.id}`, { headers })).json();
+    assert.equal(state.status, "queued");
   } finally {
     server.close();
     if (previousToken === undefined) delete process.env.AGENELF_API_TOKEN; else process.env.AGENELF_API_TOKEN = previousToken;
