@@ -1,35 +1,58 @@
 # Node Native API Cutover
 
-## 目标
+## 状态
 
-逐路由删除 `node/apps/api` 对 internal Python `legacy-agent` 的依赖，直到默认生产拓扑不再启动 Python API。
+Node API 的逐路由迁移已经完成：
 
-迁移不以修改 URL 或删除页面作为完成标准。每个旧端点必须满足：
+- compatibility allowlist：**空**；
+- `node/apps/api` 不再包含 `proxyLegacy`；
+- Node API 不再读取 `AGENELF_LEGACY_API_URL`；
+- 未知端点统一返回 Node `404`；
+- 即使环境中残留 legacy URL，任何 API 路由也不会访问 Python upstream。
 
-1. Node 原生实现；
-2. 与既有 owner-local、queue、result 和 evidence 文件兼容；
-3. HTTP 合同测试；
-4. 未配置 legacy upstream 的真实 Node 容器 smoke；
-5. 已迁移路由即使配置 legacy URL，也不得访问 Python；
-6. 未知路由不得自动穿透 legacy。
+默认 Compose 中的 `legacy-agent` 尚保留为部署兼容服务，但已经没有 Node API 调用者。下一批将从默认服务图删除它。
 
-## Batch A：可信 Node 底层复用
+## 已迁移端点
 
-已迁移：
+### Chat、Event、Validation、Prompt 与 Resources
+
+- `/health`
+- `/status`
+- `/capabilities`
+- `/resources`
+- `/prompts`
+- `/prompts/:name/expand`
+- `/chat`
+- `/chat/stream`
+- `/chat/history`
+- `/v1/chat/runs`
+- `/v1/sessions/:session/runs/:run/events`
+- `/validation/*`
+
+### Owner Context 与 Memory
 
 - `/local/status`
 - `/local/reload`
 - `POST /memory`
 - `/memory/search`
-- `/approvals`
+
+### Approvals、Tasks 与 Operations
+
+- `/approvals`（永远只读）
 - `/tasks`
 - `/tasks/:id`
 - `/operations/:id`
+
+### Repair、Evolution 与 Self-upgrade Evidence
+
 - `/code-repair/catalog`
 - `POST /code-repair/requests`
 - `/code-repair/requests/:id`
 - `/evolution/status`
 - `/self-upgrade/status`
+
+### Self-development
+
 - `/self`
 - `/self/assessment`
 - `/self/capability-health`
@@ -40,76 +63,97 @@
 - `/self/intentions/:id`
 - `/self/intentions/:id/pursue`
 
-### 数据与安全约束
+### Self Optimization
 
-- Memory 继续使用 `local/memory/node-memory.json`；
-- Self-development 兼容 `local/self/state.json`、`reflections.json`、`intentions.json`；
-- Node Tasks 使用 `data/node-tasks`，只读兼容旧 board/engine tasks；
-- Approvals API 永远只读，不能创建裁决；
-- Operations 继续复用 `op-*` 请求/决定/结果协议；
-- Repair API 只提交 `repair-*` 不可变请求，补丁与测试只能由 networkless Runner 执行；
-- 返回数据统一脱敏，不读取 `local/secrets`、approval key 或 Git metadata；
-- 意向 `pursue` 只创建 Node Task，涉及代码变更时要求主人继续走 owner-authorized Self-upgrade。
+- `GET /self/optimization`
+- `POST /self/optimization/apply`
+- `POST /self/optimization/rollback`
+- `POST /self/optimization/auto`
 
-## 当前显式 compatibility allowlist
+兼容 `local/self/optimizations.json`，保留：
 
-仅以下路由可以暂时访问 internal legacy API：
-
-- `/self/optimization*`
-- `/autonomy/cycles*`
-
-规则：
-
-- 配置了 legacy URL：转发并添加 `X-Agenelf-Compatibility: legacy-allowlist`；
-- 未配置 legacy URL：返回 `501` 和 `migration_pending=true`；
-- 其它未知路由：返回 `404`；
-- 不允许重新引入全路径 fallback。
-
-## 后续 Batch
-
-### Batch B：Self Optimization
-
-迁移 `local/self/optimizations.json`：
-
-- 参数白名单；
-- 类型和上下界；
+- 固定参数白名单；
+- 类型和硬上下界；
 - cooldown；
 - active/history/rollback；
-- 审计记录；
-- Node Runtime 实际读取有效覆盖。
+- 审计日志；
+- `consciousness_claim=false`。
 
-完成后从 allowlist 删除 `/self/optimization*`。
+有效覆盖真实进入 Node Runtime：
 
-### Batch C：Autonomy Cycles
+- `agent.memory_prompt_limit` 控制注入记忆条数；
+- `agent.memory_prompt_max_chars` 控制记忆块字符数；
+- `llm.temperature` 控制模型请求温度。
 
-迁移 `data/autonomy-cycles`：
+### Pi-style Autonomy Cycles
 
-- Pi 风格 observe → assess → plan；
-- append-only cycle events；
-- 默认 plan-only；
-- `apply_changes=true` 只能创建 Node Task 和 owner-authorized Self-upgrade 意图；
-- 禁止 API/Agent 直接修改源码、提交 Git 或绕过测试。
+- `POST /autonomy/cycles`
+- `GET /autonomy/cycles`
+- `GET /autonomy/cycles/:id`
 
-完成后从 allowlist 删除 `/autonomy/cycles*`。
+流程固定为：
 
-### Batch D：删除 internal legacy API
+```text
+observe → assess → plan → Node Task → owner-authorized Self-upgrade
+```
 
-必须同时满足：
+约束：
 
-- compatibility allowlist 为空；
-- `AGENELF_LEGACY_API_URL` 不再被读取；
-- Node API/CLI/Web 合同和真实 smoke 全绿；
-- 默认 Compose 不启动 `legacy-agent`；
-- Python API 只存在于显式 rollback 拓扑；
-- 生产 Node 镜像不安装 Python。
+- 快照只读取 Node Runtime、Session Ledger、Resources、Prompts、Validation、Runner heartbeat 和 result 元数据；
+- 默认 `apply_changes=false`，只生成可审计计划；
+- `apply_changes=true` 只创建 Node Task、改进意向和主人授权下一步；
+- Autonomy API 不直接修改源码、Git、Runner、策略或宿主机；
+- 候选仍必须经过双阶段主人授权、完整 Node/Python 测试、红线、备份和回滚；
+- cycle 写入 `data/autonomy-cycles`；
+- 生命周期追加到 `data/autonomy-events/*.jsonl`。
+
+## 数据与信任边界
+
+- Memory：`local/memory/node-memory.json`；
+- Self-development：`local/self/state.json`、`reflections.json`、`intentions.json`；
+- Optimization：`local/self/optimizations.json`；
+- Node Tasks：`data/node-tasks`；
+- Autonomy：`data/autonomy-cycles`、`data/autonomy-events`；
+- Operations：`op-*` 请求/决定/结果协议；
+- Repair：`repair-*` 请求和 networkless Runner；
+- Self-upgrade：session/request/auth/result/backup/event 证据链。
+
+Node API 不读取：
+
+- `local/secrets`；
+- SSH key；
+- approval HMAC key；
+- Docker Socket；
+- Git metadata。
+
+## 验收要求
+
+- Node HTTP 合同测试；
+- Optimization 白名单、边界、cooldown、历史和 rollback 测试；
+- Runtime temperature/memory 参数真实生效测试；
+- Autonomy plan-only、Task、events 和源码零修改测试；
+- 源码负向扫描：禁止 `proxyLegacy`、`LEGACY_COMPATIBILITY_PATHS`、`AGENELF_LEGACY_API_URL`；
+- 无 Python upstream 的真实 Node 容器 smoke；
+- 未知路由 `404`；
+- 全量 Node/Python rollback、Runner、Security 与 CodeQL 门禁。
+
+## 下一批：部署层退役
+
+1. 默认 Compose 删除 `legacy-agent`；
+2. Node API 删除对 legacy health/dependency 的拓扑要求；
+3. `make start/logs/status` 不再包含 legacy 服务；
+4. 默认生产 smoke 只启动 Node API 与独立 Node Runners；
+5. Python API 只保留在 `docker-compose.python.yml`；
+6. 生产镜像和默认安装路径移除 Python；
+7. 固定 rollback tag，并将保留代码归档到 `legacy/python/`。
 
 ## Pi 架构保留
 
-API cutover 不改变以下事实源：
+部署退役不得改变以下事实源：
 
 - Agent Event Core；
 - Session Ledger/hash chain/branch/replay；
 - ResourceLoader progressive disclosure；
 - Markdown Prompt Templates 与主人私有覆盖；
-- `ops-events`、`repair-events`、`self-upgrade-events`；
+- `ops-events`、`repair-events`、`self-upgrade-events`、`autonomy-events`；
 - Runner results、artifacts、backups 和 authorization evidence。
