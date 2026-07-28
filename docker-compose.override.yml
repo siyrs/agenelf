@@ -1,4 +1,6 @@
-# Default Node personalization overlay. Explicit Python rollback does not load this file.
+# Compatibility personalization overlay for explicit docker-compose.yml stacks.
+# The default compose.yaml path governs this file through node-self-upgrade-runner in
+# compose.override.yaml; legacy/canary stacks retain their existing service identity.
 services:
   agenelf:
     volumes:
@@ -8,6 +10,6 @@ services:
     volumes:
       - ./local/prompts:/agenelf/local/prompts:ro
 
-  node-self-upgrade-runner:
+  self-upgrade-runner:
     volumes:
       - ./docker-compose.override.yml:/agenelf/upgrade-target/docker-compose.override.yml:rw
