@@ -1,5 +1,16 @@
 # Node Approval migration overlay. Compose after docker-compose.yml and docker-compose.override.yml.
 services:
+  cli:
+    group_add: ["0"]
+    volumes:
+      - ./data/auth-requests:/agenelf/data/auth-requests:ro
+      - ./data/ops-requests:/agenelf/data/ops-requests:ro
+      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+      - ./data/ops-results:/agenelf/data/ops-results:ro
+      - ./data/approval-commands:/agenelf/data/approval-commands:rw
+      - ./data/approval-results:/agenelf/data/approval-results:ro
+      - ./data/approval-locks:/agenelf/data/approval-locks:rw
+
   approval-key-init:
     build:
       context: .
