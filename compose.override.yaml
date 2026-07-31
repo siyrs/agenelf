@@ -114,12 +114,37 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
+  secret-staging-init:
+    image: agenelf-secret-ops:local
+    build:
+      context: .
+      dockerfile: Dockerfile.ops-secret
+    command:
+      - /bin/sh
+      - -c
+      - chown "$${AGENELF_UID}:$${AGENELF_GID}" /agenelf/local/secret-staging && chmod 700 /agenelf/local/secret-staging
+    user: "0:0"
+    environment:
+      AGENELF_UID: "${AGENELF_UID:-1000}"
+      AGENELF_GID: "${AGENELF_GID:-1000}"
+    volumes:
+      - secret-staging:/agenelf/local/secret-staging:rw
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+
   secret-ops-runner:
     image: agenelf-secret-ops:local
     build:
       context: .
       dockerfile: Dockerfile.ops-secret
     command: [node, node/apps/secret-ops-runner/src/main.ts]
+    depends_on:
+      secret-staging-init:
+        condition: service_completed_successfully
     env_file: .ops-runner.env
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
@@ -134,7 +159,7 @@ services:
       - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
       - ./local/env-secrets.yaml:/agenelf/local/env-secrets.yaml:ro
       - ./local/secrets:/agenelf/local/secrets:ro
-      - ./local/secret-staging:/agenelf/local/secret-staging:rw
+      - secret-staging:/agenelf/local/secret-staging:rw
       - ./data/ops-requests:/agenelf/data/ops-requests:ro
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:rw
@@ -156,7 +181,11 @@ services:
       context: .
       dockerfile: Dockerfile.ops-secret
     profiles: [secret-cli]
-    command: [node, node/apps/secret-cli/src/main.ts]
+    entrypoint: [node, node/apps/secret-cli/src/main.ts]
+    command: [help]
+    depends_on:
+      secret-staging-init:
+        condition: service_completed_successfully
     env_file: .ops-runner.env
     user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
     environment:
@@ -170,7 +199,7 @@ services:
       - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
       - ./local/env-secrets.yaml:/agenelf/local/env-secrets.yaml:ro
       - ./local/secrets:/agenelf/local/secrets:ro
-      - ./local/secret-staging:/agenelf/local/secret-staging:rw
+      - secret-staging:/agenelf/local/secret-staging:rw
       - ./data/ops-requests:/agenelf/data/ops-requests:rw
       - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
       - ./data/ops-results:/agenelf/data/ops-results:ro
@@ -259,7 +288,6 @@ services:
       - ./contracts:/agenelf/upgrade-target/contracts:rw
       - ./.github:/agenelf/upgrade-target/.github:rw
       - ./docs:/agenelf/upgrade-target/docs:rw
-      - ./local/env-secrets.example.yaml:/agenelf/upgrade-target/local/env-secrets.example.yaml:rw
       - ./README.md:/agenelf/upgrade-target/README.md:rw
       - ./Makefile:/agenelf/upgrade-target/Makefile:rw
       - ./Dockerfile:/agenelf/upgrade-target/Dockerfile:rw
@@ -290,3 +318,6 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
+
+volumes:
+  secret-staging:
