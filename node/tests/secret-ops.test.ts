@@ -171,7 +171,7 @@ test("remote scripts inventory, atomically patch selected seats, and never print
   assert.match(updated, /UNRELATED_TOKEN=leave-this-alone/);
   assert.equal((await readFile(backupPath, "utf8")).includes(old.b), true);
 
-  await t.test("stale inventory is rejected before another mutation", async () => {
+  await t.test("stale managed-seat inventory is rejected before another mutation", async () => {
     const freshInventoryRun = spawnSync("python3", [inventoryPath, envFile, seats], { encoding: "utf8" });
     const fresh = parseSecretInventory(freshInventoryRun.stdout, target);
     const staleStage: SecretStage = {
@@ -183,7 +183,14 @@ test("remote scripts inventory, atomically patch selected seats, and never print
     };
     const stalePath = join(root, "stale.json");
     await writeFile(stalePath, JSON.stringify(staleStage), { mode: 0o600 });
-    await writeFile(envFile, `${await readFile(envFile, "utf8")}OUT_OF_BAND=changed\n`);
+    const beforeOutOfBandChange = await readFile(envFile, "utf8");
+    await writeFile(
+      envFile,
+      beforeOutOfBandChange.replace(
+        `ZHIPU_SEAT_A_API_KEY=${old.a}`,
+        "ZHIPU_SEAT_A_API_KEY=out-of-band-managed-seat-change"
+      )
+    );
     const staleRun = spawnSync("python3", [patchPath, envFile, seats, stalePath, join(root, "backups", "stale.env")], { encoding: "utf8" });
     assert.notEqual(staleRun.status, 0);
     assert.match(staleRun.stderr, /inventory changed since owner review/);
