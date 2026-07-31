@@ -18,7 +18,7 @@ import {
 } from "../../../packages/core/src/secret-env.ts";
 import { SecretTargetCatalog, type ManagedSecretTarget } from "../../../packages/core/src/secret-targets.ts";
 import { ServerCatalog } from "../../../packages/core/src/server-catalog.ts";
-import type { JsonObject, JsonValue } from "../../../packages/core/src/types.ts";
+import type { JsonObject } from "../../../packages/core/src/types.ts";
 
 function nonce(): string { return randomBytes(12).toString("hex"); }
 
@@ -33,6 +33,7 @@ function usage(): string {
     "  make secret ARGS='patch <env-target>'",
     "  make secret ARGS='status <op-id>'",
     "  make secret ARGS='cleanup'",
+    "  make secret ARGS='cleanup --all'",
     "",
     "完整密钥只在此本地 TTY 中显示或输入，不进入 Agent 对话、模型上下文、操作请求或审计日志。"
   ].join("\n");
@@ -133,8 +134,12 @@ function printInventory(target: ManagedSecretTarget, data: SecretInventory): voi
   console.log(`target: ${target.alias} · server: ${target.serverAlias} · file: ${target.envFile}`);
 }
 
+function stagingDirectory(root: string): string {
+  return resolve(process.env.AGENELF_SECRET_STAGING_DIR || join(root, "local", "secret-staging"));
+}
+
 async function writeStage(root: string, stage: SecretStage): Promise<{ ref: string; sha256: string }> {
-  const directory = resolve(process.env.AGENELF_SECRET_STAGING_DIR || join(root, "local", "secret-staging"));
+  const directory = stagingDirectory(root);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   const ref = `secret-stage-${nonce()}.json`;
@@ -222,7 +227,7 @@ async function patchInteractive(
       console.log(`或宿主机执行：make approve REQ=${request.id}`);
       console.log("完整密钥未写入操作请求、聊天记录或审计日志；staging 会在成功、拒绝、过期或失败后由 Secret Ops Runner 删除。");
     } catch (error) {
-      await rm(join(resolve(process.env.AGENELF_SECRET_STAGING_DIR || join(root, "local", "secret-staging")), staged.ref), { force: true });
+      await rm(join(stagingDirectory(root), staged.ref), { force: true });
       throw error;
     }
   } finally {
@@ -230,8 +235,8 @@ async function patchInteractive(
   }
 }
 
-async function cleanupStaging(root: string): Promise<void> {
-  const directory = resolve(process.env.AGENELF_SECRET_STAGING_DIR || join(root, "local", "secret-staging"));
+async function cleanupStaging(root: string, removeAll = false): Promise<void> {
+  const directory = stagingDirectory(root);
   let names: string[] = [];
   try { names = await readdir(directory); } catch { return; }
   const cutoff = Date.now() - 24 * 60 * 60 * 1_000;
@@ -240,12 +245,14 @@ async function cleanupStaging(root: string): Promise<void> {
     if (!/^secret-stage-[0-9a-f]{24}\.json$/.test(name)) continue;
     const path = join(directory, name);
     const info = await stat(path).catch(() => null);
-    if (info && info.mtimeMs < cutoff) {
+    if (info && (removeAll || info.mtimeMs < cutoff)) {
       await rm(path, { force: true });
       removed += 1;
     }
   }
-  console.log(`已清理 ${removed} 个超过 24 小时的 staging 文件。`);
+  console.log(removeAll
+    ? `已清理 ${removed} 个 staging 文件。`
+    : `已清理 ${removed} 个超过 24 小时的 staging 文件。`);
 }
 
 export async function runSecretCli(root = process.env.AGENELF_ROOT || process.cwd(), argv = process.argv.slice(2)): Promise<void> {
@@ -259,7 +266,11 @@ export async function runSecretCli(root = process.env.AGENELF_ROOT || process.cw
 
   if (command === "help" || command === "--help" || command === "-h") { console.log(usage()); return; }
   if (command === "targets") { console.table(targets.list()); return; }
-  if (command === "cleanup") { await cleanupStaging(resolvedRoot); return; }
+  if (command === "cleanup") {
+    if (first && first !== "--all") throw new Error("cleanup 只接受可选参数 --all");
+    await cleanupStaging(resolvedRoot, first === "--all");
+    return;
+  }
   if (command === "status") {
     if (!/^op-[0-9a-f]{16}$/.test(first)) throw new Error("status 需要合法 op-id");
     console.log(JSON.stringify(await operations.get(first), null, 2));
