@@ -1,4 +1,4 @@
-# Default Node personalization, owner-approval, operations, repair and self-upgrade overlay.
+# Default Node personalization, owner-approval, operations, secret operations, repair and self-upgrade overlay.
 # Explicit `docker compose -f docker-compose.python.yml ...` rollback does not load it.
 services:
   agenelf:
@@ -114,6 +114,76 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
+  secret-ops-runner:
+    image: agenelf-secret-ops:local
+    build:
+      context: .
+      dockerfile: Dockerfile.ops-secret
+    command: [node, node/apps/secret-ops-runner/src/main.ts]
+    env_file: .ops-runner.env
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
+      AGENELF_SECRETS_DIR: /agenelf/local/secrets
+      AGENELF_ENV_SECRETS_FILE: /agenelf/local/env-secrets.yaml
+      AGENELF_SECRET_STAGING_DIR: /agenelf/local/secret-staging
+      AGENELF_SECRET_OPS_INTERVAL_MS: "500"
+    volumes:
+      - ./node:/agenelf/node:ro
+      - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+      - ./local/env-secrets.yaml:/agenelf/local/env-secrets.yaml:ro
+      - ./local/secrets:/agenelf/local/secrets:ro
+      - ./local/secret-staging:/agenelf/local/secret-staging:rw
+      - ./data/ops-requests:/agenelf/data/ops-requests:ro
+      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+      - ./data/ops-results:/agenelf/data/ops-results:rw
+      - ./data/ops-locks:/agenelf/data/ops-locks:rw
+      - ./data/ops-events:/agenelf/data/ops-events:rw
+      - ./data/runner-health:/agenelf/data/runner-health:rw
+      - ./logs:/agenelf/logs:rw
+    read_only: true
+    tmpfs: [/tmp]
+    pids_limit: 128
+    mem_limit: 512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  secret-cli:
+    image: agenelf-secret-ops:local
+    build:
+      context: .
+      dockerfile: Dockerfile.ops-secret
+    profiles: [secret-cli]
+    command: [node, node/apps/secret-cli/src/main.ts]
+    env_file: .ops-runner.env
+    user: "${AGENELF_UID:-1000}:${AGENELF_GID:-1000}"
+    environment:
+      AGENELF_ROOT: /agenelf
+      AGENELF_SERVERS_FILE: /agenelf/local/servers.yaml
+      AGENELF_SECRETS_DIR: /agenelf/local/secrets
+      AGENELF_ENV_SECRETS_FILE: /agenelf/local/env-secrets.yaml
+      AGENELF_SECRET_STAGING_DIR: /agenelf/local/secret-staging
+    volumes:
+      - ./node:/agenelf/node:ro
+      - ./local/servers.yaml:/agenelf/local/servers.yaml:ro
+      - ./local/env-secrets.yaml:/agenelf/local/env-secrets.yaml:ro
+      - ./local/secrets:/agenelf/local/secrets:ro
+      - ./local/secret-staging:/agenelf/local/secret-staging:rw
+      - ./data/ops-requests:/agenelf/data/ops-requests:rw
+      - ./data/auth-decisions:/agenelf/data/auth-decisions:ro
+      - ./data/ops-results:/agenelf/data/ops-results:ro
+    stdin_open: true
+    tty: true
+    read_only: true
+    tmpfs: [/tmp]
+    pids_limit: 64
+    mem_limit: 256m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+
   repair-runner:
     profiles: [python-repair]
 
@@ -189,6 +259,7 @@ services:
       - ./contracts:/agenelf/upgrade-target/contracts:rw
       - ./.github:/agenelf/upgrade-target/.github:rw
       - ./docs:/agenelf/upgrade-target/docs:rw
+      - ./local/env-secrets.example.yaml:/agenelf/upgrade-target/local/env-secrets.example.yaml:rw
       - ./README.md:/agenelf/upgrade-target/README.md:rw
       - ./Makefile:/agenelf/upgrade-target/Makefile:rw
       - ./Dockerfile:/agenelf/upgrade-target/Dockerfile:rw
@@ -196,6 +267,7 @@ services:
       - ./Dockerfile.control-plane:/agenelf/upgrade-target/Dockerfile.control-plane:rw
       - ./Dockerfile.ops-read:/agenelf/upgrade-target/Dockerfile.ops-read:rw
       - ./Dockerfile.ops-change:/agenelf/upgrade-target/Dockerfile.ops-change:rw
+      - ./Dockerfile.ops-secret:/agenelf/upgrade-target/Dockerfile.ops-secret:rw
       - ./Dockerfile.repair:/agenelf/upgrade-target/Dockerfile.repair:rw
       - ./compose.yaml:/agenelf/upgrade-target/compose.yaml:rw
       - ./compose.override.yaml:/agenelf/upgrade-target/compose.override.yaml:rw
