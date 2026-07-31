@@ -17,24 +17,36 @@ class NodeSecretOpsRunnerTest(unittest.TestCase):
             (ROOT / "compose.override.yaml").read_text(encoding="utf-8")
         )
         services = overlay["services"]
+        staging_init = services["secret-staging-init"]
         runner = services["secret-ops-runner"]
         console = services["secret-cli"]
+
+        self.assertIn("secret-staging", overlay["volumes"])
+        self.assertEqual(staging_init["user"], "0:0")
+        self.assertEqual(staging_init["network_mode"], "none")
+        self.assertTrue(staging_init["read_only"])
+        self.assertEqual(staging_init["restart"], "no")
 
         self.assertEqual(runner["build"]["dockerfile"], "Dockerfile.ops-secret")
         self.assertIn("node/apps/secret-ops-runner/src/main.ts", runner["command"])
         self.assertTrue(runner["read_only"])
         self.assertEqual(console["profiles"], ["secret-cli"])
-        self.assertIn("node/apps/secret-cli/src/main.ts", console["command"])
+        self.assertIn("node/apps/secret-cli/src/main.ts", console["entrypoint"])
+        self.assertEqual(console["command"], ["help"])
         self.assertTrue(console["stdin_open"])
         self.assertTrue(console["tty"])
 
+        init_volumes = "\n".join(str(item) for item in staging_init["volumes"])
         runner_volumes = "\n".join(str(item) for item in runner["volumes"])
         console_volumes = "\n".join(str(item) for item in console["volumes"])
+        self.assertIn(
+            "secret-staging:/agenelf/local/secret-staging:rw", init_volumes
+        )
         for required in (
             "./local/servers.yaml:/agenelf/local/servers.yaml:ro",
             "./local/env-secrets.yaml:/agenelf/local/env-secrets.yaml:ro",
             "./local/secrets:/agenelf/local/secrets:ro",
-            "./local/secret-staging:/agenelf/local/secret-staging:rw",
+            "secret-staging:/agenelf/local/secret-staging:rw",
             "./data/ops-requests:/agenelf/data/ops-requests:ro",
             "./data/auth-decisions:/agenelf/data/auth-decisions:ro",
             "./data/ops-results:/agenelf/data/ops-results:rw",
@@ -45,6 +57,9 @@ class NodeSecretOpsRunnerTest(unittest.TestCase):
         self.assertIn(
             "./data/ops-requests:/agenelf/data/ops-requests:rw", console_volumes
         )
+        self.assertIn(
+            "secret-staging:/agenelf/local/secret-staging:rw", console_volumes
+        )
         for forbidden in (
             "/agenelf/approval",
             "docker.sock",
@@ -53,6 +68,7 @@ class NodeSecretOpsRunnerTest(unittest.TestCase):
             "/agenelf/app-fork",
             "/agenelf/policy",
         ):
+            self.assertNotIn(forbidden, init_volumes)
             self.assertNotIn(forbidden, runner_volumes)
             self.assertNotIn(forbidden, console_volumes)
 
