@@ -26,6 +26,8 @@ class NodeSecretOpsRunnerTest(unittest.TestCase):
         self.assertEqual(staging_init["network_mode"], "none")
         self.assertTrue(staging_init["read_only"])
         self.assertEqual(staging_init["restart"], "no")
+        self.assertEqual(staging_init["cap_drop"], ["ALL"])
+        self.assertEqual(set(staging_init["cap_add"]), {"CHOWN", "FOWNER"})
 
         self.assertEqual(runner["build"]["dockerfile"], "Dockerfile.ops-secret")
         self.assertIn("node/apps/secret-ops-runner/src/main.ts", runner["command"])
