@@ -11,7 +11,7 @@ Agenelf 允许主人准确识别、删除或更新服务器上的某个密钥席
 - 修改绑定清单快照、单席位旧指纹、staging 哈希和操作请求指纹；
 - 远程文件加锁、同目录临时文件、`fsync`、`chmod 600` 和原子替换；
 - Compose 校验、重载或健康检查失败时自动恢复旧文件；
-- 明文回滚备份只在一次执行期间存在，完成后删除。
+- 明文回滚备份仅在一次执行期间存在；只有回滚本身失败时才会以 `0600` 保留，便于人工恢复。
 
 ## 信任边界
 
@@ -34,14 +34,16 @@ Agenelf 允许主人准确识别、删除或更新服务器上的某个密钥席
 
 `agenelf`、`legacy-agent` 和普通 `cli` 都不挂载：
 
-- `local/secrets/`
-- `local/secret-staging/`
-- `local/env-secrets.yaml`
+- SSH 私钥目录 `local/secrets/`；
+- Secret Ops staging；
+- `local/env-secrets.yaml`。
 
 只有：
 
 - `secret-cli`：主人显式运行时，读取服务器连接秘密并写入 staging；
 - `secret-ops-runner`：读取连接秘密、消费 staging、执行已审批修改。
+
+Docker Compose 默认使用独立 Linux named volume `secret-staging`。这样即使宿主机是 Windows，也能可靠保持目录 `0700`、文件 `0600`，而不是依赖 NTFS bind mount 的权限语义。
 
 ## 配置
 
@@ -195,7 +197,7 @@ make secret ARGS='status op-xxxxxxxxxxxxxxxx'
 7. 服务器当前 inventory hash；
 8. 每个席位当前完整 SHA-256 指纹。
 
-如果主人查看清单后，其他人或程序修改了任意被管理席位，操作会失败，不会覆盖新内容。
+如果主人查看清单后，其他人或程序修改了任意被管理席位，操作会失败，不会覆盖新内容。未被 Secret Ops 管理的普通 `.env` 项变化不会造成误阻塞。
 
 ## 写入和回滚
 
@@ -216,17 +218,23 @@ flock
 → 成功后删除短期备份
 ```
 
-任一校验、重载或健康检查失败时，会恢复旧文件并再次重载旧配置。
+任一校验、重载或健康检查失败时，会恢复旧文件并再次重载旧配置。回滚成功后短期备份会删除；回滚自身失败时，Runner 会保留服务器端 `0600` 备份并在结果中返回其路径，避免丢失最后的恢复副本。
 
 ## staging 生命周期
 
-新密钥只会短期保存在：
+Docker Compose 模式下，新密钥短期保存在 named volume 内：
 
 ```text
-local/secret-staging/secret-stage-*.json
+secret-staging:/agenelf/local/secret-staging/secret-stage-*.json
 ```
 
-目录权限为 `0700`，文件权限为 `0600`。它不会挂载给 Agent。
+直接运行 Node 程序、未使用 Compose 时，默认路径为：
+
+```text
+<AGENELF_ROOT>/local/secret-staging/secret-stage-*.json
+```
+
+目录权限为 `0700`，文件权限为 `0600`。普通 Agent 和普通 CLI 均看不到该存储。
 
 以下情况 Runner 会删除 staging：
 
@@ -242,6 +250,12 @@ local/secret-staging/secret-stage-*.json
 make secret ARGS='cleanup'
 ```
 
+明确清空全部 staging（例如运维清理时）：
+
+```bash
+make secret ARGS='cleanup --all'
+```
+
 ## 审计内容
 
 结果和事件只保存：
@@ -250,7 +264,8 @@ make secret ARGS='cleanup'
 - `keep/delete/set` 动作；
 - 修改前后的短指纹；
 - inventory hash；
-- 校验、重载、健康检查和回滚状态。
+- 校验、重载、健康检查和回滚状态；
+- 只有回滚失败时才保存恢复备份路径，不保存备份内容。
 
 不保存：
 
