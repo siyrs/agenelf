@@ -10,7 +10,6 @@ import {
   parseSecretInventory,
   rawSha256,
   validateSecretStage,
-  type SecretInventory,
   type SecretStage
 } from "./secret-env.ts";
 import { SecretTargetCatalog, type ManagedSecretTarget } from "./secret-targets.ts";
@@ -310,6 +309,7 @@ export class SecretOpsRunner {
     const stagePath = `${remoteDir}/stage.json`;
     const backupDir = `${target.envFile}.agenelf-backups`;
     const backupPath = `${backupDir}/${request.id}.env`;
+    let retainBackup = false;
     const run = async (phase: string, command: string, timeoutMs: number) => {
       await this.event(request.id, "secret.ssh.started", { phase, target: request.target });
       const result = await this.transport.run(server, command, timeoutMs);
@@ -322,18 +322,58 @@ export class SecretOpsRunner {
       commands.push(secureEvidence(phase, result));
       return result;
     };
+    const backupExists = async (): Promise<boolean> => {
+      const result = await this.transport.run(server, `sudo -n test -f ${quoteRemote(backupPath)}`, 30_000);
+      return result.exit_code === 0;
+    };
     const cleanupRemote = async () => {
-      await this.transport.run(server, `sudo -n rm -rf ${quoteRemote(remoteDir)}; sudo -n rm -f ${quoteRemote(backupPath)}`, 60_000);
+      let command = `sudo -n rm -rf ${quoteRemote(remoteDir)}`;
+      if (!retainBackup) command += `; sudo -n rm -f ${quoteRemote(backupPath)}`;
+      await this.transport.run(server, command, 60_000);
     };
     const rollback = async () => {
       await this.event(request.id, "secret.rollback.started", { env_target: target.alias });
-      let command = `test -f ${quoteRemote(backupPath)} && sudo -n cp ${quoteRemote(backupPath)} ${quoteRemote(target.envFile)} && sudo -n chmod 600 ${quoteRemote(target.envFile)}`;
+      let command = `sudo -n cp ${quoteRemote(backupPath)} ${quoteRemote(target.envFile)} && sudo -n chmod 600 ${quoteRemote(target.envFile)}`;
       if (target.reload.type === "compose") {
         command += ` && cd ${quoteRemote(target.reload.workdir)} && ${server.dockerCommand} compose -p ${quoteRemote(target.reload.project)} -f ${quoteRemote(target.reload.composeFile)} --env-file ${quoteRemote(target.envFile)} up -d --remove-orphans`;
       }
       const result = await run("rollback", command, 1_200_000);
-      await this.event(request.id, "secret.rollback.completed", { env_target: target.alias, exit_code: result.exit_code });
+      if (result.exit_code !== 0) retainBackup = await backupExists();
+      await this.event(request.id, "secret.rollback.completed", {
+        env_target: target.alias,
+        exit_code: result.exit_code,
+        backup_retained: retainBackup,
+        ...(retainBackup ? { recovery_backup_path: backupPath } : {})
+      });
       return result;
+    };
+    const failWithRollback = async (reason: string): Promise<JsonObject> => {
+      if (!(await backupExists())) {
+        return this.baseResult(request, "failed", commands, {
+          reason: `${reason}；尚未生成回滚备份，远程原子脚本未完成替换`,
+          env_target: target.alias,
+          rollback_status: "not_required",
+          plaintext_backup_retained: false
+        });
+      }
+      const rollbackResult = await rollback();
+      if (rollbackResult.exit_code === 0) {
+        return this.baseResult(request, "failed", commands, {
+          reason: `${reason}，已恢复旧配置`,
+          env_target: target.alias,
+          rollback_status: "succeeded",
+          plaintext_backup_retained: false
+        });
+      }
+      return this.baseResult(request, "failed", commands, {
+        reason: retainBackup
+          ? `${reason}；自动回滚失败，已保留 0600 恢复备份`
+          : `${reason}；自动回滚失败且未发现可用恢复备份`,
+        env_target: target.alias,
+        rollback_status: "failed",
+        plaintext_backup_retained: retainBackup,
+        ...(retainBackup ? { recovery_backup_path: backupPath } : {})
+      });
     };
 
     try {
@@ -346,24 +386,15 @@ export class SecretOpsRunner {
         `sudo -n python3 ${quoteRemote(scriptPath)} ${quoteRemote(target.envFile)} ${quoteRemote(seatPayload(target))} ${quoteRemote(stagePath)} ${quoteRemote(backupPath)}`,
         180_000
       );
-      if (applied.exit_code !== 0) {
-        await rollback();
-        return this.baseResult(request, "failed", commands, { reason: "密钥文件原子修改失败，已尝试回滚", env_target: target.alias });
-      }
+      if (applied.exit_code !== 0) return failWithRollback("密钥文件原子修改失败");
       const summary = parsePatchSummary(applied.stdout.trim());
       if (target.reload.type === "compose") {
         const reload = target.reload;
         const prefix = `cd ${quoteRemote(reload.workdir)} && ${server.dockerCommand} compose -p ${quoteRemote(reload.project)} -f ${quoteRemote(reload.composeFile)} --env-file ${quoteRemote(target.envFile)}`;
         const validate = await run("compose_validate", `${prefix} config --quiet`, 180_000);
-        if (validate.exit_code !== 0) {
-          await rollback();
-          return this.baseResult(request, "failed", commands, { reason: "Compose 配置校验失败，已回滚", env_target: target.alias });
-        }
+        if (validate.exit_code !== 0) return failWithRollback("Compose 配置校验失败");
         const deploy = await run("compose_reload", `${prefix} up -d --remove-orphans`, 1_200_000);
-        if (deploy.exit_code !== 0) {
-          await rollback();
-          return this.baseResult(request, "failed", commands, { reason: "服务重载失败，已回滚", env_target: target.alias });
-        }
+        if (deploy.exit_code !== 0) return failWithRollback("服务重载失败");
         if (reload.healthContainer) {
           const container = quoteRemote(reload.healthContainer);
           const health = await run(
@@ -371,10 +402,7 @@ export class SecretOpsRunner {
             `state=$(${server.dockerCommand} inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' ${container}); printf '%s\\n' "$state"; case "$state" in 'running healthy'|'running ') exit 0;; *) exit 1;; esac`,
             120_000
           );
-          if (health.exit_code !== 0) {
-            await rollback();
-            return this.baseResult(request, "failed", commands, { reason: "健康检查失败，已回滚", env_target: target.alias });
-          }
+          if (health.exit_code !== 0) return failWithRollback("健康检查失败");
         }
       }
       await this.event(request.id, "secret.patch.applied", {
