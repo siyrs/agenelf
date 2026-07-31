@@ -135,7 +135,6 @@ export class SecretTargetCatalog {
         reload: parseReload(value.reload, server, envFile, `targets.${alias}.reload`)
       });
     }
-    if (!next.size) throw new Error("env-secrets.yaml 没有可用密钥目标");
     this.records = next;
   }
 
