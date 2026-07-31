@@ -1,15 +1,15 @@
 # Agenelf operator commands — Node.js/TypeScript is the default control plane.
-.PHONY: help init local mind models workflow validation repair self-upgrade start stop restart build chat legacy-chat python-ops python-self-upgrade node-test python-test test backup promote watch logs status ops approvals evolution autonomy approve deny clean
+.PHONY: help init local mind models workflow validation repair secret self-upgrade start stop restart build chat legacy-chat python-ops python-self-upgrade node-test python-test test backup promote watch logs status ops approvals evolution autonomy approve deny clean
 
 help: ## Show commands
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-init: ## Create/migrate private config, prompts, Node state, controlled queues and workspaces
+init: ## Create/migrate private config, prompts, secret targets, Node state, controlled queues and workspaces
 	@test -f .env || cp .env.example .env
 	@test -f .ops-runner.env || cp .ops-runner.env.example .ops-runner.env
 	@python3 scripts/init_local.py
 	@test -f local/node-runner.json || cp local/node-runner.example.json local/node-runner.json
-	@mkdir -p logs workspace/scratch app-space/skills app-tmp app-fork code-workspaces repair-space local/prompts \
+	@mkdir -p logs workspace/scratch app-space/skills app-tmp app-fork code-workspaces repair-space local/prompts local/secret-staging \
 		app-tmp/promote-requests \
 		data/auth-requests data/auth-decisions data/auth-consumed \
 		data/ops-requests data/ops-results data/ops-locks data/ops-events \
@@ -20,7 +20,8 @@ init: ## Create/migrate private config, prompts, Node state, controlled queues a
 		data/self-upgrade-backups data/authorized-upgrades data/runner-health data/app-backups \
 		data/tasks data/node-tasks data/channel-requests data/promote-requests data/promotion-history data/autonomy-cycles \
 		data/node-runner-requests data/node-runner-results data/node-runner-locks
-	@echo "初始化完成。默认 Agent/API/CLI、Approval、Validation、read/change Ops、Repair 与 Self-upgrade 均为 Node；Python 仅保留 internal legacy API、诊断 profile 和显式 rollback。"
+	@chmod 700 local/secret-staging 2>/dev/null || true
+	@echo "初始化完成。默认 Agent/API/CLI、Approval、Validation、read/change/secret Ops、Repair 与 Self-upgrade 均为 Node；Python 仅保留 internal legacy API、诊断 profile 和显式 rollback。"
 
 local: ## Validate local personalization without printing secrets
 	@python3 scripts/init_local.py --status
@@ -36,7 +37,7 @@ workflow: ## Show governed Python and Node workflow task files
 	@echo "== Node workflow tasks =="; ls -lt data/node-tasks 2>/dev/null | head -20 || true
 	@echo "== channel requests =="; ls -lt data/channel-requests 2>/dev/null | head -20 || true
 
-start: ## Start the default Node control plane plus the internal legacy API compatibility service
+start: ## Start the default Node control plane and isolated runners
 	@test -f .env || (echo "缺少 .env，请先 make init"; exit 1)
 	@test -f .ops-runner.env || (echo "缺少 .ops-runner.env，请先 make init"; exit 1)
 	@test -f local/profile.yaml || (echo "缺少 local/profile.yaml，请先 make init"; exit 1)
@@ -45,11 +46,12 @@ start: ## Start the default Node control plane plus the internal legacy API comp
 	@test -f local/validation.yaml || (echo "缺少 local/validation.yaml，请先 make init"; exit 1)
 	@test -f local/models.yaml || (echo "缺少 local/models.yaml，请先 make init"; exit 1)
 	@test -f local/repositories.yaml || (echo "缺少 local/repositories.yaml，请先 make init"; exit 1)
+	@test -f local/env-secrets.yaml || (echo "缺少 local/env-secrets.yaml，请先 make init 后配置密钥目标"; exit 1)
 	@test -f local/node-runner.json || (echo "缺少 local/node-runner.json，请先 make init"; exit 1)
 	@test -d local/memory || (echo "缺少 local/memory，请先 make init"; exit 1)
 	@test -d local/self || (echo "缺少 local/self，请先 make init"; exit 1)
 	@test -d local/secrets || (echo "缺少 local/secrets，请先 make init"; exit 1)
-	@mkdir -p local/prompts app-tmp/promote-requests \
+	@mkdir -p local/prompts local/secret-staging app-tmp/promote-requests \
 		data/approval-commands data/approval-results data/approval-locks data/auth-decisions data/auth-consumed \
 		data/ops-requests data/ops-results data/ops-locks data/ops-events \
 		data/validation-requests data/validation-results data/validation-locks \
@@ -57,6 +59,7 @@ start: ## Start the default Node control plane plus the internal legacy API comp
 		data/self-upgrade-requests data/self-upgrade-results data/self-upgrade-locks data/self-upgrade-events data/self-upgrade-backups \
 		data/promote-requests data/promotion-history data/runner-health data/node-tasks \
 		data/node-runner-requests data/node-runner-results data/node-runner-locks
+	@chmod 700 local/secret-staging 2>/dev/null || true
 	bash scripts/sync_fork.sh
 	docker compose up -d --build
 
@@ -71,6 +74,12 @@ build: ## Rebuild Node, compatibility Python and isolated runner images
 
 chat: ## Open the default Node CLI chat with slash autocomplete
 	docker compose --profile cli run --rm cli
+
+secret: ## Owner-only secret console: make secret ARGS='list relay-zhipu'
+	@test -f local/env-secrets.yaml || (echo "缺少 local/env-secrets.yaml，请先 make init 并配置目标"; exit 1)
+	@test -d local/secret-staging || mkdir -p local/secret-staging
+	@chmod 700 local/secret-staging 2>/dev/null || true
+	docker compose --profile secret-cli run --rm secret-cli $(ARGS)
 
 legacy-chat: ## Open the legacy Python CLI for migration diagnostics
 	docker compose --profile legacy-cli run --rm legacy-cli
@@ -155,7 +164,7 @@ self-upgrade: ## Show Node Self-upgrade sessions, queues, results, backups and r
 	@echo "== replay events =="; ls -lt data/self-upgrade-events 2>/dev/null | head -20 || true
 
 logs: ## Follow Node Agent and isolated runners
-	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner read-ops-runner change-ops-runner validation-runner node-repair-runner node-self-upgrade-runner
+	docker compose logs -f --tail=100 agenelf legacy-agent approval-runner read-ops-runner change-ops-runner secret-ops-runner validation-runner node-repair-runner node-self-upgrade-runner
 
 status: ## Show containers, local state and all controlled queues
 	-docker compose ps
@@ -170,12 +179,12 @@ status: ## Show containers, local state and all controlled queues
 	@$(MAKE) --no-print-directory self-upgrade
 	@$(MAKE) --no-print-directory autonomy
 
-clean: ## Clear transient queues; preserve owner data and trusted result evidence
-	@echo "将清空 app-tmp、未完成请求和锁，5 秒内 Ctrl+C 取消..."; sleep 5
-	rm -rf app-tmp/* data/ops-requests/* data/ops-locks/* \
+clean: ## Clear transient queues and plaintext secret staging; preserve owner configuration and trusted evidence
+	@echo "将清空 app-tmp、未完成请求、锁和 secret staging，5 秒内 Ctrl+C 取消..."; sleep 5
+	rm -rf app-tmp/* local/secret-staging/* data/ops-requests/* data/ops-locks/* \
 		data/approval-commands/* data/approval-locks/* \
 		data/validation-requests/* data/validation-locks/* \
 		data/repair-requests/* data/repair-locks/* \
 		data/self-upgrade-requests/* data/self-upgrade-locks/* \
 		data/node-runner-requests/* data/node-runner-locks/*
-	@echo "已清空；local/、Node/Python 结果证据、Ops/Repair/Self-upgrade 事件、Self-upgrade 备份、repair-space、自主循环、裁决与晋升证据均保留。"
+	@echo "已清空；local 配置、SSH secrets、Node/Python 结果证据、Ops/Repair/Self-upgrade 事件、Self-upgrade 备份、repair-space、自主循环、裁决与晋升证据均保留。"
