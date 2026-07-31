@@ -77,8 +77,6 @@ chat: ## Open the default Node CLI chat with slash autocomplete
 
 secret: ## Owner-only secret console: make secret ARGS='list relay-zhipu'
 	@test -f local/env-secrets.yaml || (echo "缺少 local/env-secrets.yaml，请先 make init 并配置目标"; exit 1)
-	@test -d local/secret-staging || mkdir -p local/secret-staging
-	@chmod 700 local/secret-staging 2>/dev/null || true
 	docker compose --profile secret-cli run --rm secret-cli $(ARGS)
 
 legacy-chat: ## Open the legacy Python CLI for migration diagnostics
@@ -181,6 +179,7 @@ status: ## Show containers, local state and all controlled queues
 
 clean: ## Clear transient queues and plaintext secret staging; preserve owner configuration and trusted evidence
 	@echo "将清空 app-tmp、未完成请求、锁和 secret staging，5 秒内 Ctrl+C 取消..."; sleep 5
+	-docker compose --profile secret-cli run --rm -T secret-cli cleanup --all
 	rm -rf app-tmp/* local/secret-staging/* data/ops-requests/* data/ops-locks/* \
 		data/approval-commands/* data/approval-locks/* \
 		data/validation-requests/* data/validation-locks/* \
