@@ -133,6 +133,7 @@ services:
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
     security_opt: [no-new-privileges:true]
     restart: "no"
 
