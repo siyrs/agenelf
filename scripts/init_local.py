@@ -58,6 +58,7 @@ def _ensure_runtime_directories(actions: list[str]) -> None:
         ROOT / "data" / "ops-requests",
         ROOT / "data" / "ops-results",
         ROOT / "data" / "ops-locks",
+        ROOT / "data" / "ops-events",
         ROOT / "data" / "approval-commands",
         ROOT / "data" / "approval-results",
         ROOT / "data" / "approval-locks",
@@ -67,17 +68,23 @@ def _ensure_runtime_directories(actions: list[str]) -> None:
         ROOT / "data" / "repair-requests",
         ROOT / "data" / "repair-results",
         ROOT / "data" / "repair-locks",
+        ROOT / "data" / "repair-events",
         ROOT / "data" / "authorized-upgrades",
         ROOT / "data" / "self-upgrade-requests",
         ROOT / "data" / "self-upgrade-results",
         ROOT / "data" / "self-upgrade-locks",
+        ROOT / "data" / "self-upgrade-events",
         ROOT / "data" / "self-upgrade-backups",
         ROOT / "data" / "runner-health",
         ROOT / "data" / "tasks",
+        ROOT / "data" / "node-tasks",
         ROOT / "data" / "channel-requests",
         ROOT / "data" / "promote-requests",
         ROOT / "data" / "promotion-history",
         ROOT / "data" / "autonomy-cycles",
+        ROOT / "data" / "node-runner-requests",
+        ROOT / "data" / "node-runner-results",
+        ROOT / "data" / "node-runner-locks",
     )
     for directory in directories:
         if not directory.exists():
@@ -92,6 +99,7 @@ def initialize(migrate: bool = True) -> dict:
         LOCAL / "context",
         LOCAL / "memory",
         LOCAL / "secrets",
+        LOCAL / "secret-staging",
         LOCAL / "self",
     )
     for directory in directories:
@@ -128,6 +136,9 @@ def initialize(migrate: bool = True) -> dict:
     _copy_if_missing(
         LOCAL / "repositories.example.yaml", LOCAL / "repositories.yaml", actions
     )
+    _copy_if_missing(
+        LOCAL / "env-secrets.example.yaml", LOCAL / "env-secrets.yaml", actions
+    )
 
     memory_target = LOCAL / "memory" / "memory.json"
     for source in memory_sources:
@@ -151,6 +162,7 @@ def initialize(migrate: bool = True) -> dict:
     for directory in (
         LOCAL,
         LOCAL / "secrets",
+        LOCAL / "secret-staging",
         LOCAL / "memory",
         LOCAL / "self",
     ):
@@ -165,6 +177,7 @@ def initialize(migrate: bool = True) -> dict:
         LOCAL / "validation.yaml",
         LOCAL / "models.yaml",
         LOCAL / "repositories.yaml",
+        LOCAL / "env-secrets.yaml",
         memory_target,
         self_dir / "reflections.json",
         self_dir / "intentions.json",
@@ -176,12 +189,13 @@ def initialize(migrate: bool = True) -> dict:
                 path.chmod(0o600)
             except OSError:
                 pass
-    for path in (LOCAL / "secrets").glob("*"):
-        if path.is_file():
-            try:
-                path.chmod(0o600)
-            except OSError:
-                pass
+    for directory in (LOCAL / "secrets", LOCAL / "secret-staging"):
+        for path in directory.glob("*"):
+            if path.is_file():
+                try:
+                    path.chmod(0o600)
+                except OSError:
+                    pass
 
     result = status()
     result["actions"] = actions
@@ -190,6 +204,7 @@ def initialize(migrate: bool = True) -> dict:
 
 def status() -> dict:
     self_dir = LOCAL / "self"
+    staging_dir = LOCAL / "secret-staging"
     return {
         "root": str(ROOT),
         "local_dir": str(LOCAL),
@@ -199,6 +214,13 @@ def status() -> dict:
         "validation": (LOCAL / "validation.yaml").is_file(),
         "models": (LOCAL / "models.yaml").is_file(),
         "repositories": (LOCAL / "repositories.yaml").is_file(),
+        "env_secrets": (LOCAL / "env-secrets.yaml").is_file(),
+        "secret_staging_dir": staging_dir.is_dir(),
+        "secret_staging_file_count": sum(
+            1 for path in staging_dir.glob("secret-stage-*.json") if path.is_file()
+        )
+        if staging_dir.is_dir()
+        else 0,
         "code_workspaces": (ROOT / "code-workspaces").is_dir(),
         "repair_space": (ROOT / "repair-space").is_dir(),
         "context_dir": (LOCAL / "context").is_dir(),

@@ -20,6 +20,7 @@ local/servers.yaml
 local/validation.yaml
 local/models.yaml
 local/repositories.yaml
+local/env-secrets.yaml
 local/node-runner.json
 local/context/
 local/memory/
@@ -27,6 +28,7 @@ local/prompts/
 local/self/*
 !local/self/intentions.template.json
 local/secrets/
+local/secret-staging/
 
 # Legacy private locations kept ignored for migration compatibility
 config/servers.yaml
