@@ -34,6 +34,7 @@ def install(module: ModuleType) -> None:
         module._SCOPE_PATHS.get("node_runtime", ()),
         "node/packages/core/src/chat-secret-env.ts",
         "node/packages/core/src/secret-chat-client.ts",
+        "node/packages/core/src/secret-chat-direct.ts",
         "node/packages/core/src/agent.ts",
         "node/packages/core/src/types.ts",
     )
@@ -53,11 +54,11 @@ def install(module: ModuleType) -> None:
         "Dockerfile.ops-secret",
     )
     pattern = re.compile(
-        r"(?i)(?:secret|credential|密钥|凭据).{0,100}(?:env|ops|SSH|runner|console|chat|broker|执行器|控制台|聊天)|"
+        r"(?i)(?:secret|credential|密钥|凭据).{0,100}(?:env|ops|SSH|runner|console|chat|broker|route|执行器|控制台|聊天|路由)|"
         r"node/apps/secret-(?:ops-runner|cli|chat-broker)|"
-        r"node/packages/core/src/(?:secret-(?:ops|env|targets|chat-client)|chat-secret-env)"
+        r"node/packages/core/src/(?:secret-(?:ops|env|targets|chat-client|chat-direct)|chat-secret-env)"
     )
     if not any(scope == "node_runners" and item.pattern == pattern.pattern for scope, item in module._SCOPE_PATTERNS):
         module._SCOPE_PATTERNS = (("node_runners", pattern), *module._SCOPE_PATTERNS)
-    module.SECRET_OPS_UPGRADE_POLICY_VERSION = "owner-authorized-secret-ops-v2"
+    module.SECRET_OPS_UPGRADE_POLICY_VERSION = "owner-authorized-secret-ops-v3"
     _INSTALLED = True
