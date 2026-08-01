@@ -44,6 +44,8 @@ export interface ToolDefinition {
   description: string;
   inputSchema: JsonObject;
   contract: ToolExecutionContract;
+  sensitive?: boolean;
+  allowSensitiveResult?: boolean;
   handler: (args: JsonObject, context: ToolContext) => Promise<JsonValue>;
 }
 
