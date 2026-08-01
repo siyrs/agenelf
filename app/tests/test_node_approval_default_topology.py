@@ -12,7 +12,16 @@ ROOT = Path(__file__).resolve().parents[2]
 class NodeApprovalDefaultTopologyTest(unittest.TestCase):
     def test_default_compose_imports_stable_graph_without_redefining_services(self) -> None:
         document = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(document, {"include": [{"path": "docker-compose.yml"}]})
+        self.assertEqual(
+            document,
+            {
+                "include": [
+                    {"path": "docker-compose.yml"},
+                    {"path": "compose.secret-chat.yaml"},
+                ]
+            },
+        )
+        self.assertNotIn("services", document)
 
     def test_standard_override_promotes_node_approval_and_preserves_key_boundary(self) -> None:
         document = yaml.safe_load(
@@ -35,12 +44,16 @@ class NodeApprovalDefaultTopologyTest(unittest.TestCase):
         source = (ROOT / "app" / "core" / "node_upgrade_policy.py").read_text(
             encoding="utf-8"
         )
+        secret_source = (
+            ROOT / "app" / "core" / "secret_ops_upgrade_policy.py"
+        ).read_text(encoding="utf-8")
         for name in (
             '"compose.yaml"',
             '"compose.override.yaml"',
             '"docker-compose.node-approval.yml"',
         ):
             self.assertIn(name, source)
+        self.assertIn('"compose.secret-chat.yaml"', secret_source)
         mounts = [
             str(item)
             for item in yaml.safe_load(
