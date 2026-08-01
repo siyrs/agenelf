@@ -4,9 +4,10 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   isDirectSecretChatIntent,
+  normalizeOwnerSecretActionClauses,
   routeOwnerSecretChat,
   type DirectSecretChatClient
-} from "../packages/core/src/secret-chat-direct.ts";
+} from "../packages/core/src/secret-chat-router.ts";
 import type { JsonObject, JsonValue } from "../packages/core/src/types.ts";
 
 class FakeSecretClient implements DirectSecretChatClient {
@@ -96,10 +97,9 @@ test("the exact screenshot request bypasses the model and reveals all four Zhipu
 
 test("natural language deletes B, replaces C and leaves omitted seats unchanged", async () => {
   const client = new FakeSecretClient();
-  const result = await routeOwnerSecretChat(
-    "中天中转站：删除 zhipu-b，把 zhipu-c 改成 zhipu-new-owner-key-C9，其他席位不动，直接更新上去",
-    client
-  );
+  const text = "中天中转站：删除 zhipu-b，把 zhipu-c 改成 zhipu-new-owner-key-C9，其他席位不动，直接更新上去";
+  assert.match(normalizeOwnerSecretActionClauses(text), /删除 zhipu-b；把 zhipu-c 改成/);
+  const result = await routeOwnerSecretChat(text, client);
   assert.equal(result.handled, true);
   assert.equal(result.route, "apply");
   assert.equal(client.applies.length, 1);
@@ -154,11 +154,12 @@ test("ordinary API-key discussion is not intercepted", async () => {
   assert.equal(client.applies.length, 0);
 });
 
-test("Agent invokes the deterministic route before any model request", async () => {
+test("Agent invokes the deterministic router before any model request", async () => {
   const source = await readFile(resolve("node/packages/core/src/agent.ts"), "utf8");
   const directIndex = source.indexOf("await routeOwnerSecretChat(text, this.secretChat)");
   const modelIndex = source.indexOf("this.model.streamChat(messages, tools");
   assert.ok(directIndex > 0, "direct secret route must be wired");
   assert.ok(modelIndex > directIndex, "model must run only after the direct route declines the request");
+  assert.match(source, /secret-chat-router\.ts/);
   assert.match(source, /reason:\s*"direct_secret_route"/);
 });
