@@ -27,8 +27,8 @@ export type SecretReload =
 
 export interface ManagedSecretTarget {
   alias: string;
-  label: string;
-  aliases: string[];
+  label?: string;
+  aliases?: string[];
   serverAlias: string;
   envFile: string;
   seats: Map<string, SecretSeat>;
@@ -161,8 +161,8 @@ export class SecretTargetCatalog {
   list(): JsonObject[] {
     return [...this.records.values()].map((target) => ({
       alias: target.alias,
-      label: target.label,
-      aliases: target.aliases,
+      label: target.label ?? target.alias,
+      aliases: target.aliases ?? [],
       server: target.serverAlias,
       env_file: target.envFile,
       seats: [...target.seats.values()].map((seat) => ({ id: seat.id, env_name: seat.envName, label: seat.label })),
