@@ -35,6 +35,7 @@ def install(module: ModuleType) -> None:
         "node/packages/core/src/chat-secret-env.ts",
         "node/packages/core/src/secret-chat-client.ts",
         "node/packages/core/src/secret-chat-direct.ts",
+        "node/packages/core/src/secret-chat-router.ts",
         "node/packages/core/src/agent-events.ts",
         "node/packages/core/src/agent.ts",
         "node/packages/core/src/types.ts",
@@ -57,7 +58,7 @@ def install(module: ModuleType) -> None:
     pattern = re.compile(
         r"(?i)(?:secret|credential|密钥|凭据).{0,100}(?:env|ops|SSH|runner|console|chat|broker|route|event|执行器|控制台|聊天|路由|事件)|"
         r"node/apps/secret-(?:ops-runner|cli|chat-broker)|"
-        r"node/packages/core/src/(?:secret-(?:ops|env|targets|chat-client|chat-direct)|chat-secret-env|agent-events)"
+        r"node/packages/core/src/(?:secret-(?:ops|env|targets|chat-client|chat-direct|chat-router)|chat-secret-env|agent-events)"
     )
     if not any(scope == "node_runners" and item.pattern == pattern.pattern for scope, item in module._SCOPE_PATTERNS):
         module._SCOPE_PATTERNS = (("node_runners", pattern), *module._SCOPE_PATTERNS)
