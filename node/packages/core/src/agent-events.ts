@@ -13,6 +13,7 @@ export const AGENT_EVENT_TYPES = new Set([
 const TERMINAL_TYPES = new Set(["run.settled", "run.failed", "run.cancelled"]);
 const EVENT_ORIGINS = new Set(["runtime", "agent_skill", "owner", "runner", "migration"]);
 const TRANSIENT_TYPES = new Set(["reasoning.delta", "message.delta", "tool.delta"]);
+const DIRECT_SECRET_ROUTES = new Set(["reveal", "apply", "diagnostic"]);
 
 export interface AgentEvent {
   schema_version: 1;
@@ -27,8 +28,21 @@ export interface AgentEvent {
   payload: JsonObject;
 }
 
+export interface AgentEventOptions {
+  origin?: string;
+  transient?: boolean;
+  allowSensitivePayload?: boolean;
+}
+
 export class EventCursorExpired extends Error {}
 export class RunAlreadyTerminal extends Error {}
+
+function canExposeDirectSecretPayload(type: string, origin: string, payload: JsonObject): boolean {
+  if (origin !== "runtime") return false;
+  if (type !== "message.delta" && type !== "message.completed") return false;
+  if (payload.sensitive !== true) return false;
+  return DIRECT_SECRET_ROUTES.has(String(payload.direct_route ?? ""));
+}
 
 export class RunEventStream {
   readonly sessionId: string;
@@ -49,10 +63,15 @@ export class RunEventStream {
     this.emitter.setMaxListeners(1000);
   }
 
-  async emit(type: string, payload: JsonObject = {}, options: { origin?: string; transient?: boolean } = {}) {
+  async emit(type: string, payload: JsonObject = {}, options: AgentEventOptions = {}) {
     if (!AGENT_EVENT_TYPES.has(type)) throw new Error(`未知 Agent event：${type}`);
     const origin = options.origin ?? "runtime";
     if (!EVENT_ORIGINS.has(origin)) throw new Error(`未知 Agent event origin：${origin}`);
+    const sensitiveAllowed = canExposeDirectSecretPayload(type, origin, payload);
+    if (options.allowSensitivePayload === true && !sensitiveAllowed) {
+      throw new Error("敏感事件原文只允许确定性主人 Secret Chat 消息");
+    }
+    const exposeSensitive = options.allowSensitivePayload === true && sensitiveAllowed;
     const task = async () => {
       if (this.terminalType) throw new RunAlreadyTerminal(`run 已以 ${this.terminalType} 结束`);
       const event: AgentEvent = {
@@ -64,8 +83,8 @@ export class RunEventStream {
         type,
         origin,
         ts: new Date().toISOString(),
-        transient: options.transient ?? TRANSIENT_TYPES.has(type),
-        payload: sanitizeObject(payload)
+        transient: exposeSensitive ? true : options.transient ?? TRANSIENT_TYPES.has(type),
+        payload: exposeSensitive ? payload : sanitizeObject(payload)
       };
       if (!event.transient) {
         await this.ledger.append({
