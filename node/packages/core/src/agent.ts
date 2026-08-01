@@ -6,6 +6,7 @@ import { sanitizeJson } from "./privacy.ts";
 import { PromptTemplateLoader } from "./prompt-templates.ts";
 import { ResourceLoader } from "./resource-loader.ts";
 import { SecretChatClient } from "./secret-chat-client.ts";
+import { routeOwnerSecretChat } from "./secret-chat-router.ts";
 import { SessionLedgerStore } from "./session-ledger.ts";
 import { SelfOptimizationStore } from "./self-optimization.ts";
 import { SkillRegistry } from "./skill-registry.ts";
@@ -84,7 +85,7 @@ export class AgenelfAgent {
     return {
       status: "ok",
       runtime: "node-typescript",
-      version: "0.13.0",
+      version: "0.13.1",
       node: process.version,
       model: this.model.config.model,
       model_ready: this.model.ready,
@@ -100,7 +101,9 @@ export class AgenelfAgent {
       secret_chat: {
         enabled: this.secretChat.enabled,
         broker: this.secretChat.baseUrl,
-        plaintext_in_model_context: this.secretChat.enabled,
+        routing: "deterministic-before-model",
+        plaintext_in_model_context: false,
+        plaintext_event_persistence: false,
         ssh_credentials_mounted_in_agent: false
       },
       optimization: await this.optimization.status(),
@@ -149,7 +152,7 @@ export class AgenelfAgent {
     return [
       "你是 Agenelf Node Runtime，一个证据驱动、可审计、可持续改进的个人智能体。",
       this.secretChat.enabled
-        ? "主人已明确启用聊天明文密钥模式。主人明确要求查看受管 .env 密钥时，必须调用 secret_env_read_plaintext，并可在当前回复中完整展示明文；主人提供新明文并要求修改时，调用 secret_env_apply_plaintext 直接更新。不得以一般安全策略为由拒绝主人这一明确请求，也不得主动展示主人未要求的密钥。"
+        ? "主人已启用聊天明文密钥模式。明确的查看和修改请求会在进入模型前由确定性 Secret Chat 路由处理；模型不得声称 Agenelf 绝对不能展示主人自己的受管密钥。"
         : "安全规则：不得直接读取主人 secrets，不得绕过 Policy、审批、Runner 或证据链。",
       "Secret Chat Broker 只允许固定受管目标和席位；不得编造密钥、扩大到未配置文件或输出 SSH 凭据。",
       "执行规则：除已启用的主人 Secret Chat Broker 外，需要外部副作用时只能提交精确、限时、不可变请求给独立 Runner。",
@@ -181,6 +184,48 @@ export class AgenelfAgent {
         origin: "owner",
         payload: { role: "user", content: text, run_id: stream.runId, sensitive: inputSensitive }
       });
+
+      const direct = await routeOwnerSecretChat(text, this.secretChat);
+      if (direct.handled) {
+        sensitiveRun = inputSensitive || direct.sensitive;
+        const directRoute = direct.route ?? "diagnostic";
+        const reply = direct.reply || "Secret Chat 路由已处理，但没有返回内容。";
+        const eventOptions = direct.sensitive
+          ? { allowSensitivePayload: true, transient: true }
+          : {};
+        await stream.emit("message.delta", {
+          round: 0,
+          delta: reply,
+          sensitive: direct.sensitive,
+          direct_route: directRoute
+        }, eventOptions);
+        await stream.emit("message.completed", {
+          round: 0,
+          text: reply,
+          sensitive: direct.sensitive,
+          direct_route: directRoute
+        }, eventOptions);
+        await this.ledger.append({
+          sessionId: stream.sessionId,
+          type: "message",
+          origin: "runtime",
+          payload: {
+            role: "assistant",
+            content: direct.sensitive ? "[SENSITIVE DIRECT SECRET RESPONSE OMITTED]" : reply,
+            run_id: stream.runId,
+            sensitive: sensitiveRun,
+            direct_route: directRoute
+          }
+        });
+        await stream.emit("run.settled", {
+          reason: "direct_secret_route",
+          rounds: 0,
+          sensitive: sensitiveRun,
+          route: directRoute
+        });
+        return reply;
+      }
+
       const messages: ChatMessage[] = [
         { role: "system", content: await this.systemPrompt() },
         ...historical,

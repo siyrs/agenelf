@@ -134,7 +134,7 @@ class NodeSecretOpsRunnerTest(unittest.TestCase):
 
     def test_secret_ops_files_are_in_owner_authorized_scope(self) -> None:
         plan = authorized_upgrade.make_plan(
-            "升级 Node secret env Ops、主人明文聊天 Broker 和 Secret Console",
+            "升级 Node secret env Ops、主人明文聊天 Broker、确定性明文路由和 Secret Console",
             scopes=[
                 "node_runners",
                 "node_runtime",
@@ -153,6 +153,7 @@ class NodeSecretOpsRunnerTest(unittest.TestCase):
             "node/packages/core/src/secret-targets.ts",
             "node/packages/core/src/chat-secret-env.ts",
             "node/packages/core/src/secret-chat-client.ts",
+            "node/packages/core/src/secret-chat-direct.ts",
             "node/packages/core/src/agent.ts",
             "node/packages/core/src/types.ts",
             "node/packages/skills/src/builtin.ts",
@@ -164,7 +165,7 @@ class NodeSecretOpsRunnerTest(unittest.TestCase):
             self.assertIn(path, allowed)
         self.assertEqual(
             authorized_upgrade.SECRET_OPS_UPGRADE_POLICY_VERSION,
-            "owner-authorized-secret-ops-v2",
+            "owner-authorized-secret-ops-v3",
         )
 
     def test_owner_secret_files_remain_git_ignored(self) -> None:
