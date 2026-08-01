@@ -27,6 +27,8 @@ export type SecretReload =
 
 export interface ManagedSecretTarget {
   alias: string;
+  label: string;
+  aliases: string[];
   serverAlias: string;
   envFile: string;
   seats: Map<string, SecretSeat>;
@@ -42,6 +44,19 @@ function safeAlias(value: unknown, label: string): string {
   const text = String(value ?? "").trim();
   if (!ALIAS_RE.test(text)) throw new Error(`${label} 非法`);
   return text;
+}
+
+function displayText(value: unknown, fallback: string, label: string): string {
+  const text = String(value ?? fallback).trim();
+  if (!text || text.length > 128 || /[\0\r\n]/.test(text)) throw new Error(`${label} 必须是 1-128 字符的单行文本`);
+  return text;
+}
+
+function displayAliases(value: JsonValue | undefined, label: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 16) throw new Error(`${label} 必须是最多 16 项的 list`);
+  const aliases = value.map((item, index) => displayText(item, "", `${label}[${index}]`));
+  return [...new Set(aliases)];
 }
 
 function safeAbsolute(value: unknown, label: string): string {
@@ -103,6 +118,9 @@ export class SecretTargetCatalog {
     for (const [alias, raw] of Object.entries(targets)) {
       if (!ALIAS_RE.test(alias)) throw new Error(`非法密钥目标别名：${alias}`);
       const value = object(raw, `targets.${alias}`);
+      const label = displayText(value.label, alias, `targets.${alias}.label`);
+      const aliases = displayAliases(value.aliases, `targets.${alias}.aliases`)
+        .filter((item) => item !== alias && item !== label);
       const serverAlias = safeAlias(value.server, `targets.${alias}.server`);
       const server = this.servers.get(serverAlias);
       const envFile = safeAbsolute(value.env_file, `targets.${alias}.env_file`);
@@ -115,20 +133,22 @@ export class SecretTargetCatalog {
       for (const [seatId, seatRaw] of entries) {
         if (!SEAT_RE.test(seatId)) throw new Error(`targets.${alias}.seats 含非法席位 ID：${seatId}`);
         let envName = "";
-        let label = seatId;
+        let seatLabel = seatId;
         if (typeof seatRaw === "string") envName = seatRaw.trim();
         else {
           const seat = object(seatRaw, `targets.${alias}.seats.${seatId}`);
           envName = String(seat.env ?? seat.env_name ?? "").trim();
-          label = String(seat.label ?? seatId).trim().slice(0, 128) || seatId;
+          seatLabel = displayText(seat.label, seatId, `targets.${alias}.seats.${seatId}.label`);
         }
         if (!ENV_RE.test(envName)) throw new Error(`席位 ${seatId} 的环境变量名非法`);
         if (envNames.has(envName)) throw new Error(`密钥目标 ${alias} 重复映射环境变量：${envName}`);
         envNames.add(envName);
-        seats.set(seatId, { id: seatId, envName, label });
+        seats.set(seatId, { id: seatId, envName, label: seatLabel });
       }
       next.set(alias, {
         alias,
+        label,
+        aliases,
         serverAlias,
         envFile,
         seats,
@@ -141,6 +161,8 @@ export class SecretTargetCatalog {
   list(): JsonObject[] {
     return [...this.records.values()].map((target) => ({
       alias: target.alias,
+      label: target.label,
+      aliases: target.aliases,
       server: target.serverAlias,
       env_file: target.envFile,
       seats: [...target.seats.values()].map((seat) => ({ id: seat.id, env_name: seat.envName, label: seat.label })),
