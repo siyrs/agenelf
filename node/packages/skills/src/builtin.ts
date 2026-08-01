@@ -1,16 +1,18 @@
 import { MemoryStore } from "../../core/src/memory-store.ts";
 import { OperationQueue } from "../../core/src/operation-queue.ts";
 import { PromptTemplateLoader } from "../../core/src/prompt-templates.ts";
+import { SecretChatClient } from "../../core/src/secret-chat-client.ts";
 import { SessionLedgerStore } from "../../core/src/session-ledger.ts";
 import { TaskStore, type TaskStatus } from "../../core/src/task-store.ts";
 import { ValidationQueue } from "../../core/src/validation.ts";
-import type { JsonObject, SkillDescriptor } from "../../core/src/types.ts";
+import type { JsonObject, JsonValue, SkillDescriptor } from "../../core/src/types.ts";
 
 export function builtinSkills(
   root: string,
   statusProvider: () => Promise<JsonObject>,
   validation: ValidationQueue | undefined,
-  prompts: PromptTemplateLoader
+  prompts: PromptTemplateLoader,
+  secretChat?: SecretChatClient
 ): SkillDescriptor[] {
   const memory = new MemoryStore(root);
   const tasks = new TaskStore(root);
@@ -123,6 +125,74 @@ export function builtinSkills(
       ]
     }
   ];
+
+  if (secretChat?.enabled) {
+    skills.push({
+      id: "owner.secret-chat",
+      name: "主人聊天明文密钥",
+      description: "主人明确要求时，通过内网 Secret Chat Broker 查看或修改受管服务器 .env 明文；不得主动回显。",
+      version: "0.11.0",
+      domain: "owner-secrets",
+      trust: "owner",
+      tools: [
+        {
+          name: "secret_env_targets",
+          description: "列出可在聊天中管理的 .env 密钥目标与稳定席位 ID，不返回明文。",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+          contract: { capability: "server.secrets", operation: "chat_targets", risk: "read", executionMode: "host_controlled" },
+          handler: async () => secretChat.targets()
+        },
+        {
+          name: "secret_env_read_plaintext",
+          description: "仅当主人明确要求查看明文时调用。返回指定目标的完整密钥明文；seat_id 为空时返回该目标全部席位。允许在最终聊天回复中原样展示。",
+          inputSchema: {
+            type: "object",
+            properties: { env_target: { type: "string" }, seat_id: { type: "string" } },
+            required: ["env_target"],
+            additionalProperties: false
+          },
+          contract: { capability: "server.secrets", operation: "chat_reveal_plaintext", risk: "read", executionMode: "host_controlled" },
+          sensitive: true,
+          allowSensitiveResult: true,
+          handler: async (args) => secretChat.snapshot(String(args.env_target ?? ""), String(args.seat_id ?? ""))
+        },
+        {
+          name: "secret_env_apply_plaintext",
+          description: "按主人在当前聊天中的明确指令直接修改受管 .env。changes 可只列出要变更的席位，未列出的席位自动保持不动；set 必须使用主人提供的真实明文，不得编造。confirm_target 必须与 env_target 完全一致。Broker 会原子写入、重载、健康检查并在失败时回滚。",
+          inputSchema: {
+            type: "object",
+            properties: {
+              env_target: { type: "string" },
+              confirm_target: { type: "string" },
+              changes: {
+                type: "array",
+                minItems: 1,
+                items: {
+                  type: "object",
+                  properties: {
+                    seat_id: { type: "string" },
+                    action: { type: "string", enum: ["keep", "delete", "set"] },
+                    value: { type: "string" }
+                  },
+                  required: ["seat_id", "action"],
+                  additionalProperties: false
+                }
+              }
+            },
+            required: ["env_target", "confirm_target", "changes"],
+            additionalProperties: false
+          },
+          contract: { capability: "server.secrets", operation: "chat_apply_plaintext", risk: "change", executionMode: "host_controlled" },
+          sensitive: true,
+          handler: async (args) => secretChat.apply(
+            String(args.env_target ?? ""),
+            Array.isArray(args.changes) ? args.changes as JsonValue[] : [],
+            String(args.confirm_target ?? "")
+          )
+        }
+      ]
+    });
+  }
 
   if (validation) {
     skills.push({
