@@ -103,6 +103,7 @@ export class AgenelfAgent {
         broker: this.secretChat.baseUrl,
         routing: "deterministic-before-model",
         plaintext_in_model_context: false,
+        plaintext_event_persistence: false,
         ssh_credentials_mounted_in_agent: false
       },
       optimization: await this.optimization.status(),
@@ -187,30 +188,40 @@ export class AgenelfAgent {
       const direct = await routeOwnerSecretChat(text, this.secretChat);
       if (direct.handled) {
         sensitiveRun = inputSensitive || direct.sensitive;
+        const directRoute = direct.route ?? "diagnostic";
         const reply = direct.reply || "Secret Chat 路由已处理，但没有返回内容。";
+        const eventOptions = direct.sensitive
+          ? { allowSensitivePayload: true, transient: true }
+          : {};
+        await stream.emit("message.delta", {
+          round: 0,
+          delta: reply,
+          sensitive: direct.sensitive,
+          direct_route: directRoute
+        }, eventOptions);
         await stream.emit("message.completed", {
           round: 0,
           text: reply,
-          sensitive: sensitiveRun,
-          direct_route: direct.route ?? "diagnostic"
-        });
+          sensitive: direct.sensitive,
+          direct_route: directRoute
+        }, eventOptions);
         await this.ledger.append({
           sessionId: stream.sessionId,
           type: "message",
           origin: "runtime",
           payload: {
             role: "assistant",
-            content: reply,
+            content: direct.sensitive ? "[SENSITIVE DIRECT SECRET RESPONSE OMITTED]" : reply,
             run_id: stream.runId,
             sensitive: sensitiveRun,
-            direct_route: direct.route ?? "diagnostic"
+            direct_route: directRoute
           }
         });
         await stream.emit("run.settled", {
           reason: "direct_secret_route",
           rounds: 0,
           sensitive: sensitiveRun,
-          route: direct.route ?? "diagnostic"
+          route: directRoute
         });
         return reply;
       }
