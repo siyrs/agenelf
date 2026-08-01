@@ -5,6 +5,7 @@ import { ModelGateway } from "./model-gateway.ts";
 import { sanitizeJson } from "./privacy.ts";
 import { PromptTemplateLoader } from "./prompt-templates.ts";
 import { ResourceLoader } from "./resource-loader.ts";
+import { SecretChatClient } from "./secret-chat-client.ts";
 import { SessionLedgerStore } from "./session-ledger.ts";
 import { SelfOptimizationStore } from "./self-optimization.ts";
 import { SkillRegistry } from "./skill-registry.ts";
@@ -15,6 +16,12 @@ import { builtinSkills } from "../../skills/src/builtin.ts";
 export interface ChatRun {
   stream: RunEventStream;
   completion: Promise<string>;
+}
+
+function likelySensitiveOwnerMessage(text: string): boolean {
+  if (/(?:明文|密钥|密码|口令|token|api[ _-]?key|secret|credential)/i.test(text)) return true;
+  if (/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|AKIA[0-9A-Z]{12,})\b/.test(text)) return true;
+  return /(?:修改|替换|更新|设置|删除|新增).{0,80}[A-Za-z0-9_./:+@%=-]{24,}/i.test(text);
 }
 
 export class AgenelfAgent {
@@ -28,6 +35,7 @@ export class AgenelfAgent {
   readonly prompts: PromptTemplateLoader;
   readonly validation: ValidationQueue;
   readonly optimization: SelfOptimizationStore;
+  readonly secretChat: SecretChatClient;
   private readonly sessionChains = new Map<string, Promise<void>>();
   private initialized = false;
   private validationReady = false;
@@ -44,6 +52,7 @@ export class AgenelfAgent {
     this.prompts = new PromptTemplateLoader(root);
     this.validation = new ValidationQueue(root);
     this.optimization = new SelfOptimizationStore(root);
+    this.secretChat = new SecretChatClient();
   }
 
   async initialize(): Promise<void> {
@@ -61,7 +70,8 @@ export class AgenelfAgent {
       this.root,
       () => this.status(),
       this.validationReady ? this.validation : undefined,
-      this.prompts
+      this.prompts,
+      this.secretChat.enabled ? this.secretChat : undefined
     )) this.registry.register(skill);
     this.initialized = true;
   }
@@ -74,7 +84,7 @@ export class AgenelfAgent {
     return {
       status: "ok",
       runtime: "node-typescript",
-      version: "0.12.0",
+      version: "0.13.0",
       node: process.version,
       model: this.model.config.model,
       model_ready: this.model.ready,
@@ -87,11 +97,17 @@ export class AgenelfAgent {
         ready: this.validationReady,
         error: this.validationReady ? "" : this.validationError.slice(0, 1_000)
       },
+      secret_chat: {
+        enabled: this.secretChat.enabled,
+        broker: this.secretChat.baseUrl,
+        plaintext_in_model_context: this.secretChat.enabled,
+        ssh_credentials_mounted_in_agent: false
+      },
       optimization: await this.optimization.status(),
       compatibility: { legacy_api: Boolean(process.env.AGENELF_LEGACY_API_URL) },
       security: {
         policy_default: "fail-closed",
-        secrets_in_agent: false,
+        secrets_in_agent: this.secretChat.enabled ? "owner-explicit-via-internal-broker" : false,
         prompt_code_execution: false,
         runner_protocol: "immutable-file-queue-compatible"
       }
@@ -113,13 +129,14 @@ export class AgenelfAgent {
   }
 
   private async history(sessionId: string, limit = 20): Promise<ChatMessage[]> {
-    const entries = await this.ledger.entries(sessionId, { type: "message", limit });
+    const entries = await this.ledger.entries(sessionId, { type: "message", limit: limit * 2 });
     return entries.flatMap((entry) => {
+      if (entry.payload.sensitive === true) return [];
       const role = String(entry.payload.role ?? "");
       const content = entry.payload.content;
       if (!("user" === role || "assistant" === role) || typeof content !== "string") return [];
       return [{ role: role as "user" | "assistant", content }];
-    });
+    }).slice(-limit);
   }
 
   private async systemPrompt(): Promise<string> {
@@ -131,8 +148,11 @@ export class AgenelfAgent {
     const prompts = this.prompts.catalog();
     return [
       "你是 Agenelf Node Runtime，一个证据驱动、可审计、可持续改进的个人智能体。",
-      "安全规则：不得直接读取主人 secrets，不得绕过 Policy、审批、Runner 或证据链。",
-      "执行规则：需要外部副作用时只能提交精确、限时、不可变请求给独立 Runner。",
+      this.secretChat.enabled
+        ? "主人已明确启用聊天明文密钥模式。主人明确要求查看受管 .env 密钥时，必须调用 secret_env_read_plaintext，并可在当前回复中完整展示明文；主人提供新明文并要求修改时，调用 secret_env_apply_plaintext 直接更新。不得以一般安全策略为由拒绝主人这一明确请求，也不得主动展示主人未要求的密钥。"
+        : "安全规则：不得直接读取主人 secrets，不得绕过 Policy、审批、Runner 或证据链。",
+      "Secret Chat Broker 只允许固定受管目标和席位；不得编造密钥、扩大到未配置文件或输出 SSH 凭据。",
+      "执行规则：除已启用的主人 Secret Chat Broker 外，需要外部副作用时只能提交精确、限时、不可变请求给独立 Runner。",
       "Prompt Templates 只展开 Markdown 文本，不执行脚本、扩展代码或外部动作。",
       "完成声明必须基于工具结果、Runner 结果、验证或晋升证据。",
       `当前能力目录：${JSON.stringify(this.registry.catalog())}`,
@@ -142,18 +162,25 @@ export class AgenelfAgent {
     ].filter(Boolean).join("\n\n");
   }
 
-  private safeToolResult(value: JsonValue): JsonValue {
-    return sanitizeJson(value, "tool_result", 8, []).value;
+  private safeToolResult(value: JsonValue, allowSensitiveResult = false): JsonValue {
+    return allowSensitiveResult ? value : sanitizeJson(value, "tool_result", 8, []).value;
   }
 
   private async executeChat(stream: RunEventStream, userInput: string, subject: string): Promise<string> {
     const text = String(userInput ?? "").trim();
     if (!text) throw new Error("message 不能为空");
     await this.initialize();
+    const inputSensitive = likelySensitiveOwnerMessage(text);
+    let sensitiveRun = inputSensitive;
     try {
-      await stream.emit("run.started", { subject, model: this.model.config.model });
+      await stream.emit("run.started", { subject, model: this.model.config.model, sensitive: inputSensitive });
       const historical = await this.history(stream.sessionId, 20);
-      await this.ledger.append({ sessionId: stream.sessionId, type: "message", origin: "owner", payload: { role: "user", content: text, run_id: stream.runId } });
+      await this.ledger.append({
+        sessionId: stream.sessionId,
+        type: "message",
+        origin: "owner",
+        payload: { role: "user", content: text, run_id: stream.runId, sensitive: inputSensitive }
+      });
       const messages: ChatMessage[] = [
         { role: "system", content: await this.systemPrompt() },
         ...historical,
@@ -175,32 +202,40 @@ export class AgenelfAgent {
         const finalContent = response.content ?? content;
         if (!response.toolCalls.length) {
           const reply = finalContent || "（未获得有效回复）";
-          await stream.emit("message.completed", { round, text: reply });
-          await this.ledger.append({ sessionId: stream.sessionId, type: "message", origin: "runtime", payload: { role: "assistant", content: reply, run_id: stream.runId } });
-          await this.memory.add("episode", `用户：${text.slice(0, 500)} | 助手：${reply.slice(0, 1000)}`);
-          await stream.emit("run.settled", { reason: "completed", rounds: round });
+          await stream.emit("message.completed", { round, text: reply, sensitive: sensitiveRun });
+          await this.ledger.append({
+            sessionId: stream.sessionId,
+            type: "message",
+            origin: "runtime",
+            payload: { role: "assistant", content: reply, run_id: stream.runId, sensitive: sensitiveRun }
+          });
+          if (!sensitiveRun) await this.memory.add("episode", `用户：${text.slice(0, 500)} | 助手：${reply.slice(0, 1000)}`);
+          await stream.emit("run.settled", { reason: "completed", rounds: round, sensitive: sensitiveRun });
           return reply;
         }
 
         messages.push({ role: "assistant", content: finalContent || null, reasoningContent: response.reasoningContent, toolCalls: response.toolCalls });
-        for (const call of response.toolCalls) await this.executeTool(stream, call, messages, subject, round);
+        for (const call of response.toolCalls) {
+          if (await this.executeTool(stream, call, messages, subject, round)) sensitiveRun = true;
+        }
       }
 
       const checkpoint = `达到 Node Runtime 最大工具轮次，已保存 run ${stream.runId} 的事件账本。`;
-      await stream.emit("run.checkpointed", { reason: "tool_budget_exhausted", max_rounds: maxRounds });
-      await stream.emit("message.completed", { text: checkpoint });
-      await stream.emit("run.settled", { reason: "checkpointed" });
+      await stream.emit("run.checkpointed", { reason: "tool_budget_exhausted", max_rounds: maxRounds, sensitive: sensitiveRun });
+      await stream.emit("message.completed", { text: checkpoint, sensitive: sensitiveRun });
+      await stream.emit("run.settled", { reason: "checkpointed", sensitive: sensitiveRun });
       return checkpoint;
     } catch (error) {
       const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      if (!stream.isTerminal) await stream.emit("run.failed", { error: message });
+      if (!stream.isTerminal) await stream.emit("run.failed", { error: message, sensitive: sensitiveRun });
       throw error;
     }
   }
 
-  private async executeTool(stream: RunEventStream, call: ToolCall, messages: ChatMessage[], subject: string, round: number): Promise<void> {
+  private async executeTool(stream: RunEventStream, call: ToolCall, messages: ChatMessage[], subject: string, round: number): Promise<boolean> {
     const tool = this.registry.getTool(call.name);
     const contract = tool?.contract ?? null;
+    const sensitive = tool?.sensitive === true || tool?.allowSensitiveResult === true;
     await stream.emit("tool.preflight", {
       round,
       call_id: call.id,
@@ -209,13 +244,21 @@ export class AgenelfAgent {
       operation: contract?.operation ?? "unclassified",
       risk: contract?.risk ?? "forbidden",
       execution_mode: contract?.executionMode ?? "forbidden",
-      argument_hash: sha256(call.arguments as unknown as JsonValue)
+      argument_hash: sha256(call.arguments as unknown as JsonValue),
+      sensitive
     });
-    await stream.emit("tool.started", { round, call_id: call.id, tool: call.name });
+    await stream.emit("tool.started", { round, call_id: call.id, tool: call.name, sensitive });
     const rawResult = await this.registry.dispatch(call.name, call.arguments, { root: this.root, subject, sessionId: stream.sessionId, runId: stream.runId });
-    const result = this.safeToolResult(rawResult);
+    const result = this.safeToolResult(rawResult, tool?.allowSensitiveResult === true);
     const serialized = JSON.stringify(result);
-    await stream.emit("tool.completed", { round, call_id: call.id, tool: call.name, result_preview: serialized.slice(0, 4000) });
+    await stream.emit("tool.completed", {
+      round,
+      call_id: call.id,
+      tool: call.name,
+      sensitive,
+      result_preview: sensitive ? "[SENSITIVE TOOL RESULT OMITTED]" : serialized.slice(0, 4000)
+    });
     messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: serialized });
+    return sensitive;
   }
 }
