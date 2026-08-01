@@ -6,7 +6,7 @@ import { sanitizeJson } from "./privacy.ts";
 import { PromptTemplateLoader } from "./prompt-templates.ts";
 import { ResourceLoader } from "./resource-loader.ts";
 import { SecretChatClient } from "./secret-chat-client.ts";
-import { routeOwnerSecretChat } from "./secret-chat-direct.ts";
+import { routeOwnerSecretChat } from "./secret-chat-router.ts";
 import { SessionLedgerStore } from "./session-ledger.ts";
 import { SelfOptimizationStore } from "./self-optimization.ts";
 import { SkillRegistry } from "./skill-registry.ts";
