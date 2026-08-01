@@ -74,6 +74,45 @@ class NodeSecretOpsRunnerTest(unittest.TestCase):
             self.assertNotIn(forbidden, runner_volumes)
             self.assertNotIn(forbidden, console_volumes)
 
+    def test_plaintext_chat_broker_is_internal_and_agent_still_has_no_ssh_secrets(self) -> None:
+        top = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+        includes = [item["path"] if isinstance(item, dict) else item for item in top["include"]]
+        self.assertIn("docker-compose.yml", includes)
+        self.assertIn("compose.secret-chat.yaml", includes)
+
+        document = yaml.safe_load(
+            (ROOT / "compose.secret-chat.yaml").read_text(encoding="utf-8")
+        )
+        broker = document["services"]["secret-chat-broker"]
+        self.assertEqual(broker["build"]["dockerfile"], "Dockerfile.ops-secret")
+        self.assertIn("node/apps/secret-chat-broker/src/main.ts", broker["command"])
+        self.assertNotIn("ports", broker)
+        self.assertEqual(broker["expose"], ["8097"])
+        self.assertTrue(broker["read_only"])
+        self.assertEqual(broker["cap_drop"], ["ALL"])
+        self.assertIn("no-new-privileges:true", broker["security_opt"])
+        self.assertIn(".env", broker["env_file"])
+        self.assertIn(".ops-runner.env", broker["env_file"])
+
+        mounts = "\n".join(str(item) for item in broker["volumes"])
+        for required in (
+            "./local/servers.yaml:/agenelf/local/servers.yaml:ro",
+            "./local/env-secrets.yaml:/agenelf/local/env-secrets.yaml:ro",
+            "./local/secrets:/agenelf/local/secrets:ro",
+            "./logs:/agenelf/logs:rw",
+        ):
+            self.assertIn(required, mounts)
+        for forbidden in (
+            "docker.sock",
+            "/agenelf/approval",
+            "local/memory",
+            "local/self",
+            "/agenelf/app-fork",
+            "/agenelf/policy",
+            "data/auth-decisions",
+        ):
+            self.assertNotIn(forbidden, mounts)
+
     def test_agent_and_normal_cli_never_mount_secret_material(self) -> None:
         base = yaml.safe_load(
             (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
@@ -95,23 +134,37 @@ class NodeSecretOpsRunnerTest(unittest.TestCase):
 
     def test_secret_ops_files_are_in_owner_authorized_scope(self) -> None:
         plan = authorized_upgrade.make_plan(
-            "升级 Node secret env Ops runner 和主人 Secret Console",
-            scopes=["node_runners", "node_build", "compose"],
+            "升级 Node secret env Ops、主人明文聊天 Broker 和 Secret Console",
+            scopes=[
+                "node_runners",
+                "node_runtime",
+                "node_skills",
+                "node_build",
+                "compose",
+            ],
         )
         allowed = plan["allowed_paths"]
         for path in (
             "node/apps/secret-ops-runner/",
             "node/apps/secret-cli/",
+            "node/apps/secret-chat-broker/",
             "node/packages/core/src/secret-ops.ts",
             "node/packages/core/src/secret-env.ts",
             "node/packages/core/src/secret-targets.ts",
+            "node/packages/core/src/chat-secret-env.ts",
+            "node/packages/core/src/secret-chat-client.ts",
+            "node/packages/core/src/agent.ts",
+            "node/packages/core/src/types.ts",
+            "node/packages/skills/src/builtin.ts",
             "Dockerfile.ops-secret",
+            "compose.yaml",
             "compose.override.yaml",
+            "compose.secret-chat.yaml",
         ):
             self.assertIn(path, allowed)
         self.assertEqual(
             authorized_upgrade.SECRET_OPS_UPGRADE_POLICY_VERSION,
-            "owner-authorized-secret-ops-v1",
+            "owner-authorized-secret-ops-v2",
         )
 
     def test_owner_secret_files_remain_git_ignored(self) -> None:
