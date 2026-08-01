@@ -1,51 +1,104 @@
 # 服务器 `.env` 密钥席位管理
 
-## 目标
+Agenelf 提供两种互补的管理入口：
 
-Agenelf 允许主人准确识别、删除或更新服务器上的某个密钥席位，同时满足以下约束：
+1. **主人聊天明文模式**：主人在 Agenelf 聊天中明确要求时，可以直接查看完整 Key、输入新 Key，并让 Agenelf 立即更新服务器；
+2. **本地 Secret Console 模式**：完整值只进入本地 TTY，适合不希望明文进入模型上下文的场景。
 
-- Agent 和模型永远看不到完整密钥；
-- 普通聊天、HTTP API、普通 CLI、操作请求、审批文件、事件和日志中不保存完整密钥；
-- 主人可以在独立的本地 Secret Console 中查看完整密钥或输入新密钥；
-- 每个席位使用稳定 ID，删除中间席位不会导致其它席位重新编号；
-- 修改绑定清单快照、单席位旧指纹、staging 哈希和操作请求指纹；
-- 远程文件加锁、同目录临时文件、`fsync`、`chmod 600` 和原子替换；
-- Compose 校验、重载或健康检查失败时自动恢复旧文件；
-- 明文回滚备份仅在一次执行期间存在；只有回滚本身失败时才会以 `0600` 保留，便于人工恢复。
+两种模式共用稳定席位 ID、固定目标清单、远程原子替换、Compose 校验、健康检查和失败回滚。
 
-## 信任边界
+## 主人聊天明文模式
+
+### 预期交互
 
 ```text
-普通 Agent / Web / HTTP / 普通 CLI
-        │
-        │ 只能提交 inventory_env，或读取脱敏结果
-        ▼
-不可变 Operation Queue ── owner approval ── Secret Ops Runner
-                                                │
-                                                │ SSH + 固定脚本
-                                                ▼
-                                         服务器 .env.secrets
+主人：把 relay-zhipu 配置的几个 Key 明文列出来
+Agenelf：
+zhipu-a = ...完整值...
+zhipu-b = ...完整值...
+zhipu-c = ...完整值...
+zhipu-d = ...完整值...
 
-主人本地 Secret Console
-  ├─ list：只显示 masked + fingerprint
-  ├─ reveal：完整密钥仅显示在本地 TTY
-  └─ patch：新密钥仅进入 0600 staging，再由审批绑定的 Runner 消费
+主人：删除 zhipu-b，把 zhipu-c 改成 new-key-value，其他不动
+Agenelf：
+已更新：zhipu-b 删除，zhipu-c 替换，zhipu-a/zhipu-d 保持不变；
+配置校验、服务重载和健康检查通过。
 ```
 
-`agenelf`、`legacy-agent` 和普通 `cli` 都不挂载：
+主人明确要求明文时，Agent 必须调用受控工具，不再以通用安全提示拒绝：
 
-- SSH 私钥目录 `local/secrets/`；
-- Secret Ops staging；
-- `local/env-secrets.yaml`。
+- `secret_env_targets`：列出目标和稳定席位 ID；
+- `secret_env_read_plaintext`：读取一个目标的全部明文，或只读取一个席位；
+- `secret_env_apply_plaintext`：按聊天中的明确指令直接更新、删除或保持席位。
 
-只有：
+`secret_env_apply_plaintext` 支持只列出发生变化的席位。未列出的席位自动转换为 `keep`，例如仅提交：
 
-- `secret-cli`：主人显式运行时，读取服务器连接秘密并写入 staging；
-- `secret-ops-runner`：读取连接秘密、消费 staging、执行已审批修改。
+```json
+{
+  "env_target": "relay-zhipu",
+  "confirm_target": "relay-zhipu",
+  "changes": [
+    { "seat_id": "zhipu-b", "action": "delete" },
+    { "seat_id": "zhipu-c", "action": "set", "value": "new-key-value" }
+  ]
+}
+```
 
-Docker Compose 默认使用独立 Linux named volume `secret-staging`。这样即使宿主机是 Windows，也能可靠保持目录 `0700`、文件 `0600`，而不是依赖 NTFS bind mount 的权限语义。
+真正执行时仍会生成包含 A/B/C/D 全部席位的完整 `keep/delete/set` 计划，避免数组移位或误删其它 Key。
 
-## 配置
+### 明文的保存范围
+
+聊天明文模式的目的就是让模型和当前聊天能够看到完整值，因此：
+
+- 完整旧 Key 会进入当前工具结果和当前模型回合；
+- 主人在聊天中输入的新 Key 会进入当前聊天和当前模型回合；
+- 最终回复可以按主人要求完整展示；
+- 当前聊天界面及敏感会话账本记录可能保留这些文字。
+
+Agenelf 会把这一轮标记为 `sensitive`，并执行以下隔离：
+
+- 工具生命周期事件只记录 `[SENSITIVE TOOL RESULT OMITTED]`；
+- 不把该轮写入长期主人记忆；
+- 后续模型历史回放会跳过敏感用户消息和敏感助手回复；
+- Broker 审计只记录目标、席位动作和结果，不记录 Key；
+- 修改结果只返回动作和修改前后短指纹，不回显新 Key。
+
+这不是“明文永不落地”模式。完全不希望明文进入聊天或模型时，应使用下文的本地 Secret Console。
+
+## 聊天明文模式的信任边界
+
+```text
+主人聊天
+   │
+   │ 固定 Tool + 内部 Token
+   ▼
+Agenelf Agent ── Compose 内网 ── Secret Chat Broker
+                                  │
+                                  │ SSH + 固定 Python 脚本
+                                  ▼
+                           服务器 .env / .env.secrets
+```
+
+关键边界：
+
+- `secret-chat-broker` 不映射任何宿主机端口，只 `expose: 8097` 到 Compose 内网；
+- Broker 要求与 Agenelf 相同的 `X-Agenelf-Token`；
+- Broker 才挂载 `local/secrets/`、`local/servers.yaml` 和 `local/env-secrets.yaml`；
+- Agent 本身仍不挂载 SSH 私钥、SSH 密码环境或 Secret target 配置；
+- Broker 只允许 `local/env-secrets.yaml` 中声明的服务器、文件和席位；
+- 不提供任意路径读取、任意环境变量读取或任意远程 Shell；
+- Key 通过 SSH stdin 写入短期 stage 文件，不进入 SSH argv；
+- Broker 使用只读根文件系统、`cap_drop: ALL`、`no-new-privileges`，且没有 Docker Socket、Approval key、主人 Memory 或 Self 目录。
+
+聊天明文模式默认启用。需要关闭时，在 `.env` 中设置：
+
+```dotenv
+AGENELF_CHAT_PLAINTEXT_SECRETS=false
+```
+
+关闭后相关聊天工具不会注册，原本的 Secret Console 仍可使用。
+
+## 配置目标和稳定席位
 
 初始化后编辑：
 
@@ -88,11 +141,11 @@ targets:
 - `server` 必须存在于 `local/servers.yaml`；
 - `env_file`、`workdir` 和 `compose_file` 必须位于服务器 `managed_root` 下；
 - `health_container` 必须位于服务器 `allowed_containers` 中；
-- `seats` 的键是稳定席位 ID；
+- `seats` 的键是永久稳定的席位 ID；
 - 同一目标不能把两个席位映射到同一个环境变量；
-- 此文件只能保存元数据，禁止写完整密钥。
+- `local/env-secrets.yaml` 只保存目标元数据，不保存完整 Key。
 
-目标服务使用两个 env 文件时，可采用：
+目标服务可以拆分普通配置与秘密配置：
 
 ```yaml
 services:
@@ -102,9 +155,35 @@ services:
       - .env.secrets
 ```
 
-普通配置写入 `.env`，API Key、Token 和密码写入 `.env.secrets`。
+## 聊天中的推荐说法
 
-## 使用
+读取全部明文：
+
+```text
+把 relay-zhipu 的所有席位和完整 Key 明文列出来。
+```
+
+只读取一个：
+
+```text
+显示 relay-zhipu 的 zhipu-b 完整明文。
+```
+
+删除一个，其它保持：
+
+```text
+删除 relay-zhipu 的 zhipu-b，其他席位保持不动，并更新服务器。
+```
+
+删除和替换同时执行：
+
+```text
+删除 relay-zhipu 的 zhipu-b，把 zhipu-c 改成 <完整新 Key>，其他不动，直接更新并检查服务。
+```
+
+模型不得编造新 Key。执行 `set` 时必须使用主人当前消息中提供的完整值。
+
+## 本地 Secret Console 模式
 
 列出目标：
 
@@ -118,22 +197,11 @@ make secret ARGS='targets'
 make secret ARGS='list relay-zhipu'
 ```
 
-输出包含：
-
-- 稳定席位 ID；
-- 标签与环境变量名；
-- 是否存在；
-- 前后少量字符构成的 masked 特征；
-- SHA-256 的短指纹；
-- 整体 inventory hash。
-
-完整查看单个席位：
+在本地 TTY 查看单个完整值：
 
 ```bash
 make secret ARGS='reveal relay-zhipu zhipu-b'
 ```
-
-完整值只在本地 Secret Console 的 TTY 中显示。它不会进入 Agent、模型、operation request 或审计日志。终端自身的滚动区仍可能保留显示内容，因此查看后应关闭或清理终端。
 
 交互式修改：
 
@@ -141,73 +209,31 @@ make secret ARGS='reveal relay-zhipu zhipu-b'
 make secret ARGS='patch relay-zhipu'
 ```
 
-Secret Console 会对每个席位要求一个明确决定：
+每个席位选择：
 
-- `k`：保持不变；
+- `k`：保持；
 - `d`：删除；
-- `u`：更新，随后在隐藏输入中输入两次新密钥。
+- `u`：更新，并通过隐藏输入输入两次新 Key。
 
-例如：
-
-```text
-zhipu-a: keep
-zhipu-b: delete
-zhipu-c: set
-zhipu-d: keep
-```
-
-确认后会创建一个 `op-...` 请求。请求只包含：
-
-- 目标别名；
-- staging 文件引用；
-- staging SHA-256；
-- 修改前 inventory hash；
-- 操作请求自身的规范化指纹。
-
-请求中没有完整密钥。
-
-批准：
-
-```text
-/approve op-xxxxxxxxxxxxxxxx env-secret-patch
-```
-
-或：
+Console 模式会创建精确绑定的 `op-...` 请求，再由主人审批：
 
 ```bash
 make approve REQ=op-xxxxxxxxxxxxxxxx
-```
-
-查询：
-
-```bash
 make secret ARGS='status op-xxxxxxxxxxxxxxxx'
 ```
 
-## 并发与防误改
+完整值只存在于本地 TTY 和 `0600` staging，不进入 Agent 或模型上下文。
 
-真正写入前，Runner 会再次验证：
+## 原子写入和回滚
 
-1. 操作请求指纹；
-2. 审批指纹；
-3. 请求 TTL；
-4. staging 文件必须是非符号链接普通文件、权限为 `0600`；
-5. staging 内容 SHA-256；
-6. staging 必须包含全部稳定席位的 `keep/delete/set` 决定；
-7. 服务器当前 inventory hash；
-8. 每个席位当前完整 SHA-256 指纹。
-
-如果主人查看清单后，其他人或程序修改了任意被管理席位，操作会失败，不会覆盖新内容。未被 Secret Ops 管理的普通 `.env` 项变化不会造成误阻塞。
-
-## 写入和回滚
-
-远程固定脚本不会 `source .env`，也不会通过 shell 解释密钥值。它执行：
+聊天 Broker 和 Secret Ops Runner 都复用同一套固定远程脚本。脚本不会 `source .env`，也不会让 Shell 解释 Key：
 
 ```text
 flock
-→ 读取并验证唯一环境变量键
-→ 生成短期 0600 备份
-→ 在同一目录写入临时文件
+→ 读取并验证唯一受管环境变量
+→ 核对修改前 inventory hash 和逐席位 SHA-256
+→ 创建短期 0600 备份
+→ 同目录写入临时文件
 → flush + fsync
 → chmod 600
 → os.replace 原子替换
@@ -218,58 +244,32 @@ flock
 → 成功后删除短期备份
 ```
 
-任一校验、重载或健康检查失败时，会恢复旧文件并再次重载旧配置。回滚成功后短期备份会删除；回滚自身失败时，Runner 会保留服务器端 `0600` 备份并在结果中返回其路径，避免丢失最后的恢复副本。
+如果配置校验、重载或健康检查失败，会恢复修改前文件并重新部署旧配置。只有自动回滚本身失败时，服务器才保留一个 `0600` 恢复备份，并返回恢复路径。
 
-## staging 生命周期
+## 并发保护
 
-Docker Compose 模式下，新密钥短期保存在 named volume 内：
+每次修改都会先读取当前清单，并把以下数据绑定到变更包：
 
-```text
-secret-staging:/agenelf/local/secret-staging/secret-stage-*.json
-```
+- 整体 inventory hash；
+- 每个稳定席位当前完整 SHA-256 指纹；
+- 每个席位最终的 `keep/delete/set` 动作。
 
-直接运行 Node 程序、未使用 Compose 时，默认路径为：
+真正写入时会再次检查。若受管席位在主人查看后被其他程序修改，本次操作会拒绝覆盖。未受管的普通 `.env` 项变化不会造成误阻塞。
 
-```text
-<AGENELF_ROOT>/local/secret-staging/secret-stage-*.json
-```
+## 审计原则
 
-目录权限为 `0700`，文件权限为 `0600`。普通 Agent 和普通 CLI 均看不到该存储。
-
-以下情况 Runner 会删除 staging：
-
-- 成功；
-- 执行失败；
-- 主人拒绝；
-- 授权失效；
-- 请求过期。
-
-清理超过 24 小时的遗留 staging：
-
-```bash
-make secret ARGS='cleanup'
-```
-
-明确清空全部 staging（例如运维清理时）：
-
-```bash
-make secret ARGS='cleanup --all'
-```
-
-## 审计内容
-
-结果和事件只保存：
+普通审计、事件和修改结果保存：
 
 - 目标和席位 ID；
 - `keep/delete/set` 动作；
-- 修改前后的短指纹；
+- 修改前后短指纹；
 - inventory hash；
-- 校验、重载、健康检查和回滚状态；
-- 只有回滚失败时才保存恢复备份路径，不保存备份内容。
+- 配置校验、重载、健康检查和回滚状态；
+- 只有回滚失败时才保存恢复备份路径。
 
 不保存：
 
-- 完整旧密钥；
-- 完整新密钥；
-- staging 内容；
-- 远程脚本的原始 stdout/stderr。
+- 完整 Key；
+- Secret stage 内容；
+- 远程脚本原始 stdout/stderr；
+- SSH 密码、私钥或私钥口令。
